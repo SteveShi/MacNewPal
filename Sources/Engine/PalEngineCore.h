@@ -97,7 +97,9 @@ typedef struct {
     int32_t loop_remaining;  /* LP count (-1 = infinite) */
     int32_t loop_start_frame;
     int32_t loop_end_frame;
-    int32_t last_sfx_id;     /* CS sound effect ID */
+    int32_t ap_step;         /* 1-based AP counter updated by AP opcode */
+    int32_t loop_active;     /* 1 = active LP block */
+    int32_t last_sfx_id;     /* CS / WV sound effect ID */
     int32_t pc;              /* Instruction pointer */
     int32_t finished;        /* VO/2O/OV reached without active loop */
     int32_t insn_count;
