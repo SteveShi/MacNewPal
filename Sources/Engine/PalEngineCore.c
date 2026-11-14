@@ -5420,6 +5420,14 @@ static int pal_party_apply_field_script(PalTalkWorldState *ws, int target_idx, i
     return applied ? 0 : -1;
 }
 
+static int pal_world_item_qty(const PalTalkWorldState *ws, uint16_t item_id) {
+    if (!ws || item_id == 0u) return 0;
+    for (int32_t i = 0; i < ws->inventory_count; i++) {
+        if (ws->inventory_ids[i] == item_id) return ws->inventory_qty[i];
+    }
+    return 0;
+}
+
 static int pal_party_use_field_item(PalTalkWorldState *ws, int target_idx, uint16_t item_id, char *out_msg, size_t msg_cap) {
     if (!ws || !ws->db || target_idx < 0 || target_idx >= ws->party_member_count) return -1;
     const PalItemRecord *it = pal_db_find_item(ws->db, (int32_t)item_id);
@@ -5427,13 +5435,76 @@ static int pal_party_use_field_item(PalTalkWorldState *ws, int target_idx, uint1
     if (pal_item_equip_slot((int32_t)item_id) >= 0) {
         return pal_party_equip_item(ws, target_idx, item_id, out_msg, msg_cap);
     }
-    int qty = 0;
-    for (int32_t i = 0; i < ws->inventory_count; i++) {
-        if (ws->inventory_ids[i] == item_id) { qty = ws->inventory_qty[i]; break; }
-    }
+    int qty = pal_world_item_qty(ws, item_id);
     if (qty <= 0) {
         if (out_msg) snprintf(out_msg, msg_cap, "「%s」數量不足。", it->name_utf8);
         return -1;
+    }
+    if (pal_party_apply_field_script(ws, target_idx, it->field_script, PAL_DB_KIND_ITEM) != 0) {
+        if (out_msg) snprintf(out_msg, msg_cap, "「%s」無法在此時使用。", it->name_utf8);
+        return -1;
+    }
+    pal_world_add_item(ws, item_id, -1);
+    if (out_msg) snprintf(out_msg, msg_cap, "對 %s 使用了「%s」。", ws->party_members[target_idx].name_utf8, it->name_utf8);
+    return 0;
+}
+
+static int pal_item_resolve_field_talk_id(const PalGameDatabase *db, uint16_t item_id, int32_t *out_talk_id) {
+    if (out_talk_id) *out_talk_id = 0;
+    if (!db) return 0;
+    const PalItemRecord *it = pal_db_find_item(db, (int32_t)item_id);
+    if (!it || it->field_script <= 0 || it->field_script == 61439 || it->field_script == 65535) return 0;
+    const PalScript7fRecord *sc = pal_db_find_script_kind(db, it->field_script, PAL_DB_KIND_MAGIC);
+    if (!sc) return 0;
+    for (int32_t oi = 0; oi < sc->op_count; oi++) {
+        const PalScript7fOp *op = &sc->ops[oi];
+        if (op->tag == 0x7F102046u && op->arg_count >= 1 && op->args[0] > 0) {
+            if (out_talk_id) *out_talk_id = op->args[0];
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int pal_item_can_use_in_field(const PalGameDatabase *db, uint16_t item_id) {
+    if (!db) return 0;
+    if (pal_item_resolve_field_talk_id(db, item_id, NULL)) return 1;
+    const PalItemRecord *it = pal_db_find_item(db, (int32_t)item_id);
+    if (!it || it->field_script <= 0 || it->field_script == 61439 || it->field_script == 65535) return 0;
+    const PalScript7fRecord *sc = pal_db_find_script_kind(db, it->field_script, PAL_DB_KIND_ITEM);
+    if (!sc) return 0;
+    for (int32_t oi = 0; oi < sc->op_count; oi++) {
+        const PalScript7fOp *op = &sc->ops[oi];
+        if (op->tag == 0x7F30200Bu && op->arg_count >= 3 &&
+            (op->args[1] == 16 || op->args[1] == 17 || op->args[1] == 22 || op->args[1] == 23)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int pal_camp_use_item_direct(
+    PalTalkWorldState *ws, int target_idx, uint16_t item_id,
+    char *out_msg, size_t msg_cap, int *out_close_camp, int32_t *out_talk_id
+) {
+    if (out_close_camp) *out_close_camp = 0;
+    if (out_talk_id) *out_talk_id = 0;
+    if (!ws || !ws->db || target_idx < 0 || target_idx >= ws->party_member_count) return -1;
+    const PalItemRecord *it = pal_db_find_item(ws->db, (int32_t)item_id);
+    if (!it) return -1;
+    int qty = pal_world_item_qty(ws, item_id);
+    if (qty <= 0) {
+        if (out_msg) snprintf(out_msg, msg_cap, "「%s」數量不足。", it->name_utf8);
+        return -1;
+    }
+    int32_t talk_id = 0;
+    if (pal_item_resolve_field_talk_id(ws->db, item_id, &talk_id) && talk_id > 0) {
+        /* Target Talk scripts (102, 1163, 1195...) issue 0x80 [item_id, +1] when usage fails. */
+        pal_world_add_item(ws, item_id, -1);
+        if (out_talk_id) *out_talk_id = talk_id;
+        if (out_close_camp) *out_close_camp = 1;
+        if (out_msg) snprintf(out_msg, msg_cap, "使用了「%s」。", it->name_utf8);
+        return 0;
     }
     if (pal_party_apply_field_script(ws, target_idx, it->field_script, PAL_DB_KIND_ITEM) != 0) {
         if (out_msg) snprintf(out_msg, msg_cap, "「%s」無法在此時使用。", it->name_utf8);
@@ -6093,6 +6164,13 @@ static void pal_init_npc_actor_from_def(
         if (pal_world_find_party_member(ws, kObjToHero[oid]) >= 0) {
             a->active = 0;
         }
+        if (oid == 1u && (pal_world_find_party_member(ws, 2009) >= 0 || ws->control_obj_id == 10u)) {
+            a->active = 0;
+        }
+    }
+    if (ws && ((oid == 10u && (pal_world_find_party_member(ws, 2009) >= 0 || ws->control_obj_id == 10u)) ||
+               (ws->control_obj_id > 0u && oid == ws->control_obj_id && oid <= 10u))) {
+        a->active = 0;
     }
     int ntx = (int)nd->tx;
     int nty = (int)nd->ty;
@@ -6466,11 +6544,14 @@ static void pal_talk_vm_step_ex(
             case 0x27u: { /* Show NPC */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 int vis = (op == 0x27u) ? 1 : 0;
+                int suppress_dup = (vis && ws &&
+                                    ((obj == 10u && (pal_world_find_party_member(ws, 2009) >= 0 || ws->control_obj_id == 10u)) ||
+                                     (ws->control_obj_id > 0u && obj == ws->control_obj_id && obj <= 10u)));
                 int is_p = 0;
                 PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, &is_p);
                 if (!is_p || obj <= 4u) {
                     if (!is_p && obj < PAL_OBJ_CAP) ws->npc_visibility_override[obj] = vis ? 1u : 2u;
-                    if (a) a->active = vis;
+                    if (a) a->active = suppress_dup ? 0 : vis;
                 } else if (obj < PAL_OBJ_CAP) {
                     ws->npc_visibility_override[obj] = vis ? 1u : 2u;
                 }
@@ -7412,10 +7493,17 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0xCEu: /* Switch active controlled actor [obj] */
-                ws->control_obj_id = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
+            case 0xCEu: { /* Switch active controlled actor [obj] */
+                uint16_t cobj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
+                ws->control_obj_id = cobj;
+                if (npcs && cobj > 0u && cobj <= 10u) {
+                    for (int i = 0; i < npc_cnt; i++) {
+                        if (npcs[i].obj_id == cobj) npcs[i].active = 0;
+                    }
+                }
                 vm->ip += ilen;
                 break;
+            }
 
             case 0xCFu: { /* Branch if any follower is active (party > 1) */
                 uint32_t tgt = rd_u32(ins + 2u);
@@ -10036,6 +10124,7 @@ typedef struct {
     int round_active;
     float anim_beat_timer;
     float anim_beat_dur;
+    int beat_impact_applied;
     PalCombatFxLayer fx_layers[PAL_COMBAT_MAX_FX_LAYERS];
     int fx_active_count;
     int fx_cur_phase;
@@ -10847,7 +10936,9 @@ static void combat_sync_idle_poses(PalCombatState *cb, const PalTalkWorldState *
             continue;
         }
         PalCombatPose want = PAL_CPOSE_IDLE;
-        if (!eu->alive || eu->cur_hp <= 0) want = PAL_CPOSE_DEAD;
+        int hold_alive_pose = (cb->phase == COMBAT_PHASE_ANIMATE && cb->anim_count > 0 &&
+                               cb->anim_cursor < cb->anim_count && !cb->beat_impact_applied && eu->death_state == 0);
+        if ((!eu->alive || eu->cur_hp <= 0) && !hold_alive_pose) want = PAL_CPOSE_DEAD;
         else if (eu->max_hp > 0 && eu->cur_hp * 3 < eu->max_hp) want = PAL_CPOSE_WEAK;
         if (!eu->vm_ok || eu->pose != want) {
             uint32_t m_act = eu->act_id ? eu->act_id : (uint32_t)(2000 + eu->mon_id / 10);
@@ -10963,6 +11054,64 @@ static void combat_enqueue_sfx(PalCombatState *cb, uint32_t sfx_id) {
     cb->pending_sfx_tail = next_tail;
 }
 
+static int combat_apply_beat_impact(PalCombatState *cb, PalTalkWorldState *ws) {
+    if (!cb || !ws || cb->beat_impact_applied) return 0;
+    cb->beat_impact_applied = 1;
+    if (cb->anim_cursor < 0 || cb->anim_cursor >= cb->anim_count) return 0;
+    const PalCombatAnimBeat *b = &cb->anim_queue[cb->anim_cursor];
+    int n_tgts = (b->tgt_count > 0) ? b->tgt_count : 1;
+
+    if (b->is_hero) {
+        for (int ti = 0; ti < n_tgts; ti++) {
+            int tidx = (b->tgt_count > 0) ? b->tgt_indices[ti] : b->tgt_idx;
+            int32_t tval = (b->tgt_count > 0) ? b->tgt_values[ti] : b->value;
+            int tcrit = (b->tgt_count > 0) ? (int)b->tgt_crits[ti] : b->is_crit;
+            if (b->tgt_is_hero && tidx >= 0 && tidx < ws->party_member_count) {
+                if (tval > 0) combat_spawn_popup(cb, (float)cb->slot_x[tidx], (float)cb->slot_y[tidx] - 78.0f, tval, b->is_heal, 0);
+            } else if (!b->tgt_is_hero && tidx >= 0 && tidx < cb->enemy_count) {
+                PalCombatEnemyUnit *eu = &cb->enemies[tidx];
+                if (!b->is_heal) eu->hit_flash = 0.30f;
+                if (tval > 0) combat_spawn_popup(cb, (float)eu->screen_x, (float)eu->screen_y - 78.0f, tval, 0, tcrit);
+            }
+        }
+    } else {
+        for (int ti = 0; ti < n_tgts; ti++) {
+            int tidx = (b->tgt_count > 0) ? b->tgt_indices[ti] : b->tgt_idx;
+            int32_t tval = (b->tgt_count > 0) ? b->tgt_values[ti] : b->value;
+            int tcrit = (b->tgt_count > 0) ? (int)b->tgt_crits[ti] : b->is_crit;
+            if (tidx >= 0 && tidx < ws->party_member_count) {
+                if (!b->is_heal) cb->hero_hit_flash[tidx] = 0.30f;
+                if (tval > 0) {
+                    combat_spawn_popup(cb, (float)cb->slot_x[tidx], (float)cb->slot_y[tidx] - 78.0f, tval, b->is_heal, tcrit);
+                }
+            }
+        }
+    }
+
+    if (b->value > 0 && !b->is_heal) {
+        cb->hit_ring_timer = 0.28f;
+        cb->hit_ring_x = cb->fx_x;
+        cb->hit_ring_y = cb->fx_y;
+        if (b->is_crit || b->action_type == 1 || b->action_type == 5) {
+            cb->shake_timer = (b->is_crit || b->action_type == 5) ? 0.26f : 0.14f;
+        }
+    }
+
+    int any_died = 0;
+    for (int e = 0; e < cb->enemy_count; e++) {
+        PalCombatEnemyUnit *eu = &cb->enemies[e];
+        if (eu->active && (!eu->alive || eu->cur_hp <= 0) && eu->death_state == 0) {
+            combat_start_enemy_death(cb, ws, eu);
+            any_died = 1;
+        }
+    }
+    if (any_died && cb->anim_beat_timer < 1.15f) {
+        cb->anim_beat_timer = 1.15f;
+    }
+    cb->dirty = 1;
+    return any_died;
+}
+
 static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws, int idx) {
     if (!cb || !ws || idx < 0 || idx >= cb->anim_count) return;
     const PalCombatAnimBeat *b = &cb->anim_queue[idx];
@@ -10974,21 +11123,13 @@ static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws,
     cb->fx_cur_phase = 0;
     cb->fx_max_phase = 0;
     cb->fx_has_cur_beat = 0;
+    cb->beat_impact_applied = 0;
 
     for (int si = 0; si < b->sfx_count && si < 4; si++) {
         combat_enqueue_sfx(cb, b->sfx_ids[si]);
     }
 
     combat_sync_idle_poses(cb, ws);
-
-    int any_died = 0;
-    for (int e = 0; e < cb->enemy_count; e++) {
-        PalCombatEnemyUnit *eu = &cb->enemies[e];
-        if (eu->active && (!eu->alive || eu->cur_hp <= 0) && eu->death_state == 0) {
-            combat_start_enemy_death(cb, ws, eu);
-            any_died = 1;
-        }
-    }
 
     int n_tgts = (b->tgt_count > 0) ? b->tgt_count : 1;
     if (b->is_hero && b->actor_idx >= 0 && b->actor_idx < ws->party_member_count) {
@@ -11019,20 +11160,15 @@ static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws,
         int sum_x = 0, sum_y = 0, pos_cnt = 0;
         for (int ti = 0; ti < n_tgts; ti++) {
             int tidx = (b->tgt_count > 0) ? b->tgt_indices[ti] : b->tgt_idx;
-            int32_t tval = (b->tgt_count > 0) ? b->tgt_values[ti] : b->value;
-            int tcrit = (b->tgt_count > 0) ? (int)b->tgt_crits[ti] : b->is_crit;
             if (b->tgt_is_hero && tidx >= 0 && tidx < ws->party_member_count) {
                 sum_x += cb->slot_x[tidx];
                 sum_y += cb->slot_y[tidx] - 32;
                 pos_cnt++;
-                if (tval > 0) combat_spawn_popup(cb, (float)cb->slot_x[tidx], (float)cb->slot_y[tidx] - 78.0f, tval, b->is_heal, 0);
             } else if (!b->tgt_is_hero && tidx >= 0 && tidx < cb->enemy_count) {
                 PalCombatEnemyUnit *eu = &cb->enemies[tidx];
                 sum_x += eu->screen_x;
                 sum_y += eu->screen_y - 36;
                 pos_cnt++;
-                if (!b->is_heal) eu->hit_flash = 0.30f;
-                if (tval > 0) combat_spawn_popup(cb, (float)eu->screen_x, (float)eu->screen_y - 78.0f, tval, 0, tcrit);
             }
         }
         if (b->vfx_fullscreen) {
@@ -11071,16 +11207,10 @@ static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws,
         int sum_x = 0, sum_y = 0, pos_cnt = 0;
         for (int ti = 0; ti < n_tgts; ti++) {
             int tidx = (b->tgt_count > 0) ? b->tgt_indices[ti] : b->tgt_idx;
-            int32_t tval = (b->tgt_count > 0) ? b->tgt_values[ti] : b->value;
-            int tcrit = (b->tgt_count > 0) ? (int)b->tgt_crits[ti] : b->is_crit;
             if (tidx >= 0 && tidx < ws->party_member_count) {
-                cb->hero_hit_flash[tidx] = 0.30f;
                 sum_x += cb->slot_x[tidx];
                 sum_y += cb->slot_y[tidx] - 32;
                 pos_cnt++;
-                if (tval > 0) {
-                    combat_spawn_popup(cb, (float)cb->slot_x[tidx], (float)cb->slot_y[tidx] - 78.0f, tval, b->is_heal, tcrit);
-                }
             }
         }
         if (b->vfx_fullscreen) {
@@ -11106,17 +11236,13 @@ static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws,
             combat_spawn_fx_phase(cb, ws, &cb->fx_cur_beat, 0);
         }
     }
-    cb->anim_beat_dur = (cb->fx_active_count > 0) ? ((b->action_type == 1 || b->action_type == 5) ? 4.50f : 1.80f)
-                                                  : ((b->action_type == 1 || b->action_type == 5) ? 0.65f : 0.46f);
-    if (any_died && cb->anim_beat_dur < 1.15f) cb->anim_beat_dur = 1.15f;
+    int has_vfx = (cb->fx_active_count > 0 || (cb->fx_has_cur_beat && cb->fx_cur_phase < cb->fx_max_phase)) ? 1 : 0;
+    cb->anim_beat_dur = has_vfx ? ((b->action_type == 1 || b->action_type == 5) ? 4.50f : 1.80f)
+                                : ((b->action_type == 1 || b->action_type == 5) ? 0.65f : 0.46f);
     cb->anim_beat_timer = cb->anim_beat_dur;
-    if (b->value > 0 && !b->is_heal) {
-        cb->hit_ring_timer = 0.28f;
-        cb->hit_ring_x = cb->fx_x;
-        cb->hit_ring_y = cb->fx_y;
-        if (b->is_crit || b->action_type == 1 || b->action_type == 5) {
-            cb->shake_timer = (b->is_crit || b->action_type == 5) ? 0.26f : 0.14f;
-        }
+    if (!has_vfx) {
+        combat_apply_beat_impact(cb, ws);
+        if (cb->anim_beat_timer > cb->anim_beat_dur) cb->anim_beat_dur = cb->anim_beat_timer;
     }
 }
 
@@ -13499,16 +13625,20 @@ static void combat_draw_scene(
             if (death_t > 1.0f) death_t = 1.0f;
         }
 
+        int show_as_alive = (eu->alive ||
+                             (cb->phase == COMBAT_PHASE_ANIMATE && cb->anim_count > 0 &&
+                              cb->anim_cursor < cb->anim_count && !cb->beat_impact_applied && eu->death_state == 0));
+
         if (eu->shadow_ok) {
             PalLoadedSprite *ssp = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, eu->shadow_vm.fr_tsw_id);
             if (ssp && ssp->nframes > 0) {
                 uint8_t sa = (eu->death_state == 1) ? (uint8_t)(190.0f * (1.0f - death_t))
-                                                    : (eu->alive ? 190 : 80);
+                                                    : (show_as_alive ? 190 : 80);
                 pal_draw_sprite_vm(renderer, ssp, &eu->shadow_vm, ex, ey, sa, 255, 255, 255, 0);
             }
         }
 
-        if (!eu->alive && eu->death_state == 0 && eu->pose != PAL_CPOSE_DEAD) continue;
+        if (!show_as_alive && eu->death_state == 0 && eu->pose != PAL_CPOSE_DEAD) continue;
         PalLoadedSprite *esp = eu->vm_ok ? tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, eu->act_vm.fr_tsw_id) : NULL;
         if (esp && esp->nframes > 0) {
             uint8_t mr = 255, mg = eu->hit_flash > 0.0f ? 110 : 255, mb = eu->hit_flash > 0.0f ? 110 : 255;
@@ -13526,17 +13656,17 @@ static void combat_draw_scene(
                     pal_draw_sprite_vm(renderer, esp, &eu->act_vm, ex, ey + rise_y, ea2, tint, tint, tint, 0);
                 }
             } else {
-                uint8_t ea = eu->alive ? 255 : 105;
+                uint8_t ea = show_as_alive ? 255 : 105;
                 pal_draw_sprite_vm(renderer, esp, &eu->act_vm, ex, ey, ea, mr, mg, mb, 0);
             }
-        } else if (eu->alive || eu->death_state == 1) {
+        } else if (show_as_alive || eu->death_state == 1) {
             uint8_t ra = (eu->death_state == 1) ? (uint8_t)(230.0f * (1.0f - death_t)) : 230;
             SDL_SetRenderDrawColor(renderer, 185, 65, 75, ra);
             SDL_FRect er = {ex - 24.0f, ey - 48.0f - 80.0f * death_t, 48.0f, 52.0f};
             SDL_RenderFillRect(renderer, &er);
         }
 
-        if (eu->alive) {
+        if (show_as_alive) {
             if (eu->cur_hp < eu->max_hp ||
                 (cb->phase == COMBAT_PHASE_TARGET && !cb->target_is_ally &&
                  (cb->target_is_aoe || cb->target_cursor == i || cb->hover_enemy == i))) {
@@ -13931,6 +14061,10 @@ static void combat_draw_ui_overlay(
 #define CAMP_ROW_STEP 28.0f
 #define CAMP_ROW_W 380.0f
 #define CAMP_ROW_H 26.0f
+#define CAMP_IACT_X 388.0f
+#define CAMP_IACT_W 198.0f
+#define CAMP_IACT_BTN_H 28.0f
+#define CAMP_IACT_H 68.0f
 
 typedef struct {
     uint16_t item_id;
@@ -13986,6 +14120,8 @@ typedef struct {
     int hover_row;
     int scroll;
     int save_slot_cursor; /* 0..9 for System Save/Load */
+    int item_action_open;
+    int item_action_cursor; /* 0=使用, 1=裝備 */
     int dirty;
     char feedback[160];
     float feedback_timer;
@@ -13997,7 +14133,18 @@ typedef struct {
     uint16_t row_item_ids[CAMP_VISIBLE_ROWS];
     int row_vis_count;
     SDL_Texture *desc_tex;     int desc_w, desc_h;
+    SDL_Texture *item_act_tex[2]; int item_act_w[2], item_act_h[2];
 } PalCampMenuState;
+
+static float camp_item_action_y(const PalCampMenuState *cm) {
+    int rel = cm ? (cm->cursor - cm->scroll) : 0;
+    if (rel < 0) rel = 0;
+    if (rel >= CAMP_VISIBLE_ROWS) rel = CAMP_VISIBLE_ROWS - 1;
+    float y = CAMP_ROW_Y0 + (float)rel * CAMP_ROW_STEP + 4.0f;
+    if (y + CAMP_IACT_H > 350.0f) y = 350.0f - CAMP_IACT_H;
+    if (y < 112.0f) y = 112.0f;
+    return y;
+}
 
 static void camp_free_textures(PalCampMenuState *cm) {
     if (!cm) return;
@@ -14006,6 +14153,9 @@ static void camp_free_textures(PalCampMenuState *cm) {
     if (cm->desc_tex) { SDL_DestroyTexture(cm->desc_tex); cm->desc_tex = NULL; }
     for (int i = 0; i < 4; i++) {
         if (cm->party_tex[i]) { SDL_DestroyTexture(cm->party_tex[i]); cm->party_tex[i] = NULL; }
+    }
+    for (int i = 0; i < 2; i++) {
+        if (cm->item_act_tex[i]) { SDL_DestroyTexture(cm->item_act_tex[i]); cm->item_act_tex[i] = NULL; }
     }
     for (int i = 0; i < CAMP_VISIBLE_ROWS; i++) {
         if (cm->row_tex[i]) { SDL_DestroyTexture(cm->row_tex[i]); cm->row_tex[i] = NULL; }
@@ -14052,8 +14202,9 @@ static void camp_activate_row(
     uint32_t cur_map_id, const char *cur_map_title, int cur_px, int cur_py, int cur_dir,
     int *party_follow_enabled, int *runtime_mute, int *show_collision_grid,
     PalBgmPlayer *bgm, SDL_AudioStream **sfx_stream, float master_volume,
-    int *out_request_title, int *out_loaded_slot, int *out_app_quit
+    int item_action_mode, int *out_request_title, int *out_loaded_slot, int *out_app_quit, int32_t *out_talk_id
 ) {
+    if (out_talk_id) *out_talk_id = 0;
     if (!cm || !ws) return;
     camp_clamp_cursor(ws, cm);
     int total = camp_row_count(ws, cm);
@@ -14079,7 +14230,23 @@ static void camp_activate_row(
         rc = pal_party_cast_field_magic(ws, cm->hero_idx, cm->hero_idx, mid, cm->feedback, sizeof(cm->feedback));
     } else if (cm->tab == 2) {
         uint16_t iid = ws->inventory_ids[cm->cursor];
-        rc = pal_party_use_field_item(ws, cm->hero_idx, iid, cm->feedback, sizeof(cm->feedback));
+        int slot = pal_item_equip_slot((int32_t)iid);
+        int can_use = pal_item_can_use_in_field(ws->db, iid);
+        if (item_action_mode == -1 && slot >= 0 && can_use) {
+            cm->item_action_open = 1;
+            cm->item_action_cursor = 0; /* Default to Use for dual-role items (e.g. 純陽劍) */
+            cm->dirty = 1;
+            play_ui_sfx(game_dir, 1u, sfx_stream, master_volume, *runtime_mute);
+            return;
+        }
+        if (item_action_mode == 0 || (item_action_mode == -1 && slot < 0)) {
+            int close_camp = 0;
+            rc = pal_camp_use_item_direct(ws, cm->hero_idx, iid, cm->feedback, sizeof(cm->feedback), &close_camp, out_talk_id);
+            if (close_camp) cm->open = 0;
+        } else {
+            rc = pal_party_equip_item(ws, cm->hero_idx, iid, cm->feedback, sizeof(cm->feedback));
+        }
+        cm->item_action_open = 0;
         camp_clamp_cursor(ws, cm);
     } else if (cm->tab == 3) {
         rc = 0;
@@ -14134,6 +14301,31 @@ static void camp_activate_row(
     play_ui_sfx(game_dir, rc == 0 ? 2u : 1u, sfx_stream, master_volume, *runtime_mute);
     cm->feedback_timer = 3.2f;
     cm->dirty = 1;
+}
+
+static void camp_activate_and_dispatch(
+    PalCampMenuState *cm, PalTalkWorldState *ws, const char *game_dir,
+    uint32_t cur_map_id, const char *cur_map_title,
+    PalFieldActor *party, PalFieldActor *npcs, int *npc_cnt, int npc_cap,
+    PalTalkVM *talk_vm, int *show_dialogue,
+    int *party_follow_enabled, int *runtime_mute, int *show_collision_grid,
+    PalBgmPlayer *bgm, SDL_AudioStream **sfx_stream, float master_volume,
+    int item_action_mode, int *out_request_title, int *out_loaded_slot, int *out_app_quit
+) {
+    int32_t pending_talk = 0;
+    int cur_px = party ? party[0].px : 0;
+    int cur_py = party ? party[0].py : 0;
+    int cur_dir = party ? party[0].dir : 0;
+    camp_activate_row(cm, ws, game_dir, cur_map_id, cur_map_title, cur_px, cur_py, cur_dir,
+                      party_follow_enabled, runtime_mute, show_collision_grid,
+                      bgm, sfx_stream, master_volume, item_action_mode,
+                      out_request_title, out_loaded_slot, out_app_quit, &pending_talk);
+    if (pending_talk > 0 && talk_vm && !talk_vm->active) {
+        if (pal_talk_vm_start(talk_vm, game_dir, pending_talk, 0u) == 0) {
+            if (show_dialogue) *show_dialogue = 0;
+            pal_talk_vm_step_ex(talk_vm, ws, game_dir, cur_map_id, party, npcs, npc_cnt, npc_cap, 0);
+        }
+    }
 }
 
 static void camp_rebuild_textures(
@@ -14216,8 +14408,15 @@ static void camp_rebuild_textures(
             const PalItemRecord *it = pal_db_find_item(ws->db, (int32_t)iid);
             cm->row_item_ids[r] = iid;
             int slot = pal_item_equip_slot((int32_t)iid);
-            const char *badge = (slot >= 0) ? ((cur_h && pal_item_can_hero_equip(it, cur_h->hero_id)) ? "%C0[可裝]" : "%C1[限角]")
-                                            : ((it && it->field_script > 0 && it->field_script != 61439) ? "%C0[可用]" : "");
+            int can_use = pal_item_can_use_in_field(ws->db, iid);
+            const char *badge = "";
+            if (slot >= 0 && can_use) {
+                badge = (cur_h && pal_item_can_hero_equip(it, cur_h->hero_id)) ? "%C0[可裝/可用]" : "%C6[可用]";
+            } else if (slot >= 0) {
+                badge = (cur_h && pal_item_can_hero_equip(it, cur_h->hero_id)) ? "%C0[可裝]" : "%C1[限角]";
+            } else if (can_use) {
+                badge = "%C0[可用]";
+            }
             snprintf(buf, sizeof(buf), "%s%s  x%d  %s",
                      col, it ? it->name_utf8 : "??", qty, badge);
         } else {
@@ -14258,10 +14457,22 @@ static void camp_rebuild_textures(
     }
     if (cm->feedback_timer > 0.0f && cm->feedback[0] != '\0') {
         snprintf(buf, sizeof(buf), "%%C6%s%%N%%C5%s", cm->feedback, detail);
+    } else if (cm->tab == 2 && cm->cursor < ws->inventory_count &&
+               pal_item_equip_slot((int32_t)ws->inventory_ids[cm->cursor]) >= 0 &&
+               pal_item_can_use_in_field(ws->db, ws->inventory_ids[cm->cursor])) {
+        snprintf(buf, sizeof(buf), "%%C5%s%%N%%C3[Enter]選擇「使用」或「裝備」  [←/→]分頁  [Esc/I]關閉", detail);
     } else {
         snprintf(buf, sizeof(buf), "%%C5%s%%N%%C3[←/→]分頁  [↑/↓]選擇  [Q/Tab]換人  [Enter]執行  [Esc/I]關閉", detail);
     }
     cm->desc_tex = create_richtext_texture(renderer, buf, 13.5f, 560, &cm->desc_w, &cm->desc_h);
+    if (cm->item_action_open) {
+        cm->item_act_tex[0] = create_richtext_texture(renderer,
+            cm->item_action_cursor == 0 ? "%C6使用道具 / 觸發劇情" : "%C5使用道具 / 觸發劇情",
+            14.0f, 182, &cm->item_act_w[0], &cm->item_act_h[0]);
+        cm->item_act_tex[1] = create_richtext_texture(renderer,
+            cm->item_action_cursor == 1 ? "%C6裝備給當前主角" : "%C5裝備給當前主角",
+            14.0f, 182, &cm->item_act_w[1], &cm->item_act_h[1]);
+    }
     cm->dirty = 0;
 }
 
@@ -14440,6 +14651,28 @@ static void camp_draw_overlay(
             if (cm->scroll + CAMP_VISIBLE_ROWS < total_camp_rows && arr->frames[1 % arr->nframes]) {
                 SDL_FRect dn_r = {594.0f, 342.0f, 14.0f, 14.0f};
                 SDL_RenderTexture(renderer, arr->frames[1 % arr->nframes], NULL, &dn_r);
+            }
+        }
+    }
+
+    if (cm->item_action_open) {
+        float iy = camp_item_action_y(cm);
+        SDL_FRect pbox = {CAMP_IACT_X, iy, CAMP_IACT_W, CAMP_IACT_H};
+        SDL_SetRenderDrawColor(renderer, 14, 22, 34, 245);
+        SDL_RenderFillRect(renderer, &pbox);
+        SDL_SetRenderDrawColor(renderer, 232, 198, 118, 255);
+        SDL_RenderRect(renderer, &pbox);
+        for (int opt = 0; opt < 2; opt++) {
+            float by = iy + 5.0f + (float)opt * 31.0f;
+            SDL_FRect br = {CAMP_IACT_X + 6.0f, by, CAMP_IACT_W - 12.0f, CAMP_IACT_BTN_H};
+            int sel = (cm->item_action_cursor == opt);
+            SDL_SetRenderDrawColor(renderer, sel ? 58 : 24, sel ? 78 : 34, sel ? 104 : 50, 235);
+            SDL_RenderFillRect(renderer, &br);
+            SDL_SetRenderDrawColor(renderer, sel ? 245 : 110, sel ? 205 : 130, sel ? 105 : 145, 255);
+            SDL_RenderRect(renderer, &br);
+            if (cm->item_act_tex[opt]) {
+                SDL_FRect td = {br.x + 8.0f, br.y + 5.0f, (float)cm->item_act_w[opt], (float)cm->item_act_h[opt]};
+                SDL_RenderTexture(renderer, cm->item_act_tex[opt], NULL, &td);
             }
         }
     }
@@ -14834,13 +15067,20 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
                 cb->anim_queue[0] = kbeat;
                 cb->anim_count = 1;
                 cb->anim_cursor = 0;
+                cb->phase = COMBAT_PHASE_ANIMATE;
                 combat_activate_anim_beat(cb, ws, 0);
-                int started = (cb->enemies[0].death_state == 1 && cb->anim_beat_dur >= 1.12f && cb->pending_death_sfx_id > 0u);
+                int deferred_ok = (cb->fx_active_count > 0 && cb->beat_impact_applied == 0 &&
+                                   cb->enemies[0].death_state == 0 && cb->pending_death_sfx_id == 0u);
+                if (!cb->beat_impact_applied) {
+                    combat_apply_beat_impact(cb, ws);
+                }
+                int started = (cb->beat_impact_applied == 1 && cb->enemies[0].death_state == 1 &&
+                               cb->anim_beat_timer >= 1.12f && cb->pending_death_sfx_id > 0u);
                 int still_dying = combat_step_death_anims(cb, 0.50f);
                 int mid_ok = (still_dying == 1 && cb->enemies[0].death_state == 1);
                 int done_dying = combat_step_death_anims(cb, 0.70f);
                 int end_ok = (done_dying == 0 && cb->enemies[0].death_state == 2);
-                monster_death_ok = (started && mid_ok && end_ok) ? 1 : 0;
+                monster_death_ok = (deferred_ok && started && mid_ok && end_ok) ? 1 : 0;
             }
         }
 
@@ -16101,7 +16341,100 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             free_loaded_sprite(&sp83);
             free_loaded_sprite(&sp143);
 
-            ui_hit_ok = ch_ok && cb_init_ok && idle_static_ok && cmd_hit && other_hit && (cmd_sfx == 2u) && (en_hit == 0) && vfx_ext_ok;
+            int gameplay_regress_ok = 0;
+            {
+                /* Fix 1 regression: Map 502 obj=10 (Dream Li Xiaoyao) must not duplicate hero 2009 */
+                PalLoadedMap m502 = {0};
+                int m502_nodup_ok = 0;
+                if (vfs_load_lmf_map_by_id(cfg->game_dir, 502u, renderer, scale_mode, &m502) == 0) {
+                    memset(p2_ws, 0, sizeof(*p2_ws));
+                    p2_ws->db = p2_db;
+                    pal_party_init_from_db(p2_ws, p2_db, 0);
+                    p2_ws->party_members[0].hero_id = 2009;
+                    p2_ws->party_member_count = 1;
+                    p2_ws->npc_visibility_override[10] = 1u;
+                    p2_ws->control_obj_id = 10u;
+                    PalFieldActor np502[128] = {0};
+                    int cnt502 = pal_field_populate_map_npcs(&m502, p2_ws, cfg->game_dir, np502, 128);
+                    int obj10_active = 0;
+                    for (int ni = 0; ni < cnt502; ni++) {
+                        if (np502[ni].obj_id == 10u && np502[ni].active) obj10_active = 1;
+                    }
+                    m502_nodup_ok = (obj10_active == 0) ? 1 : 0;
+                    free_loaded_map(&m502);
+                }
+
+                /* Fix 3 regression: item 3466 純陽劍 -> 4253 -> 0x7F102046 talk 102 (refund off-map, deliver near obj=5 on map 498) */
+                int item3466_quest_ok = 0;
+                int32_t resolved_t102 = 0;
+                int can_use_3466 = (pal_item_can_use_in_field(p2_db, 3466u) &&
+                                    pal_item_resolve_field_talk_id(p2_db, 3466u, &resolved_t102) &&
+                                    resolved_t102 == 102);
+                if (can_use_3466) {
+                    memset(p2_ws, 0, sizeof(*p2_ws));
+                    p2_ws->db = p2_db;
+                    pal_party_init_from_db(p2_ws, p2_db, 0);
+                    p2_ws->party_members[0].hero_id = 2009;
+                    p2_ws->party_member_count = 1;
+                    pal_world_add_item(p2_ws, 3466u, 1);
+
+                    char umsg[160] = {0};
+                    int uclose = 0;
+                    int32_t utalk = 0;
+                    int urc = pal_camp_use_item_direct(p2_ws, 0, 3466u, umsg, sizeof(umsg), &uclose, &utalk);
+                    int qty_pending = pal_world_item_qty(p2_ws, 3466u);
+                    PalTalkVM qvm_fail = {0};
+                    int refund_ok = 0;
+                    if (urc == 0 && uclose == 1 && utalk == 102 && qty_pending == 0 &&
+                        pal_talk_vm_start(&qvm_fail, cfg->game_dir, utalk, 0u) == 0) {
+                        pal_talk_vm_step_ex(&qvm_fail, p2_ws, cfg->game_dir, 502u, NULL, NULL, NULL, 0, 1);
+                        pal_talk_vm_free(&qvm_fail);
+                        int qty_refund = pal_world_item_qty(p2_ws, 3466u);
+                        refund_ok = (qty_refund == 1 && p2_ws->story_flags[101] == 0u) ? 1 : 0;
+                    }
+
+                    int deliver_ok = 0;
+                    PalLoadedMap m498 = {0};
+                    if (refund_ok && vfs_load_lmf_map_by_id(cfg->game_dir, 498u, renderer, scale_mode, &m498) == 0) {
+                        PalFieldActor np498[128] = {0};
+                        int cnt498 = pal_field_populate_map_npcs(&m498, p2_ws, cfg->game_dir, np498, 128);
+                        PalFieldActor qparty[4] = {0};
+                        int obj5_idx = -1;
+                        for (int ni = 0; ni < cnt498; ni++) {
+                            if (np498[ni].obj_id == 5u) { obj5_idx = ni; break; }
+                        }
+                        if (obj5_idx >= 0) {
+                            qparty[0].active = 1;
+                            qparty[0].px = np498[obj5_idx].px;
+                            qparty[0].py = np498[obj5_idx].py + 16;
+                            uclose = 0; utalk = 0;
+                            if (pal_camp_use_item_direct(p2_ws, 0, 3466u, umsg, sizeof(umsg), &uclose, &utalk) == 0 &&
+                                utalk == 102) {
+                                PalTalkVM qvm_ok = {0};
+                                if (pal_talk_vm_start(&qvm_ok, cfg->game_dir, utalk, 0u) == 0) {
+                                    pal_talk_vm_step_ex(&qvm_ok, p2_ws, cfg->game_dir, 498u, qparty, np498, &cnt498, 128, 1);
+                                    pal_talk_vm_free(&qvm_ok);
+                                    int qty_after = pal_world_item_qty(p2_ws, 3466u);
+                                    deliver_ok = (p2_ws->story_flags[101] == 1u && qty_after == 0 && np498[obj5_idx].active == 0) ? 1 : 0;
+                                }
+                            }
+                        }
+                        free_loaded_map(&m498);
+                    }
+                    item3466_quest_ok = (refund_ok && deliver_ok) ? 1 : 0;
+                    if (!item3466_quest_ok) {
+                        fprintf(stderr, "  item3466_quest fail: can=%d urc=%d qpend=%d refund=%d deliver=%d flag101=%u qafter=%d\n",
+                                can_use_3466, urc, qty_pending, refund_ok, deliver_ok, p2_ws->story_flags[101], pal_world_item_qty(p2_ws, 3466u));
+                    }
+                }
+                gameplay_regress_ok = (m502_nodup_ok && item3466_quest_ok) ? 1 : 0;
+                if (!gameplay_regress_ok) {
+                    fprintf(stderr, "[SelfTest] gameplay regression failed: m502_nodup=%d item3466_quest=%d\n",
+                            m502_nodup_ok, item3466_quest_ok);
+                }
+            }
+
+            ui_hit_ok = ch_ok && cb_init_ok && idle_static_ok && cmd_hit && other_hit && (cmd_sfx == 2u) && (en_hit == 0) && vfx_ext_ok && gameplay_regress_ok;
         }
         if (p2_ws) free(p2_ws);
         if (p2_db) free(p2_db);
@@ -16624,11 +16957,35 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     }
                 } else if (scene == PAL_SCENE_FIELD && camp_menu.open) {
                     int handled = 0;
-                    if (mouse_ly >= CAMP_TAB_Y0 && mouse_ly <= CAMP_TAB_Y0 + CAMP_TAB_H) {
+                    if (camp_menu.item_action_open) {
+                        float iy = camp_item_action_y(&camp_menu);
+                        if (mouse_lx >= CAMP_IACT_X && mouse_lx <= CAMP_IACT_X + CAMP_IACT_W &&
+                            mouse_ly >= iy && mouse_ly <= iy + CAMP_IACT_H) {
+                            for (int opt = 0; opt < 2; opt++) {
+                                float by = iy + 5.0f + (float)opt * 31.0f;
+                                if (mouse_ly >= by && mouse_ly <= by + CAMP_IACT_BTN_H) {
+                                    camp_activate_and_dispatch(&camp_menu, world_state, cfg->game_dir,
+                                                               map.map_id, map.title_utf8,
+                                                               party, map_npcs, &map_npc_actor_cnt, 128,
+                                                               &talk_vm, &show_dialogue,
+                                                               &party_follow_enabled, &runtime_mute, &show_collision_grid,
+                                                               &bgm, &sfx_stream, cfg->master_volume, opt,
+                                                               &request_return_title, &requested_load_slot, &app_quit);
+                                    break;
+                                }
+                            }
+                        } else {
+                            camp_menu.item_action_open = 0;
+                            camp_menu.dirty = 1;
+                            play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                        }
+                        handled = 1;
+                    }
+                    if (!handled && mouse_ly >= CAMP_TAB_Y0 && mouse_ly <= CAMP_TAB_Y0 + CAMP_TAB_H) {
                         for (int t = 0; t < 4; t++) {
                             float tx = CAMP_TAB_X0 + (float)t * CAMP_TAB_STEP;
                             if (mouse_lx >= tx && mouse_lx <= tx + CAMP_TAB_W) {
-                                camp_menu.tab = t; camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.dirty = 1;
+                                camp_menu.tab = t; camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.item_action_open = 0; camp_menu.dirty = 1;
                                 play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                                 handled = 1;
                                 break;
@@ -16639,7 +16996,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         for (int i = 0; i < world_state->party_member_count && i < 4; i++) {
                             float hy = CAMP_HERO_Y0 + (float)i * CAMP_HERO_STEP;
                             if (mouse_ly >= hy && mouse_ly <= hy + CAMP_HERO_H) {
-                                camp_menu.hero_idx = i; camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.dirty = 1;
+                                camp_menu.hero_idx = i; camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.item_action_open = 0; camp_menu.dirty = 1;
                                 play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                                 handled = 1;
                                 break;
@@ -16652,13 +17009,16 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             if (mouse_ly >= ry && mouse_ly <= ry + CAMP_ROW_H) {
                                 int idx = camp_menu.scroll + r;
                                 if (camp_menu.cursor == idx) {
-                                    camp_activate_row(&camp_menu, world_state, cfg->game_dir,
-                                                      map.map_id, map.title_utf8, party[0].px, party[0].py, party[0].dir,
-                                                      &party_follow_enabled, &runtime_mute, &show_collision_grid,
-                                                      &bgm, &sfx_stream, cfg->master_volume,
-                                                      &request_return_title, &requested_load_slot, &app_quit);
+                                    camp_activate_and_dispatch(&camp_menu, world_state, cfg->game_dir,
+                                                               map.map_id, map.title_utf8,
+                                                               party, map_npcs, &map_npc_actor_cnt, 128,
+                                                               &talk_vm, &show_dialogue,
+                                                               &party_follow_enabled, &runtime_mute, &show_collision_grid,
+                                                               &bgm, &sfx_stream, cfg->master_volume, -1,
+                                                               &request_return_title, &requested_load_slot, &app_quit);
                                 } else {
                                     camp_menu.cursor = idx;
+                                    camp_menu.item_action_open = 0;
                                     camp_menu.dirty = 1;
                                     play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                                 }
@@ -17001,46 +17361,72 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         !talk_vm.active && !camp_menu.open && !shop_menu.open &&
                         !(key == SDLK_ESCAPE && show_dialogue)) {
                         camp_menu.open = 1;
+                        camp_menu.item_action_open = 0;
                         camp_menu.dirty = 1;
                         astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
                         play_ui_sfx(cfg->game_dir, 2u, &sfx_stream, cfg->master_volume, runtime_mute);
                     } else if (camp_menu.open) {
                         int nparty = (world_state && world_state->party_member_count > 0) ? world_state->party_member_count : 1;
-                        if (key == SDLK_ESCAPE || key == SDLK_I || key == SDLK_U || key == SDLK_F1) {
+                        if (camp_menu.item_action_open) {
+                            if (key == SDLK_ESCAPE) {
+                                camp_menu.item_action_open = 0;
+                                camp_menu.dirty = 1;
+                                play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                            } else if (key == SDLK_UP || key == SDLK_DOWN || key == SDLK_LEFT || key == SDLK_RIGHT ||
+                                       key == SDLK_W || key == SDLK_S || key == SDLK_A || key == SDLK_D) {
+                                camp_menu.item_action_cursor ^= 1;
+                                camp_menu.dirty = 1;
+                                play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                            } else if (key == SDLK_RETURN || key == SDLK_SPACE || key == SDLK_E) {
+                                camp_activate_and_dispatch(&camp_menu, world_state, cfg->game_dir,
+                                                           map.map_id, map.title_utf8,
+                                                           party, map_npcs, &map_npc_actor_cnt, 128,
+                                                           &talk_vm, &show_dialogue,
+                                                           &party_follow_enabled, &runtime_mute, &show_collision_grid,
+                                                           &bgm, &sfx_stream, cfg->master_volume,
+                                                           camp_menu.item_action_cursor,
+                                                           &request_return_title, &requested_load_slot, &app_quit);
+                            }
+                        } else if (key == SDLK_ESCAPE || key == SDLK_I || key == SDLK_U || key == SDLK_F1) {
                             camp_menu.open = 0;
+                            camp_menu.item_action_open = 0;
                             play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                         } else if (key == SDLK_LEFT || key == SDLK_A) {
                             camp_menu.tab = (camp_menu.tab + 3) % 4;
-                            camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.dirty = 1;
+                            camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.item_action_open = 0; camp_menu.dirty = 1;
                             play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                         } else if (key == SDLK_RIGHT || key == SDLK_D) {
                             camp_menu.tab = (camp_menu.tab + 1) % 4;
-                            camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.dirty = 1;
+                            camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.item_action_open = 0; camp_menu.dirty = 1;
                             play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                         } else if (key == SDLK_Q) {
                             camp_menu.hero_idx = (camp_menu.hero_idx + nparty - 1) % nparty;
-                            camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.dirty = 1;
+                            camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.item_action_open = 0; camp_menu.dirty = 1;
                             play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                         } else if (key == SDLK_R || key == SDLK_TAB) {
                             camp_menu.hero_idx = (camp_menu.hero_idx + 1) % nparty;
-                            camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.dirty = 1;
+                            camp_menu.cursor = 0; camp_menu.scroll = 0; camp_menu.item_action_open = 0; camp_menu.dirty = 1;
                             play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                         } else if (key == SDLK_UP || key == SDLK_W) {
                             camp_menu.cursor--;
+                            camp_menu.item_action_open = 0;
                             camp_clamp_cursor(world_state, &camp_menu);
                             camp_menu.dirty = 1;
                             play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                         } else if (key == SDLK_DOWN || key == SDLK_S) {
                             camp_menu.cursor++;
+                            camp_menu.item_action_open = 0;
                             camp_clamp_cursor(world_state, &camp_menu);
                             camp_menu.dirty = 1;
                             play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                         } else if (key == SDLK_RETURN || key == SDLK_SPACE || key == SDLK_E) {
-                            camp_activate_row(&camp_menu, world_state, cfg->game_dir,
-                                              map.map_id, map.title_utf8, party[0].px, party[0].py, party[0].dir,
-                                              &party_follow_enabled, &runtime_mute, &show_collision_grid,
-                                              &bgm, &sfx_stream, cfg->master_volume,
-                                              &request_return_title, &requested_load_slot, &app_quit);
+                            camp_activate_and_dispatch(&camp_menu, world_state, cfg->game_dir,
+                                                       map.map_id, map.title_utf8,
+                                                       party, map_npcs, &map_npc_actor_cnt, 128,
+                                                       &talk_vm, &show_dialogue,
+                                                       &party_follow_enabled, &runtime_mute, &show_collision_grid,
+                                                       &bgm, &sfx_stream, cfg->master_volume, -1,
+                                                       &request_return_title, &requested_load_slot, &app_quit);
                         }
                     } else if (shop_menu.open) {
                         if (key == SDLK_ESCAPE) {
@@ -17376,21 +17762,18 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 play_ui_sfx(cfg->game_dir, sid, &sfx_stream, cfg->master_volume, runtime_mute);
                 combat_state.sfx_delay_timer = 0.12f;
             }
-            if (combat_state.pending_death_sfx_id > 0u) {
-                play_ui_sfx(cfg->game_dir, combat_state.pending_death_sfx_id, &sfx_stream, cfg->master_volume, runtime_mute);
-                combat_state.pending_death_sfx_id = 0u;
-                combat_state.sfx_delay_timer = 0.14f;
-            }
             int any_dying = combat_step_death_anims(&combat_state, dt);
             if (combat_state.phase == COMBAT_PHASE_ANIMATE) {
                 if (combat_state.anim_count > 0 && combat_state.anim_cursor < combat_state.anim_count) {
                     combat_state.anim_beat_timer -= dt;
-                    float beat_elapsed = combat_state.anim_beat_dur - combat_state.anim_beat_timer;
                     int fx_all_done = (combat_state.fx_active_count == 0 &&
                                        (!combat_state.fx_has_cur_beat || combat_state.fx_cur_phase >= combat_state.fx_max_phase));
-                    int beat_done = !any_dying &&
-                                    ((combat_state.anim_beat_timer <= 0.0f) ||
-                                     (combat_state.fx_has_cur_beat ? (fx_all_done && beat_elapsed >= 0.42f) : 0));
+                    if (!combat_state.beat_impact_applied && (fx_all_done || combat_state.anim_beat_timer <= 0.0f)) {
+                        int died_now = combat_apply_beat_impact(&combat_state, world_state);
+                        if (died_now) any_dying = 1;
+                        combat_state.anim_beat_timer = died_now ? 1.18f : 0.42f;
+                    }
+                    int beat_done = combat_state.beat_impact_applied && !any_dying && (combat_state.anim_beat_timer <= 0.0f);
                     if (beat_done) {
                         combat_state.anim_cursor++;
                         if (combat_state.anim_cursor < combat_state.anim_count) {
@@ -17483,9 +17866,16 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     if (combat_state.enemies[e].vm_ok && !combat_state.enemies[e].act_vm.finished) {
                         pal_act_vm_step_tick(&combat_state.enemies[e].act_vm);
                     }
-                    if (combat_state.enemies[e].alive && combat_state.enemies[e].shadow_ok && !combat_state.enemies[e].shadow_vm.finished) {
+                    if ((combat_state.enemies[e].alive ||
+                         (combat_state.enemies[e].death_state == 0 && !combat_state.beat_impact_applied)) &&
+                        combat_state.enemies[e].shadow_ok && !combat_state.enemies[e].shadow_vm.finished) {
                         pal_act_vm_step_tick(&combat_state.enemies[e].shadow_vm);
                     }
+                }
+                if (combat_state.pending_death_sfx_id > 0u) {
+                    play_ui_sfx(cfg->game_dir, combat_state.pending_death_sfx_id, &sfx_stream, cfg->master_volume, runtime_mute);
+                    combat_state.pending_death_sfx_id = 0u;
+                    combat_state.sfx_delay_timer = 0.14f;
                 }
                 if (combat_state.fx_active_count > 0) {
                     int alive_fx = 0;
