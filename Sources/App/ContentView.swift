@@ -8,8 +8,8 @@ struct ContentView: View {
     @AppStorage("nearestFilter") private var nearestFilter: Bool = true
     @AppStorage("masterVolume") private var masterVolume: Double = 0.85
     @AppStorage("muteAudio") private var muteAudio: Bool = false
-    @AppStorage("initialMapIndex") private var initialMapIndex: Int = 0
-    @AppStorage("initialCharSlot") private var initialCharSlot: Int = 0
+    @State private var initialMapIndex: Int = 0
+    @State private var initialCharSlot: Int = 0
 
     let store: PalLauncherStore
 
