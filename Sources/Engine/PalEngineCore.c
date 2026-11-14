@@ -3231,6 +3231,12 @@ static int pal_bink_play_file(
     av_packet_free(&pkt);
     avcodec_free_context(&vdec);
     avformat_close_input(&fmt);
+    if (!app_quit) {
+        SDL_SetRenderTarget(renderer, NULL);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+        SDL_RenderPresent(renderer);
+    }
     return app_quit ? 1 : 0;
 }
 
@@ -3293,10 +3299,14 @@ static void extract_talk1_dialogues(const char *game_dir, PalDialogueList *out_l
     }
 }
 
-static int run_fade_transition(SDL_Window *window, SDL_Renderer *renderer, int fade_in, Uint32 duration_ms, PalBgmPlayer *bgm) {
+static int run_fade_transition(
+    SDL_Window *window, SDL_Renderer *renderer, SDL_Texture *scene_rt,
+    int fade_in, Uint32 duration_ms, PalBgmPlayer *bgm
+) {
+    SDL_SetRenderTarget(renderer, NULL);
     Uint64 start = SDL_GetTicksNS();
     for (;;) {
-        pal_bgm_update(bgm);
+        if (bgm) pal_bgm_update(bgm);
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_EVENT_QUIT ||
@@ -3308,6 +3318,11 @@ static int run_fade_transition(SDL_Window *window, SDL_Renderer *renderer, int f
         double t = duration_ms > 0 ? el_ms / (double)duration_ms : 1.0;
         if (t >= 1.0) break;
         Uint8 alpha = fade_in ? (Uint8)((1.0 - t) * 255.0) : (Uint8)(t * 255.0);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+        if (scene_rt) {
+            SDL_RenderTexture(renderer, scene_rt, NULL, NULL);
+        }
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, alpha);
         SDL_FRect full = {0.0f, 0.0f, 640.0f, 480.0f};
@@ -3315,6 +3330,12 @@ static int run_fade_transition(SDL_Window *window, SDL_Renderer *renderer, int f
         SDL_RenderPresent(renderer);
         SDL_Delay(8);
     }
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+    if (fade_in && scene_rt) {
+        SDL_RenderTexture(renderer, scene_rt, NULL, NULL);
+    }
+    SDL_RenderPresent(renderer);
     return 0;
 }
 
@@ -3409,6 +3430,12 @@ static int play_lmf_splash_by_id(
     }
 
     free_loaded_map(&splash);
+    if (!app_quit) {
+        SDL_SetRenderTarget(renderer, NULL);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+        SDL_RenderPresent(renderer);
+    }
     return app_quit ? 1 : 0;
 }
 
@@ -6218,6 +6245,24 @@ static void camp_draw_overlay(
     }
 }
 
+static void compute_field_camera(const PalLoadedMap *m, int px, int py, float *out_cx, float *out_cy) {
+    int cx = px - 304, cy = py - 240;
+    if (m->w_px > 640) {
+        if (cx < 0) cx = 0;
+        if (cx > m->w_px - 640) cx = m->w_px - 640;
+    } else {
+        cx = -(640 - m->w_px) / 2;
+    }
+    if (m->h_px > 480) {
+        if (cy < 0) cy = 0;
+        if (cy > m->h_px - 480) cy = m->h_px - 480;
+    } else {
+        cy = -(480 - m->h_px) / 2;
+    }
+    if (out_cx) *out_cx = (float)cx;
+    if (out_cy) *out_cy = (float)cy;
+}
+
 static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, char *out_err, int32_t err_cap) {
     if (!cfg || cfg->game_dir[0] == '\0') {
         if (out_err) snprintf(out_err, (size_t)err_cap, "Missing game_dir");
@@ -6497,6 +6542,16 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     /* =====================================================================
      * Interactive Boot Flow: Title Screen directly (0x440348 -> 0x4983ac(-9))
      * ===================================================================== */
+    SDL_Texture *scene_rt = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_TARGET, 640, 480);
+    if (scene_rt) {
+        SDL_SetTextureScaleMode(scene_rt, scale_mode);
+        SDL_SetTextureBlendMode(scene_rt, SDL_BLENDMODE_NONE);
+        SDL_SetRenderTarget(renderer, scene_rt);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+        SDL_SetRenderTarget(renderer, NULL);
+    }
+
     PalBgmPlayer bgm = {0};
     SDL_AudioStream *sfx_stream = NULL;
     int app_quit = 0;
@@ -6522,6 +6577,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     int show_collision_grid = 0;
     int party_follow_enabled = 1;
     int noclip_mode = 0;
+    int run_mode_enabled = 0;
+    int pending_fade_in_ms = 0;
     int quick_map_pos = 0;
     uint32_t leader_hero_idx = 0; /* 0..3 -> 李逍遙, 趙靈兒, 林月如, 阿奴 */
 
@@ -6598,19 +6655,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     }
 
     float cam_x = 0.0f, cam_y = 0.0f;
-    {
-        int cx = party[0].px - 304, cy = party[0].py - 240;
-        if (map.w_px > 640) {
-            if (cx < 0) cx = 0;
-            if (cx > map.w_px - 640) cx = map.w_px - 640;
-        } else cx = -(640 - map.w_px) / 2;
-        if (map.h_px > 480) {
-            if (cy < 0) cy = 0;
-            if (cy > map.h_px - 480) cy = map.h_px - 480;
-        } else cy = -(480 - map.h_px) / 2;
-        cam_x = (float)cx;
-        cam_y = (float)cy;
-    }
+    compute_field_camera(&map, party[0].px, party[0].py, &cam_x, &cam_y);
 
     float mouse_lx = 320.0f, mouse_ly = 298.0f;
 
@@ -6728,6 +6773,10 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         party_follow_enabled = !party_follow_enabled;
                     } else if (key == SDLK_C) {
                         noclip_mode = !noclip_mode;
+                    } else if ((key == SDLK_LSHIFT || key == SDLK_RSHIFT ||
+                                ev.key.scancode == SDL_SCANCODE_LSHIFT || ev.key.scancode == SDL_SCANCODE_RSHIFT) &&
+                               !ev.key.repeat) {
+                        run_mode_enabled = !run_mode_enabled;
                     } else if (key == SDLK_V) {
                         leader_hero_idx = (leader_hero_idx + 1u) % 4u;
                         for (int p = 0; p < 4; p++) {
@@ -6744,6 +6793,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             app_quit = 1;
                         }
                         if (bgm.stream) SDL_ResumeAudioStreamDevice(bgm.stream);
+                        pending_fade_in_ms = 140;
+                        last_ns = SDL_GetTicksNS();
                     } else if (talk_vm.active && talk_vm.waiting_input) {
                         if (talk_vm.choice_count > 0 &&
                             (key == SDLK_UP || key == SDLK_W || key == SDLK_LEFT || key == SDLK_A)) {
@@ -6790,6 +6841,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             free_loaded_map(&map);
                             map = next_map;
                             need_setup_loaded_map = 1;
+                            last_ns = SDL_GetTicksNS();
                         }
                     } else if ((key == SDLK_RIGHTBRACKET || key == SDLK_LEFTBRACKET) && !talk_vm.active) {
                         int delta = (key == SDLK_RIGHTBRACKET) ? 1 : -1;
@@ -6800,6 +6852,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             free_loaded_map(&map);
                             map = next_map;
                             need_setup_loaded_map = 1;
+                            last_ns = SDL_GetTicksNS();
                         }
                     }
                 }
@@ -6916,8 +6969,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             pal_talk_vm_free(&talk_vm);
             interact_target_npc_idx = -1;
             show_dialogue = 0;
-            if (run_fade_transition(window, renderer, 0, 200, &bgm) == 1) { app_quit = 1; break; }
+            if (run_fade_transition(window, renderer, scene_rt, 0, 200, &bgm) == 1) { app_quit = 1; break; }
             scene = PAL_SCENE_TITLE;
+            pending_fade_in_ms = 180;
             SDL_HideCursor();
             pal_bgm_play_track(&bgm, cfg->game_dir, "Music/M001.mp3", cfg->master_volume, runtime_mute);
             snprintf(cur_bgm_playing, sizeof(cur_bgm_playing), "Music/M001.mp3");
@@ -6926,7 +6980,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
 
         if (activate_btn == 0) {
             play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, runtime_mute);
-            if (run_fade_transition(window, renderer, 0, 220, &bgm) == 1) { app_quit = 1; break; }
+            if (run_fade_transition(window, renderer, scene_rt, 0, 220, &bgm) == 1) { app_quit = 1; break; }
             pal_bgm_stop(&bgm);
             /* Authentic talk1.dat talk_id=100 New Game sequence: map 532 -> map 533 -> begin.bik -> map 501 */
             if (play_lmf_splash_by_id(window, renderer, cfg->game_dir, 532, scale_mode, 350, 1400) == 1) {
@@ -6952,6 +7006,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             camp_menu.open = 0;
             camp_menu.dirty = 1;
             need_setup_loaded_map = 1;
+            pending_fade_in_ms = 180;
             scene = PAL_SCENE_FIELD;
             SDL_ShowCursor();
             last_ns = SDL_GetTicksNS();
@@ -6963,81 +7018,6 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             SDL_Delay(120);
             app_quit = 1;
             break;
-        }
-
-        if (need_setup_loaded_map) {
-            need_setup_loaded_map = 0;
-            astar_count = 0;
-            astar_cursor = 0;
-            interact_target_npc_idx = -1;
-            int stx = 0, sty = 0, sdir = 1;
-            if (pending_spawn_override) {
-                stx = spawn_override_tx;
-                sty = spawn_override_ty;
-                sdir = spawn_override_dir & 7;
-                pending_spawn_override = 0;
-            } else {
-                pick_map_spawn_tile(&map, &stx, &sty);
-            }
-            for (int p = 0; p < 4; p++) {
-                party[p].px = stx << 4;
-                party[p].py = sty << 4;
-                party[p].dir = sdir;
-                field_actor_set_sub(&party[p], cfg->game_dir,
-                                    kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u], sdir, 0);
-            }
-            for (int t = 0; t < 64; t++) {
-                trail_x[t] = party[0].px;
-                trail_y[t] = party[0].py;
-                trail_dir[t] = sdir;
-            }
-            map_npc_actor_cnt = map.npc_count < 64 ? map.npc_count : 64;
-            memset(map_npcs, 0, sizeof(map_npcs));
-            for (int i = 0; i < map_npc_actor_cnt; i++) {
-                const PalMapNpcDef *nd = &map.npcs[i];
-                map_npcs[i].obj_id = nd->obj_id;
-                map_npcs[i].talk_id = (world_state && nd->obj_id < PAL_OBJ_CAP && world_state->npc_talk_override[nd->obj_id] != 0u)
-                                          ? world_state->npc_talk_override[nd->obj_id]
-                                          : nd->talk_id;
-                map_npcs[i].npc_flags = nd->flags;
-                map_npcs[i].orig_sub_state = nd->sub_state;
-                map_npcs[i].active = (nd->flags & 0x8000u) != 0 ? 1 : 0;
-                if (world_state && nd->obj_id < PAL_OBJ_CAP) {
-                    if (world_state->npc_visibility_override[nd->obj_id] == 1u) map_npcs[i].active = 1;
-                    else if (world_state->npc_visibility_override[nd->obj_id] == 2u) map_npcs[i].active = 0;
-                }
-                map_npcs[i].px = (int)nd->tx << 4;
-                map_npcs[i].py = (int)nd->ty << 4;
-                map_npcs[i].dir = (int)(nd->dir & 7u);
-                if (map_npcs[i].active) {
-                    field_actor_set_sub(&map_npcs[i], cfg->game_dir, nd->act_id, (int)nd->sub_state + (int)nd->dir, 1);
-                }
-            }
-            if (strcmp(cur_bgm_playing, map.bgm_track) != 0) {
-                pal_bgm_play_track(&bgm, cfg->game_dir, map.bgm_track, cfg->master_volume, runtime_mute);
-                snprintf(cur_bgm_playing, sizeof(cur_bgm_playing), "%s", map.bgm_track);
-            }
-            if (map_banner_tex) SDL_DestroyTexture(map_banner_tex);
-            char banner_msg[128];
-            snprintf(banner_msg, sizeof(banner_msg), "%%C6%s %%C3(Map #%u)", map.title_utf8, map.map_id);
-            map_banner_tex = create_richtext_texture(renderer, banner_msg, 20.0f, 360, &map_banner_w, &map_banner_h);
-            map_banner_timer = 3.0f;
-            active_trig_id = pal_map_trigger_at_px(&map, party[0].px, party[0].py, 2);
-            last_stepped_trig_id = active_trig_id;
-
-            if (talk_vm.active) {
-                pal_talk_vm_step(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, map_npc_actor_cnt, 0);
-            } else if (world_state) {
-                for (int i = 0; i < map_npc_actor_cnt; i++) {
-                    if (map_npcs[i].active && (map_npcs[i].npc_flags & 0x20u) != 0u && map_npcs[i].talk_id > 0u) {
-                        if (pal_talk_vm_start(&talk_vm, cfg->game_dir, (int32_t)map_npcs[i].talk_id, map_npcs[i].obj_id) == 0) {
-                            show_dialogue = 0;
-                            pal_talk_vm_step(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, map_npc_actor_cnt, 0);
-                            break;
-                        }
-                    }
-                }
-            }
         }
 
         Uint64 now_ns = SDL_GetTicksNS();
@@ -7058,7 +7038,11 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         }
 
         /* 35ms authentic SWD2k engine tick (character walking, collision, party trail, .act VMs) */
-        tick35_acc += (double)dt;
+        if (need_setup_loaded_map) {
+            tick35_acc = 0.0;
+        } else {
+            tick35_acc += (double)dt;
+        }
         while (tick35_acc >= 0.035) {
             tick35_acc -= 0.035;
             cursor_anim++;
@@ -7099,7 +7083,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP])    ky -= 1;
                     if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN])  ky += 1;
                 }
-                int running = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) ? 1 : 0;
+                int running = run_mode_enabled ? 1 : 0;
                 int step_px = running ? (map.step_speed_px * 2) : map.step_speed_px;
                 if (step_px <= 0) step_px = running ? 8 : 4;
 
@@ -7239,38 +7223,123 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         }
 
         if (scene == PAL_SCENE_FIELD) {
-            if (talk_vm.pending_sfx_id > 0) {
-                play_ui_sfx(cfg->game_dir, (uint32_t)talk_vm.pending_sfx_id, &sfx_stream, cfg->master_volume, runtime_mute);
-                talk_vm.pending_sfx_id = 0;
-            }
-            if (talk_vm.pending_bink_rel[0] != '\0') {
-                SDL_PauseAudioStreamDevice(bgm.stream);
-                if (pal_bink_play_file(window, renderer, cfg->game_dir, talk_vm.pending_bink_rel, cfg->master_volume, runtime_mute) == 1) {
-                    app_quit = 1;
+            for (int map_chain = 0; map_chain < 4; map_chain++) {
+                if (talk_vm.pending_sfx_id > 0) {
+                    play_ui_sfx(cfg->game_dir, (uint32_t)talk_vm.pending_sfx_id, &sfx_stream, cfg->master_volume, runtime_mute);
+                    talk_vm.pending_sfx_id = 0;
                 }
-                talk_vm.pending_bink_rel[0] = '\0';
-                if (bgm.stream) SDL_ResumeAudioStreamDevice(bgm.stream);
-                if (app_quit) break;
-            }
-            if (talk_vm.pending_map_id >= 0) {
-                uint32_t dst_mid = (uint32_t)talk_vm.pending_map_id;
-                int dtx = talk_vm.pending_tx;
-                int dty = talk_vm.pending_ty;
-                int ddir = talk_vm.pending_dir;
-                talk_vm.pending_map_id = -1;
-                if (run_fade_transition(window, renderer, 0, 140, &bgm) == 1) { app_quit = 1; break; }
-                PalLoadedMap next_map = {0};
-                if (vfs_load_lmf_map_by_id(cfg->game_dir, dst_mid, renderer, scale_mode, &next_map) == 0) {
-                    free_loaded_map(&map);
-                    map = next_map;
-                    pending_spawn_override = 1;
-                    spawn_override_tx = dtx;
-                    spawn_override_ty = dty;
-                    spawn_override_dir = ddir;
-                    need_setup_loaded_map = 1;
+                if (talk_vm.pending_bink_rel[0] != '\0') {
+                    SDL_PauseAudioStreamDevice(bgm.stream);
+                    if (pal_bink_play_file(window, renderer, cfg->game_dir, talk_vm.pending_bink_rel, cfg->master_volume, runtime_mute) == 1) {
+                        app_quit = 1;
+                    }
+                    talk_vm.pending_bink_rel[0] = '\0';
+                    if (bgm.stream) SDL_ResumeAudioStreamDevice(bgm.stream);
+                    if (app_quit) break;
+                    pending_fade_in_ms = 140;
+                    last_ns = SDL_GetTicksNS();
                 }
-                last_ns = SDL_GetTicksNS();
+                if (talk_vm.pending_map_id >= 0) {
+                    uint32_t dst_mid = (uint32_t)talk_vm.pending_map_id;
+                    int dtx = talk_vm.pending_tx;
+                    int dty = talk_vm.pending_ty;
+                    int ddir = talk_vm.pending_dir;
+                    talk_vm.pending_map_id = -1;
+                    if (pending_fade_in_ms == 0) {
+                        if (run_fade_transition(window, renderer, scene_rt, 0, 140, &bgm) == 1) {
+                            app_quit = 1;
+                            break;
+                        }
+                    }
+                    PalLoadedMap next_map = {0};
+                    if (vfs_load_lmf_map_by_id(cfg->game_dir, dst_mid, renderer, scale_mode, &next_map) == 0) {
+                        free_loaded_map(&map);
+                        map = next_map;
+                        pending_spawn_override = 1;
+                        spawn_override_tx = dtx;
+                        spawn_override_ty = dty;
+                        spawn_override_dir = ddir;
+                        need_setup_loaded_map = 1;
+                        pending_fade_in_ms = 140;
+                    }
+                    last_ns = SDL_GetTicksNS();
+                }
+                if (!need_setup_loaded_map) break;
+                need_setup_loaded_map = 0;
+                astar_count = 0;
+                astar_cursor = 0;
+                interact_target_npc_idx = -1;
+                int stx = 0, sty = 0, sdir = 1;
+                if (pending_spawn_override) {
+                    stx = spawn_override_tx;
+                    sty = spawn_override_ty;
+                    sdir = spawn_override_dir & 7;
+                    pending_spawn_override = 0;
+                } else {
+                    pick_map_spawn_tile(&map, &stx, &sty);
+                }
+                for (int p = 0; p < 4; p++) {
+                    party[p].px = stx << 4;
+                    party[p].py = sty << 4;
+                    party[p].dir = sdir;
+                    field_actor_set_sub(&party[p], cfg->game_dir,
+                                        kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u], sdir, 0);
+                }
+                for (int t = 0; t < 64; t++) {
+                    trail_x[t] = party[0].px;
+                    trail_y[t] = party[0].py;
+                    trail_dir[t] = sdir;
+                }
+                compute_field_camera(&map, party[0].px, party[0].py, &cam_x, &cam_y);
+                map_npc_actor_cnt = map.npc_count < 64 ? map.npc_count : 64;
+                memset(map_npcs, 0, sizeof(map_npcs));
+                for (int i = 0; i < map_npc_actor_cnt; i++) {
+                    const PalMapNpcDef *nd = &map.npcs[i];
+                    map_npcs[i].obj_id = nd->obj_id;
+                    map_npcs[i].talk_id = (world_state && nd->obj_id < PAL_OBJ_CAP && world_state->npc_talk_override[nd->obj_id] != 0u)
+                                              ? world_state->npc_talk_override[nd->obj_id]
+                                              : nd->talk_id;
+                    map_npcs[i].npc_flags = nd->flags;
+                    map_npcs[i].orig_sub_state = nd->sub_state;
+                    map_npcs[i].active = (nd->flags & 0x8000u) != 0 ? 1 : 0;
+                    if (world_state && nd->obj_id < PAL_OBJ_CAP) {
+                        if (world_state->npc_visibility_override[nd->obj_id] == 1u) map_npcs[i].active = 1;
+                        else if (world_state->npc_visibility_override[nd->obj_id] == 2u) map_npcs[i].active = 0;
+                    }
+                    map_npcs[i].px = (int)nd->tx << 4;
+                    map_npcs[i].py = (int)nd->ty << 4;
+                    map_npcs[i].dir = (int)(nd->dir & 7u);
+                    if (map_npcs[i].active) {
+                        field_actor_set_sub(&map_npcs[i], cfg->game_dir, nd->act_id, (int)nd->sub_state + (int)nd->dir, 1);
+                    }
+                }
+                if (strcmp(cur_bgm_playing, map.bgm_track) != 0) {
+                    pal_bgm_play_track(&bgm, cfg->game_dir, map.bgm_track, cfg->master_volume, runtime_mute);
+                    snprintf(cur_bgm_playing, sizeof(cur_bgm_playing), "%s", map.bgm_track);
+                }
+                if (map_banner_tex) SDL_DestroyTexture(map_banner_tex);
+                char banner_msg[128];
+                snprintf(banner_msg, sizeof(banner_msg), "%%C6%s %%C3(Map #%u)", map.title_utf8, map.map_id);
+                map_banner_tex = create_richtext_texture(renderer, banner_msg, 20.0f, 360, &map_banner_w, &map_banner_h);
+                map_banner_timer = 3.0f;
+                active_trig_id = pal_map_trigger_at_px(&map, party[0].px, party[0].py, 2);
+                last_stepped_trig_id = active_trig_id;
+
+                if (talk_vm.active) {
+                    pal_talk_vm_step(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, map_npc_actor_cnt, 0);
+                } else if (world_state) {
+                    for (int i = 0; i < map_npc_actor_cnt; i++) {
+                        if (map_npcs[i].active && (map_npcs[i].npc_flags & 0x20u) != 0u && map_npcs[i].talk_id > 0u) {
+                            if (pal_talk_vm_start(&talk_vm, cfg->game_dir, (int32_t)map_npcs[i].talk_id, map_npcs[i].obj_id) == 0) {
+                                show_dialogue = 0;
+                                pal_talk_vm_step(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, map_npc_actor_cnt, 0);
+                                break;
+                            }
+                        }
+                    }
+                }
             }
+            if (app_quit) break;
             if (talk_vm.active && talk_vm.dlg_visible && talk_vm.dlg_dirty) {
                 char rich_fmt[1536];
                 int mw = 540;
@@ -7281,6 +7350,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             }
         }
 
+        if (scene_rt) SDL_SetRenderTarget(renderer, scene_rt);
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
 
@@ -7313,18 +7383,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             }
         } else {
             /* Authentic SWD2k camera deadzone (304, 240) clamped to map pixels (0x41aab1) */
-            float target_cx = (float)(party[0].px - 304);
-            float target_cy = (float)(party[0].py - 240);
-            if (map.w_px > 640) {
-                if (target_cx < 0.0f) target_cx = 0.0f;
-                if (target_cx > (float)(map.w_px - 640)) target_cx = (float)(map.w_px - 640);
-            } else target_cx = -0.5f * (float)(640 - map.w_px);
-            if (map.h_px > 480) {
-                if (target_cy < 0.0f) target_cy = 0.0f;
-                if (target_cy > (float)(map.h_px - 480)) target_cy = (float)(map.h_px - 480);
-            } else target_cy = -0.5f * (float)(480 - map.h_px);
-            cam_x = target_cx;
-            cam_y = target_cy;
+            compute_field_camera(&map, party[0].px, party[0].py, &cam_x, &cam_y);
 
             /* Pass 0: Map Background Layer */
             SDL_FRect map_dst = {-cam_x, -cam_y, (float)map.w_px, (float)map.h_px};
@@ -7547,18 +7606,37 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 );
                 SDL_RenderDebugTextFormat(
                     renderer, 16.0f, 30.0f,
-                    "[WASD/Click] Move/NPC  [Space/E] Talk  [I] Menu  [M] Tour Maps  [[/]] Maps  [P] Party(%s)",
+                    "[WASD/Click] Move  [Shift] %s  [E/Space] Talk  [I] Menu  [P] Party:%s",
+                    run_mode_enabled ? "RUN" : "WALK",
                     party_follow_enabled ? "ON" : "OFF"
                 );
                 SDL_RenderDebugTextFormat(
                     renderer, 16.0f, 44.0f,
-                    "[G] Grid(%s)  [V] Swap Hero  [C] NoClip  [T] TalkSample  [B] Intro Bik  [Tab] HUD  [Esc] Title",
+                    "[M/[/]] Map [G] Grid:%s [V] Hero [C] Clip [T] Dlg [B] Bik [Tab] HUD [Esc]",
                     show_collision_grid ? "ON" : "OFF"
                 );
             }
         }
 
-        SDL_RenderPresent(renderer);
+        if (scene_rt) {
+            SDL_SetRenderTarget(renderer, NULL);
+        }
+        if (pending_fade_in_ms > 0) {
+            int fade_ms = pending_fade_in_ms;
+            pending_fade_in_ms = 0;
+            if (run_fade_transition(window, renderer, scene_rt, 1, (Uint32)fade_ms, &bgm) == 1) {
+                app_quit = 1;
+                break;
+            }
+            last_ns = SDL_GetTicksNS();
+        } else {
+            if (scene_rt) {
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                SDL_RenderClear(renderer);
+                SDL_RenderTexture(renderer, scene_rt, NULL, NULL);
+            }
+            SDL_RenderPresent(renderer);
+        }
     }
 
     SDL_ShowCursor();
@@ -7570,6 +7648,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         free(game_db);
     }
     free(world_state);
+    if (scene_rt) SDL_DestroyTexture(scene_rt);
     if (sfx_stream) SDL_DestroyAudioStream(sfx_stream);
     if (ver_tex) SDL_DestroyTexture(ver_tex);
     if (save_tex) SDL_DestroyTexture(save_tex);

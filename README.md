@@ -60,7 +60,7 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 | Input | Action |
 | --- | --- |
 | `WASD` / Arrow Keys | 8-direction movement with diagonal corner sliding |
-| `Shift` (hold) | Run (`action_base = 16`) |
+| `Shift` (press) | Toggle Walk / Run mode (`action_base = 8` / `16`) |
 | Left-Click on map / NPC | 8-direction A* pathfinding to clicked tile or auto-walk & talk to clicked NPC |
 | `Space` / `Return` / `E` | Interact with adjacent facing NPC/chest, advance active dialogue, or confirm selected choice / menu item |
 | `Up` / `Down` / `1`..`8` | Highlight / pick `%B` dialogue branch options when a prompt is open |
