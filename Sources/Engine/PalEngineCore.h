@@ -129,6 +129,23 @@ typedef struct {
     int32_t non_transparent_pixels;
 } PalRichTextMetrics;
 
+typedef struct {
+    int32_t map_id;
+    int32_t width_tiles;
+    int32_t height_tiles;
+    int32_t total_cells;
+    int32_t walkable_cells;
+    int32_t blocked_cells;
+    int32_t trigger_count;
+    int32_t fg_sprite_defs;
+    int32_t fg_sprite_instances;
+    int32_t npc_count;
+    int32_t astar_path_steps;
+    int32_t step_speed_px;
+    char map_title_utf8[64];
+    char bgm_track[64];
+} PalMapM2ProbeInfo;
+
 /** Query available SDL3 render drivers on macOS and check Metal availability (returns 1 if Metal is present). */
 int32_t pal_sdl3_query_metal_backend(char *out_drivers, int32_t out_cap);
 
@@ -160,7 +177,10 @@ int32_t pal_font_probe_rich_text(
 /** Launch interactive SDL3 + Metal runtime session reading directly from `cfg->game_dir` via VFS. */
 int32_t pal_sdl3_run_session(const PalLaunchConfig *cfg, char *out_err, int32_t err_cap);
 
-/** Non-interactive headless/hidden-window verification of Metal renderer and live VFS + M1 decoding. */
+/** Probe MSF3 walkability/triggers/occlusion, maps.dat metadata, and A* pathfinding for `map_id`. */
+int32_t pal_map_probe_m2(const char *game_dir, int32_t map_id, PalMapM2ProbeInfo *out_info);
+
+/** Non-interactive headless/hidden-window verification of Metal renderer and live VFS + M1/M2 decoding. */
 int32_t pal_sdl3_self_test(const char *game_dir);
 
 #ifdef __cplusplus

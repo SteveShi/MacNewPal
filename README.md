@@ -8,6 +8,17 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 
 ---
 
+## Milestone Roadmap
+
+| Milestone | Scope | Status |
+| --- | --- | --- |
+| **M0** | Native SwiftUI BYOD Launcher, 23-file VFS Signature Verifier, SDL3 Metal Window & LZO1X/ARLE Decoders | ✅ Completed |
+| **M1** | Bink Video (`.bik`), BGM Streamer, `.tsw` Color Keying, `.act` Action VM, CoreText Rich-Text & Title/Opening Sequence | ✅ Completed |
+| **M2** | Full `MSF3` Map Loader (`huge.lmf` + `huge2.lmf`), `maps.dat` Integration, 3-Bucket Y-Sorted Occlusion, 8-Dir `all_char.act` VM, A* Pathfinding, Camera Deadzone & 4-Hero Party Follower Chain | ✅ Completed |
+| **M3+** | `Talk.cpp` Script VM & Map Triggers, NPC Interaction, Menus/Inventory, `GFight1.dat` Combat & Save/Load | 🚧 Planned |
+
+---
+
 ## Architecture Overview
 
 1. **Native macOS Launcher (`Sources/App/`)**:
@@ -21,11 +32,14 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
    - C11 engine core (`PalEngineCore.c` / `PalEngineCore.h`) linked against `libSDL3` (targeting Apple **Metal** via `SDL_CreateRenderer(window, "metal")`), **FFmpeg** (`libavformat`, `libavcodec`, `libswscale`, `libswresample`, `libavutil`), **CoreText / CoreGraphics / CoreFoundation**, and macOS `libiconv` (`CP950 -> UTF-8`).
    - Direct archive streaming from original containers without extracting files to disk:
      - **Bink Video (`.bik`)** (`pal_bink_probe` & runtime player): Decodes `.bik` videos (such as `Video/begin.bik` at New Game start, while `Video/notice.bik` is verified by `--self-test` and reserved for the `talk2.dat` `talk_id=1439` post-game *Sword and Fairy 2* epilogue trailer) directly into Metal streaming textures with synchronized `SDL_AudioStream` audio playback.
-     - **BGM Audio Streamer** (`pal_bgm_probe` & runtime playback): Streams `Music/*.mp3` and `*.wav` (`M001.mp3`, `F001.mp3`, etc.) resampled via `libswresample` into 44.1 kHz stereo S16 PCM.
+     - **BGM Audio Streamer** (`pal_bgm_probe` & runtime playback): Streams `Music/*.mp3` and `*.wav` (`M001.mp3`, `M020.wav`, `F001.mp3`, etc.) resampled via `libswresample` into 44.1 kHz stereo S16 PCM.
      - **`.tsw` Sprites & ARLE Keying**: `0xABCD` magic, LZO1X + ARLE `0xFFFF`, 8-bit/16-bit RGB555 with transparent color keys (`0x319F` / `0x026B` decoded to `alpha = 0`), additive glow (`MA` via `SDL_BLENDMODE_ADD`), and archive-ID-routed lookup across `all_char`, `all_item`, `all_magic`, `all_sys`, `all_map1`, and `all_map2`.
-     - **`.act` Action Bytecode VM** (`pal_act_vm_init`, `pal_act_vm_step_tick`, `PalActVM`): 35-opcode 35 ms tick VM driving animations (`ON`/`NO`/`FR`/`DS`/`LP`/`AP`/`MA`/`AH`/`CS`).
+     - **`.act` Action Bytecode VM** (`pal_act_vm_init`, `pal_act_vm_step_tick`, `PalActVM`): 35-opcode 35 ms tick VM driving UI animations (`all_sys.act`) as well as 8-direction hero and NPC sprites (`all_char.act` — `001李逍遙`, `002趙靈兒`, `003林月如`, `004阿奴`: stand `0..7`, walk `8..15`, run `16..23`, `YX` hotspot anchor subtraction, `AP`/`DS`/`DE`/`VO`).
+     - **`MSF3` Map & 3-Bucket Compositor** (`pal_map_probe_m2`, `vfs_load_lmf_map_by_id`): Loads maps across `huge.lmf` (320 maps) and `huge2.lmf` (149 maps) with 16×16 background tiles, LZO1X walk/trigger grid (`walk_grid & 0x60000000` collision, `& 0xFF` trigger ID), trigger table, foreground ARLE occlusion sprites, and a 3-bucket Y-sorted compositor (`below`, `sort_y`, `above`).
+     - **`maps.dat` World Integration**: Uses `slot 19` (`CP950 -> UTF-8` fade-in map title banners), `slot 1` (double-indirection BGM track lookup indexed by `hdr[0x10c]` / `slot 2`), `slot 2` (`map_id` -> `msf3_id` + `step_speed_px`), and `slot 0` (26-byte NPC placement records filtered by `flags & 0x8000`).
+     - **Field Movement, Camera & Party Chain**: Authentic `(304, 240)` camera deadzone clamped to map dimensions, diagonal corner-sliding collision, click-to-move 8-direction A* pathfinding, and 4-hero party follower chain (`32`/`64`-step trail buffer).
      - **CoreText Rich-Text Renderer** (`pal_font_probe_rich_text`, `PalRichTextMetrics`): Parses SWD2k formatting tags (`%N`, `%C0`..`%C9` palette, `%S`, `%K`) into crisp Chinese glyph textures with drop shadows.
-     - **Title Screen → Opening Sequence → Field/Dialogue Loop**: Launches directly into the interactive bamboo-scroll Title Screen (`all_sys.act` `10000` sub-actions `90..93` -> `all_sys.tsw` `54..57`, `id=36` cursor, `Music/M001.mp3`); clicking "新的故事" executes the authentic `talk1.dat` (`talk_id = 100`) sequence—splash maps `532` -> `533` -> `Video/begin.bik` -> opening scene map `501` (`羅剎峰`) with `talk1.dat` dialogue boxes (`all_sys.tsw` `82`/`51`).
+     - **Title Screen → Opening Sequence → Field Loop**: Launches into the bamboo-scroll Title Screen (`all_sys.act` `10000`, `Music/M001.mp3`); "新的故事" executes splash maps `532` -> `533` -> `Video/begin.bik` -> opening scene `501` (`羅剎峰`) with interactive field movement and map switching.
      - **`all.snd` SFX & `MZ + 0x200` Databases**: RIFF passthrough / 44-byte PCM WAV reconstruction and in-memory TLV parsing (`ghero.dat`, `gmon.dat`, `gitem.dat`, `gmagic.dat`, `GFight1.dat`, `namex.dat`, `maps.dat`, `talk1.dat`).
 
 3. **Reverse Engineering Specification & Verification Toolkit**:
@@ -34,6 +48,26 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
      - `Tools/pal_unpack.py`: Manifest generator, LZO1X/ARLE `.tsw` PNG extractor, 35-opcode `.act` disassembler, `all.snd` WAV extractor, and `MSF3` `.lmf` map renderer.
      - `Tools/pal_db_unpack.py`: `0x7F` TLV database dumper (annotating all `88` `GFight` opcodes), `Talk.cpp` bytecode disassembler, `maps.dat` / `namex.dat` / `path1..10.dat` parser.
      - `Tools/_lzo_accel.c`: Standalone C LZO1X shared library accelerator for Python tools.
+
+---
+
+## Interactive Field Controls (`PAL_SCENE_FIELD`)
+
+| Input | Action |
+| --- | --- |
+| `WASD` / Arrow Keys | 8-direction movement with diagonal corner sliding |
+| `Shift` (hold) | Run (`action_base = 16`) |
+| Left-Click on map | 8-direction A* pathfinding to clicked tile |
+| `M` | Cycle featured tour maps (`501`, `1`, `2`, `3`, `502`) |
+| `[` / `]` | Previous / next map in the current `.lmf` archive (`huge.lmf` / `huge2.lmf`) |
+| `P` | Toggle 4-hero party follower chain |
+| `V` | Swap lead hero across `001李逍遙`, `002趙靈兒`, `003林月如`, `004阿奴` |
+| `G` | Toggle walkability / trigger / footprint debug overlay |
+| `C` | Toggle NoClip walk-through mode |
+| `T` / `Space` / `Return` | Toggle CoreText dialogue box / advance dialogue line |
+| `B` | Replay `Video/begin.bik` |
+| `Tab` | Toggle debug HUD |
+| `Esc` | Return to Title Screen |
 
 ---
 
@@ -54,4 +88,4 @@ xcodebuild -project NewPal.xcodeproj -scheme NewPal -configuration Release -deri
 ./build/Build/Products/Release/NewPal.app/Contents/MacOS/NewPal --self-test /path/to/PalGame
 ```
 
-A valid `PalGame` directory reports `Validation: 23/23 (is_valid=1)`, `Renderer: metal`, verified FFmpeg Bink/BGM probes, `.act` VM stepping, CoreText rich-text metrics, decoded map/sprite/action/audio/hero diagnostics, and exits with status `0`.
+A valid `PalGame` directory reports `Validation: 23/23 (is_valid=1)`, `Renderer: metal`, verified FFmpeg Bink/BGM probes, UI and character `.act` VM stepping, `MSF3` + `maps.dat` + A* probes (`MapM2[1]`, `MapM2[2]`, `MapM2[501]`), CoreText rich-text metrics, decoded map/sprite/action/audio/hero diagnostics, and `[SelfTest] ALL CHECKS PASSED.` with exit code `0`.

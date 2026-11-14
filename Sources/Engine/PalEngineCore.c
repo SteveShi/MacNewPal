@@ -1072,14 +1072,67 @@ int32_t pal_vfs_validate_directory(const char *game_dir, PalValidationReport *re
  * ========================================================================= */
 
 typedef struct {
+    uint32_t id;
+    uint32_t talk_id;
+    uint32_t param;
+    uint32_t flag_id;
+} PalMapTrigger;
+
+typedef struct {
+    uint16_t sid;
+    uint16_t flags;
+    int w;
+    int h;
+    SDL_Texture *tex;
+} PalMapFgDef;
+
+typedef struct {
+    uint16_t sid;
+    int16_t px;
+    int16_t py_top;
+    int16_t sort_y;
+    uint8_t layer_bucket; /* 2=below actors, 0=Y-sorted with actors, 1=above actors (0x443800) */
+    uint8_t reserved;
+} PalMapFgInst;
+
+typedef struct {
+    uint16_t obj_id;
+    uint16_t act_id;
+    uint16_t sub_state;
+    uint16_t dir;
+    uint16_t tx;
+    uint16_t ty;
+    uint16_t talk_id;
+    uint16_t flags;
+} PalMapNpcDef;
+
+typedef struct {
     uint32_t map_id;
+    uint32_t msf3_id;
+    uint16_t music_idx;
+    int map_idx;
     int w_tiles;
     int h_tiles;
     int tile_sz;
     int w_px;
     int h_px;
     int total_maps;
+    int step_speed_px;
     SDL_Texture *texture;
+    uint32_t *walk_grid;
+    int walkable_count;
+    int blocked_count;
+    PalMapTrigger *triggers;
+    int trigger_count;
+    PalMapFgDef *fg_defs;
+    int fg_def_count;
+    PalMapFgInst *fg_insts;
+    int fg_inst_count;
+    PalMapNpcDef *npcs;
+    int npc_count;
+    char title_utf8[64];
+    char bgm_track[64];
+    char lmf_file[16];
 } PalLoadedMap;
 
 typedef struct {
@@ -1092,11 +1145,185 @@ typedef struct {
     SDL_Texture **frames;
 } PalLoadedSprite;
 
+static void free_loaded_map(PalLoadedMap *m) {
+    if (!m) return;
+    if (m->texture) SDL_DestroyTexture(m->texture);
+    if (m->fg_defs) {
+        for (int i = 0; i < m->fg_def_count; i++) {
+            if (m->fg_defs[i].tex) SDL_DestroyTexture(m->fg_defs[i].tex);
+        }
+        free(m->fg_defs);
+    }
+    free(m->walk_grid);
+    free(m->triggers);
+    free(m->fg_insts);
+    free(m->npcs);
+    memset(m, 0, sizeof(*m));
+}
+
+static void vfs_lookup_map_metadata(
+    const char *game_dir, uint32_t query_map_id,
+    uint32_t *out_msf3_id, PalLoadedMap *out_map
+) {
+    if (out_msf3_id) *out_msf3_id = query_map_id;
+    if (out_map) {
+        if (out_map->title_utf8[0] == '\0') {
+            snprintf(out_map->title_utf8, sizeof(out_map->title_utf8), "Map #%u", query_map_id);
+        }
+        if (out_map->bgm_track[0] == '\0') {
+            snprintf(out_map->bgm_track, sizeof(out_map->bgm_track), "Music/F001.mp3");
+        }
+        if (out_map->step_speed_px <= 0) out_map->step_speed_px = 4;
+    }
+
+    char path[1200];
+    join_path(path, sizeof(path), game_dir, "maps.dat");
+    size_t len = 0;
+    uint8_t *buf = read_entire_file(path, &len);
+    if (!buf) return;
+
+    if (len < PAL_MZ_HEADER_SIZE + 104 || buf[0] != 'M' || buf[1] != 'Z') {
+        free(buf);
+        return;
+    }
+    const uint8_t *p = buf + PAL_MZ_HEADER_SIZE;
+    size_t plen = len - PAL_MZ_HEADER_SIZE;
+    if (rd_u32(p) != 100u) {
+        free(buf);
+        return;
+    }
+
+    uint32_t slots[25] = {0};
+    for (int i = 0; i < 25; i++) slots[i] = rd_u32(p + 4 + (size_t)i * 4);
+
+    uint16_t slot2_bgm_idx = 0;
+
+    /* Slot 2: 14-byte records [map_id, msf3_id, rec2(bgm_idx), rec3(step_speed), ...] */
+    if (slots[2] > 0 && slots[2] + 14 <= plen) {
+        size_t pos = slots[2];
+        while (pos + 14 <= plen) {
+            uint16_t mid = rd_u16(p + pos);
+            if (mid == 0xFFFFu) break;
+            if ((uint32_t)mid == query_map_id) {
+                uint16_t msf_id = rd_u16(p + pos + 2);
+                uint16_t w2 = rd_u16(p + pos + 4);
+                uint16_t w3 = rd_u16(p + pos + 6);
+                if (out_msf3_id && msf_id != 0xFFFFu && msf_id > 0) *out_msf3_id = msf_id;
+                slot2_bgm_idx = w2 & 0x0Fu;
+                if (out_map) {
+                    uint16_t spd = w3 & 0x0Fu;
+                    if (spd == 1 || spd == 2 || spd == 4 || spd == 8 || spd == 16) {
+                        out_map->step_speed_px = (int)spd;
+                    }
+                }
+                break;
+            }
+            pos += 14;
+        }
+    }
+
+    if (!out_map) {
+        free(buf);
+        return;
+    }
+
+    /* Slot 19: packed (uint16 map_id, cp950 title, "%Q") entries (0x41d793) */
+    if (slots[19] > 0 && slots[19] + 2 <= plen) {
+        size_t pos = slots[19];
+        while (pos + 2 <= plen) {
+            uint16_t mid = rd_u16(p + pos);
+            pos += 2;
+            if (mid == 0xFFFFu) break;
+            size_t start = pos;
+            while (pos + 1 < plen && !(p[pos] == '%' && p[pos + 1] == 'Q')) pos++;
+            if (pos + 1 >= plen) break;
+            if ((uint32_t)mid == query_map_id) {
+                char utf8[64] = {0};
+                cp950_to_utf8(p + start, pos - start, utf8, sizeof(utf8));
+                if (utf8[0] != '\0') {
+                    snprintf(out_map->title_utf8, sizeof(out_map->title_utf8), "%s", utf8);
+                }
+                break;
+            }
+            pos += 2;
+        }
+    }
+
+    /* Slot 1: double-indirection BGM string table (0x41d335) indexed by MSF3 hdr[0x10c] or slot2_bgm_idx */
+    uint32_t eff_bgm_idx = out_map->music_idx > 0 ? (uint32_t)out_map->music_idx : (uint32_t)slot2_bgm_idx;
+    if (eff_bgm_idx > 0 && slots[1] > 0 && slots[1] + 4 <= plen) {
+        uint32_t tbl_off = rd_u32(p + slots[1]);
+        if ((uint64_t)tbl_off + (uint64_t)eff_bgm_idx * 4 + 4 <= plen) {
+            uint32_t str_off = rd_u32(p + tbl_off + (size_t)eff_bgm_idx * 4);
+            if ((uint64_t)str_off + 6 <= plen) {
+                char fname[48] = {0};
+                size_t k = 0;
+                while (k + 1 < sizeof(fname) && str_off + 4 + k < plen) {
+                    uint8_t ch = p[str_off + 4 + k];
+                    if (ch == 0) break;
+                    fname[k++] = (char)ch;
+                }
+                fname[k] = '\0';
+                if (strchr(fname, '.') != NULL) {
+                    snprintf(out_map->bgm_track, sizeof(out_map->bgm_track), "Music/%s", fname);
+                }
+            }
+        }
+    }
+
+    /* Slot 0: NPC & map object placement table (26 bytes per record, 0x4197a6) */
+    if (!out_map->npcs && slots[0] > 0 && slots[0] + 26 <= plen) {
+        size_t pos = slots[0];
+        int match_cnt = 0;
+        while (pos + 26 <= plen) {
+            int16_t mid = rd_i16(p + pos);
+            if (mid == -1) break;
+            if ((uint32_t)(uint16_t)mid == query_map_id) {
+                uint16_t obj_id = rd_u16(p + pos + 2);
+                uint16_t act_id = rd_u16(p + pos + 4);
+                if (obj_id != 10000u && obj_id != 10001u && act_id != 0) match_cnt++;
+            }
+            pos += 26;
+        }
+        if (match_cnt > 0) {
+            out_map->npcs = (PalMapNpcDef *)calloc((size_t)match_cnt, sizeof(PalMapNpcDef));
+            if (out_map->npcs) {
+                pos = slots[0];
+                int n = 0;
+                while (pos + 26 <= plen && n < match_cnt) {
+                    int16_t mid = rd_i16(p + pos);
+                    if (mid == -1) break;
+                    if ((uint32_t)(uint16_t)mid == query_map_id) {
+                        uint16_t obj_id = rd_u16(p + pos + 2);
+                        uint16_t act_id = rd_u16(p + pos + 4);
+                        if (obj_id != 10000u && obj_id != 10001u && act_id != 0) {
+                            PalMapNpcDef *nd = &out_map->npcs[n++];
+                            nd->obj_id = obj_id;
+                            nd->act_id = act_id;
+                            nd->sub_state = rd_u16(p + pos + 6);
+                            nd->dir = rd_u16(p + pos + 8);
+                            nd->tx = rd_u16(p + pos + 10);
+                            nd->ty = rd_u16(p + pos + 12);
+                            nd->talk_id = rd_u16(p + pos + 14);
+                            nd->flags = rd_u16(p + pos + 20);
+                        }
+                    }
+                    pos += 26;
+                }
+                out_map->npc_count = n;
+            }
+        }
+    }
+
+    free(buf);
+}
+
 static int vfs_load_lmf_map(
     const char *game_dir, const char *lmf_name, int map_idx,
     SDL_Renderer *renderer, SDL_ScaleMode scale_mode, PalLoadedMap *out_map
 ) {
     memset(out_map, 0, sizeof(*out_map));
+    snprintf(out_map->lmf_file, sizeof(out_map->lmf_file), "%s", lmf_name ? lmf_name : "huge.lmf");
     char path[1200];
     join_path(path, sizeof(path), game_dir, lmf_name);
     FILE *f = fopen(path, "rb");
@@ -1116,7 +1343,10 @@ static int vfs_load_lmf_map(
     PalLmfEntry me = entries[map_idx];
     free(entries);
     out_map->total_maps = cnt;
+    out_map->map_idx = map_idx;
     out_map->map_id = me.id;
+    out_map->msf3_id = me.id;
+    out_map->step_speed_px = 4;
 
     uint8_t msf_hdr[4 + 0x400];
     if (read_file_slice(f, me.offset, msf_hdr, sizeof(msf_hdr)) != 0 || memcmp(msf_hdr, "MSF3", 4) != 0) {
@@ -1127,112 +1357,576 @@ static int vfs_load_lmf_map(
     uint16_t w_tiles = rd_u16(hdr + 0x100);
     uint16_t h_tiles = rd_u16(hdr + 0x102);
     uint16_t tile_sz = rd_u16(hdr + 0x104);
-    uint16_t bg_type = rd_u16(hdr + 0x108);
+    uint16_t music_idx = rd_u16(hdr + 0x10c);
+    uint32_t walk_off = rd_u32(hdr + 0x08);
+    uint32_t walk_len = rd_u32(hdr + 0x0c);
+    uint32_t trig_off = rd_u32(hdr + 0x10);
+    uint32_t trig_len = rd_u32(hdr + 0x14);
+    uint32_t c18_off  = rd_u32(hdr + 0x18);
+    uint32_t c18_len  = rd_u32(hdr + 0x1c);
+    uint32_t c20_off  = rd_u32(hdr + 0x20);
+    uint32_t c20_len  = rd_u32(hdr + 0x24);
     uint32_t bg_chunk_off = rd_u32(hdr + 0x38);
-    (void)bg_type;
 
     if (bg_chunk_off == 0 || tile_sz == 0 || w_tiles == 0 || h_tiles == 0) {
         fclose(f);
         return -1;
     }
+    out_map->music_idx = music_idx;
 
     size_t layer_tiles = (size_t)w_tiles * (size_t)h_tiles;
-    uint8_t *tm_raw = (uint8_t *)malloc(layer_tiles * 4);
-    uint8_t bg_hdr[0x400];
-    if (!tm_raw ||
-        read_file_slice(f, (uint64_t)me.offset + 0x118, tm_raw, layer_tiles * 4) != 0 ||
-        read_file_slice(f, (uint64_t)me.offset + bg_chunk_off, bg_hdr, sizeof(bg_hdr)) != 0) {
-        free(tm_raw);
-        fclose(f);
-        return -1;
-    }
-
-    uint32_t block_size = rd_u32(bg_hdr + 4);
-    size_t pool_cap = 0, pool_used = 0;
-    uint8_t *tile_pool = NULL;
-
-    for (size_t k = 0; 0x10 + k * 8 + 8 <= sizeof(bg_hdr); k++) {
-        uint32_t b_off = rd_u32(bg_hdr + 0x10 + k * 8);
-        uint32_t b_sz = rd_u32(bg_hdr + 0x14 + k * 8);
-        if (b_off == 0 && b_sz == 0) break;
-        if ((uint64_t)me.offset + b_off + b_sz > fsize) break;
-
-        uint8_t *comp = (uint8_t *)malloc(b_sz);
-        if (!comp || read_file_slice(f, (uint64_t)me.offset + b_off, comp, b_sz) != 0) {
-            free(comp);
-            break;
-        }
-        size_t decomp_len = 0;
-        uint8_t *decomp = lzo_alloc_decompress(comp, b_sz, block_size, 0, &decomp_len);
-        free(comp);
-        if (!decomp) break;
-
-        if (pool_used + decomp_len > pool_cap) {
-            size_t new_cap = (pool_cap == 0 ? 65536 : pool_cap * 2);
-            while (new_cap < pool_used + decomp_len) new_cap *= 2;
-            uint8_t *grown = (uint8_t *)realloc(tile_pool, new_cap);
-            if (!grown) {
-                free(decomp);
-                break;
-            }
-            tile_pool = grown;
-            pool_cap = new_cap;
-        }
-        memcpy(tile_pool + pool_used, decomp, decomp_len);
-        pool_used += decomp_len;
-        free(decomp);
-    }
-    fclose(f);
-
-    size_t tile_bytes = (size_t)tile_sz * (size_t)tile_sz * 2;
-    size_t avail_tiles = tile_bytes > 0 ? pool_used / tile_bytes : 0;
     int pw = (int)w_tiles * (int)tile_sz;
     int ph = (int)h_tiles * (int)tile_sz;
-    uint8_t *rgba = (uint8_t *)calloc((size_t)pw * (size_t)ph, 4);
 
-    if (rgba && avail_tiles > 0) {
-        size_t row_stride = (size_t)pw * 4;
-        for (int ty = 0; ty < (int)h_tiles; ty++) {
-            for (int tx = 0; tx < (int)w_tiles; tx++) {
-                uint16_t tid = (uint16_t)(rd_u32(tm_raw + ((size_t)ty * w_tiles + (size_t)tx) * 4) & 0xFFFFu);
-                if (tid >= avail_tiles) continue;
-                const uint8_t *src_tile = tile_pool + (size_t)tid * tile_bytes;
-                for (int py = 0; py < (int)tile_sz; py++) {
-                    uint8_t *dst_row = rgba + ((size_t)ty * tile_sz + (size_t)py) * row_stride + (size_t)tx * tile_sz * 4;
-                    const uint8_t *src_row = src_tile + (size_t)py * tile_sz * 2;
-                    for (int px = 0; px < (int)tile_sz; px++) {
-                        rgb555_write_rgba(dst_row + (size_t)px * 4, rd_u16(src_row + (size_t)px * 2), 255);
+    /* 1. Layer 0 Tilemap + LZO1X Tile Pool -> Background SDL_Texture (only when renderer != NULL) */
+    if (renderer) {
+        uint8_t *tm_raw = (uint8_t *)malloc(layer_tiles * 4);
+        uint8_t bg_hdr[0x400];
+        if (!tm_raw ||
+            read_file_slice(f, (uint64_t)me.offset + 0x118, tm_raw, layer_tiles * 4) != 0 ||
+            read_file_slice(f, (uint64_t)me.offset + bg_chunk_off, bg_hdr, sizeof(bg_hdr)) != 0) {
+            free(tm_raw);
+            fclose(f);
+            free_loaded_map(out_map);
+            return -1;
+        }
+
+        uint32_t block_size = rd_u32(bg_hdr + 4);
+        size_t pool_cap = 0, pool_used = 0;
+        uint8_t *tile_pool = NULL;
+
+        for (size_t k = 0; 0x10 + k * 8 + 8 <= sizeof(bg_hdr); k++) {
+            uint32_t b_off = rd_u32(bg_hdr + 0x10 + k * 8);
+            uint32_t b_sz = rd_u32(bg_hdr + 0x14 + k * 8);
+            if (b_off == 0 && b_sz == 0) break;
+            if ((uint64_t)me.offset + b_off + b_sz > fsize) break;
+
+            uint8_t *comp = (uint8_t *)malloc(b_sz);
+            if (!comp || read_file_slice(f, (uint64_t)me.offset + b_off, comp, b_sz) != 0) {
+                free(comp);
+                break;
+            }
+            size_t decomp_len = 0;
+            uint8_t *decomp = lzo_alloc_decompress(comp, b_sz, block_size, 0, &decomp_len);
+            free(comp);
+            if (!decomp) break;
+
+            if (pool_used + decomp_len > pool_cap) {
+                size_t new_cap = (pool_cap == 0 ? 65536 : pool_cap * 2);
+                while (new_cap < pool_used + decomp_len) new_cap *= 2;
+                uint8_t *grown = (uint8_t *)realloc(tile_pool, new_cap);
+                if (!grown) {
+                    free(decomp);
+                    break;
+                }
+                tile_pool = grown;
+                pool_cap = new_cap;
+            }
+            memcpy(tile_pool + pool_used, decomp, decomp_len);
+            pool_used += decomp_len;
+            free(decomp);
+        }
+
+        size_t tile_bytes = (size_t)tile_sz * (size_t)tile_sz * 2;
+        size_t avail_tiles = tile_bytes > 0 ? pool_used / tile_bytes : 0;
+        uint8_t *rgba = (uint8_t *)calloc((size_t)pw * (size_t)ph, 4);
+
+        if (rgba && avail_tiles > 0) {
+            size_t row_stride = (size_t)pw * 4;
+            for (int ty = 0; ty < (int)h_tiles; ty++) {
+                for (int tx = 0; tx < (int)w_tiles; tx++) {
+                    uint16_t tid = (uint16_t)(rd_u32(tm_raw + ((size_t)ty * w_tiles + (size_t)tx) * 4) & 0xFFFFu);
+                    if (tid >= avail_tiles) continue;
+                    const uint8_t *src_tile = tile_pool + (size_t)tid * tile_bytes;
+                    for (int py = 0; py < (int)tile_sz; py++) {
+                        uint8_t *dst_row = rgba + ((size_t)ty * tile_sz + (size_t)py) * row_stride + (size_t)tx * tile_sz * 4;
+                        const uint8_t *src_row = src_tile + (size_t)py * tile_sz * 2;
+                        for (int px = 0; px < (int)tile_sz; px++) {
+                            rgb555_write_rgba(dst_row + (size_t)px * 4, rd_u16(src_row + (size_t)px * 2), 255);
+                        }
                     }
                 }
             }
         }
+        free(tile_pool);
+        free(tm_raw);
+        if (!rgba) {
+            fclose(f);
+            free_loaded_map(out_map);
+            return -1;
+        }
+        SDL_Texture *tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, pw, ph);
+        if (tex) {
+            SDL_UpdateTexture(tex, NULL, rgba, pw * 4);
+            SDL_SetTextureScaleMode(tex, scale_mode);
+        }
+        free(rgba);
+        if (!tex) {
+            fclose(f);
+            free_loaded_map(out_map);
+            return -1;
+        }
+        out_map->texture = tex;
     }
 
-    free(tile_pool);
-    free(tm_raw);
-
-    if (!rgba) return -1;
-
-    SDL_Texture *tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, pw, ph);
-    if (tex) {
-        SDL_UpdateTexture(tex, NULL, rgba, pw * 4);
-        SDL_SetTextureScaleMode(tex, scale_mode);
+    /* 2. Walkability & Trigger Grid (Chunk +0x08 -> w_tiles * h_tiles * 4 bytes) */
+    if (walk_off > 0 && walk_len > 0 && (uint64_t)me.offset + walk_off + walk_len <= fsize) {
+        uint8_t *wcomp = (uint8_t *)malloc(walk_len);
+        if (wcomp && read_file_slice(f, (uint64_t)me.offset + walk_off, wcomp, walk_len) == 0) {
+            size_t decomp_len = 0;
+            uint8_t *wdec = lzo_alloc_decompress(wcomp, walk_len, layer_tiles * 4, 0, &decomp_len);
+            if (wdec && decomp_len >= layer_tiles * 4) {
+                out_map->walk_grid = (uint32_t *)malloc(layer_tiles * sizeof(uint32_t));
+                if (out_map->walk_grid) {
+                    int walk_c = 0, block_c = 0;
+                    for (size_t i = 0; i < layer_tiles; i++) {
+                        uint32_t cell = rd_u32(wdec + i * 4);
+                        out_map->walk_grid[i] = cell;
+                        if ((cell & 0x60000000u) != 0) block_c++;
+                        else walk_c++;
+                    }
+                    out_map->walkable_count = walk_c;
+                    out_map->blocked_count = block_c;
+                }
+            }
+            free(wdec);
+        }
+        free(wcomp);
     }
-    free(rgba);
-    if (!tex) return -1;
+
+    /* 3. Trigger Definitions (Chunk +0x10 -> count + count * 48 bytes) */
+    if (trig_off > 0 && trig_len >= 4 && (uint64_t)me.offset + trig_off + trig_len <= fsize) {
+        uint8_t *tbuf = (uint8_t *)malloc(trig_len);
+        if (tbuf && read_file_slice(f, (uint64_t)me.offset + trig_off, tbuf, trig_len) == 0) {
+            uint32_t ntrig = rd_u32(tbuf);
+            if (ntrig > 0 && (uint64_t)ntrig * 48 + 4 <= trig_len) {
+                out_map->triggers = (PalMapTrigger *)calloc(ntrig, sizeof(PalMapTrigger));
+                if (out_map->triggers) {
+                    for (uint32_t t = 0; t < ntrig; t++) {
+                        const uint8_t *rec = tbuf + 4 + (size_t)t * 48;
+                        out_map->triggers[t].id = rd_u32(rec + 0);
+                        out_map->triggers[t].talk_id = rd_u32(rec + 4);
+                        out_map->triggers[t].param = rd_u32(rec + 8);
+                        out_map->triggers[t].flag_id = rd_u32(rec + 12);
+                    }
+                    out_map->trigger_count = (int)ntrig;
+                }
+            }
+        }
+        free(tbuf);
+    }
+
+    /* 4. Foreground Occlusion Sprite Definitions (Chunk +0x18 -> u16 n18 + recs @ +8) */
+    if (c18_off > 0 && c18_len >= 8 && (uint64_t)me.offset + c18_off + c18_len <= fsize) {
+        uint8_t *cbuf = (uint8_t *)malloc(c18_len);
+        if (cbuf && read_file_slice(f, (uint64_t)me.offset + c18_off, cbuf, c18_len) == 0) {
+            uint16_t n18 = rd_u16(cbuf);
+            if (n18 > 0 && 8 + (size_t)n18 * 16 <= c18_len) {
+                out_map->fg_defs = (PalMapFgDef *)calloc(n18, sizeof(PalMapFgDef));
+                if (out_map->fg_defs) {
+                    out_map->fg_def_count = (int)n18;
+                    for (uint16_t k = 0; k < n18; k++) {
+                        const uint8_t *rec = cbuf + 8 + (size_t)k * 16;
+                        uint32_t soff = rd_u32(rec + 0);
+                        uint32_t csz1 = rd_u32(rec + 4);
+                        uint32_t csz2 = rd_u32(rec + 8);
+                        uint16_t sid = rd_u16(rec + 12);
+                        uint16_t sflg = rd_u16(rec + 14);
+                        out_map->fg_defs[k].sid = sid;
+                        out_map->fg_defs[k].flags = sflg;
+                        if (renderer && soff > 0 && csz1 > 0 && csz2 >= 8 &&
+                            (uint64_t)me.offset + soff + csz1 <= fsize) {
+                            uint8_t *scomp = (uint8_t *)malloc(csz1);
+                            if (scomp && read_file_slice(f, (uint64_t)me.offset + soff, scomp, csz1) == 0) {
+                                size_t dec_len = 0;
+                                uint8_t *sdec = lzo_alloc_decompress(scomp, csz1, csz2, 1, &dec_len);
+                                if (sdec && dec_len >= 8 && rd_u16(sdec) == 0xFFFFu) {
+                                    uint16_t sw = rd_u16(sdec + 2);
+                                    uint16_t sh = rd_u16(sdec + 4);
+                                    uint16_t sbpp = rd_u16(sdec + 6) & 0x3FFFu;
+                                    if (sw > 0 && sh > 0 && (sbpp == 16 || sbpp == 8)) {
+                                        uint8_t *srgba = (uint8_t *)calloc((size_t)sw * (size_t)sh, 4);
+                                        if (srgba) {
+                                            decode_arle_to_rgba(sdec, dec_len, sw, sh, sbpp, NULL, NULL, 0, srgba);
+                                            SDL_Texture *stex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, sw, sh);
+                                            if (stex) {
+                                                SDL_UpdateTexture(stex, NULL, srgba, sw * 4);
+                                                SDL_SetTextureScaleMode(stex, scale_mode);
+                                                SDL_SetTextureBlendMode(stex, SDL_BLENDMODE_BLEND);
+                                                out_map->fg_defs[k].w = sw;
+                                                out_map->fg_defs[k].h = sh;
+                                                out_map->fg_defs[k].tex = stex;
+                                            }
+                                            free(srgba);
+                                        }
+                                    }
+                                }
+                                free(sdec);
+                            }
+                            free(scomp);
+                        }
+                    }
+                }
+            }
+        }
+        free(cbuf);
+    }
+
+    /* 5. Foreground Occlusion Sprite Instances (Chunk +0x20 -> u16 n20 + recs @ +8) */
+    if (c20_off > 0 && c20_len >= 8 && (uint64_t)me.offset + c20_off + c20_len <= fsize) {
+        uint8_t *ibuf = (uint8_t *)malloc(c20_len);
+        if (ibuf && read_file_slice(f, (uint64_t)me.offset + c20_off, ibuf, c20_len) == 0) {
+            uint16_t n20 = rd_u16(ibuf);
+            if (n20 > 0 && 8 + (size_t)n20 * 16 <= c20_len) {
+                out_map->fg_insts = (PalMapFgInst *)calloc(n20, sizeof(PalMapFgInst));
+                if (out_map->fg_insts) {
+                    static const uint8_t kPrioMap[4] = {2, 0, 1, 0};
+                    for (uint16_t k = 0; k < n20; k++) {
+                        const uint8_t *rec = ibuf + 8 + (size_t)k * 16;
+                        PalMapFgInst *inst = &out_map->fg_insts[k];
+                        inst->sid = rd_u16(rec + 0);
+                        inst->px = rd_i16(rec + 2);
+                        inst->py_top = rd_i16(rec + 4);
+                        inst->sort_y = rd_i16(rec + 8);
+                        uint16_t lflg = rd_u16(rec + 10);
+                        inst->layer_bucket = kPrioMap[(lflg & 0x300u) >> 8];
+                    }
+                    out_map->fg_inst_count = (int)n20;
+                }
+            }
+        }
+        free(ibuf);
+    }
+
+    fclose(f);
 
     out_map->w_tiles = w_tiles;
     out_map->h_tiles = h_tiles;
     out_map->tile_sz = tile_sz;
     out_map->w_px = pw;
     out_map->h_px = ph;
-    out_map->texture = tex;
+
+    vfs_lookup_map_metadata(game_dir, out_map->map_id, NULL, out_map);
     return 0;
 }
 
-static void free_loaded_map(PalLoadedMap *m) {
-    if (m->texture) SDL_DestroyTexture(m->texture);
-    memset(m, 0, sizeof(*m));
+static int find_lmf_entry_by_id(const char *game_dir, const char *lmf_name, uint32_t target_id) {
+    char path[1200];
+    join_path(path, sizeof(path), game_dir, lmf_name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    uint64_t fsize = get_file_size_fp(f);
+    PalLmfEntry *entries = NULL;
+    int cnt = 0;
+    int found = -1;
+    if (read_lmf_directory(f, fsize, &entries, &cnt) == 0 && cnt > 0) {
+        for (int i = 0; i < cnt; i++) {
+            if (entries[i].id == target_id) {
+                found = i;
+                break;
+            }
+        }
+    }
+    free(entries);
+    fclose(f);
+    return found;
+}
+
+static int vfs_load_lmf_map_by_id(
+    const char *game_dir, uint32_t map_id,
+    SDL_Renderer *renderer, SDL_ScaleMode scale_mode, PalLoadedMap *out_map
+) {
+    uint32_t msf3_id = map_id;
+    vfs_lookup_map_metadata(game_dir, map_id, &msf3_id, NULL);
+
+    static const char *const kLmfArchives[2] = {"huge.lmf", "huge2.lmf"};
+    for (int a = 0; a < 2; a++) {
+        int idx = find_lmf_entry_by_id(game_dir, kLmfArchives[a], msf3_id);
+        if (idx >= 0) {
+            if (vfs_load_lmf_map(game_dir, kLmfArchives[a], idx, renderer, scale_mode, out_map) == 0) {
+                if (out_map->map_id != map_id) {
+                    out_map->map_id = map_id;
+                    free(out_map->npcs);
+                    out_map->npcs = NULL;
+                    out_map->npc_count = 0;
+                    vfs_lookup_map_metadata(game_dir, map_id, NULL, out_map);
+                }
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
+/* =========================================================================
+ * M2 Walkability, Collision, Diagonal Sliding & A* Grid Pathfinding
+ * ========================================================================= */
+
+static int pal_map_can_stand_tile(const PalLoadedMap *m, int tx, int ty, int foot_w) {
+    if (!m || m->w_tiles <= 0 || m->h_tiles <= 0) return 0;
+    if (foot_w < 1) foot_w = 2;
+    if (tx < 0 || ty < 0 || tx + foot_w > m->w_tiles || ty >= m->h_tiles) return 0;
+    if (!m->walk_grid) return 1;
+    for (int dx = 0; dx < foot_w; dx++) {
+        if ((m->walk_grid[(size_t)ty * (size_t)m->w_tiles + (size_t)(tx + dx)] & 0x60000000u) != 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int pal_map_can_stand_px(const PalLoadedMap *m, int px, int py, int foot_w, int noclip) {
+    if (!m || m->w_px <= 0 || m->h_px <= 0) return 0;
+    if (foot_w < 1) foot_w = 2;
+    int fw_px = foot_w * 16;
+    if (px < 0 || py < 0 || px + fw_px > m->w_px || py + 16 > m->h_px) return 0;
+    if (noclip || !m->walk_grid) return 1;
+    int tx0 = px >> 4;
+    int tx1 = (px + fw_px - 1) >> 4;
+    int ty0 = py >> 4;
+    int ty1 = (py + 15) >> 4;
+    for (int ty = ty0; ty <= ty1; ty++) {
+        for (int tx = tx0; tx <= tx1; tx++) {
+            if (tx < 0 || ty < 0 || tx >= m->w_tiles || ty >= m->h_tiles) return 0;
+            if ((m->walk_grid[(size_t)ty * (size_t)m->w_tiles + (size_t)tx] & 0x60000000u) != 0) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+static uint8_t pal_map_trigger_at_px(const PalLoadedMap *m, int px, int py, int foot_w) {
+    if (!m || !m->walk_grid || m->w_tiles <= 0 || m->h_tiles <= 0) return 0;
+    if (foot_w < 1) foot_w = 2;
+    int tx0 = px >> 4;
+    int ty0 = py >> 4;
+    for (int dx = 0; dx < foot_w; dx++) {
+        int tx = tx0 + dx;
+        if (tx >= 0 && tx < m->w_tiles && ty0 >= 0 && ty0 < m->h_tiles) {
+            uint8_t trig = (uint8_t)(m->walk_grid[(size_t)ty0 * (size_t)m->w_tiles + (size_t)tx] & 0xFFu);
+            if (trig != 0) return trig;
+        }
+    }
+    return 0;
+}
+
+static int pal_map_nearest_walkable(const PalLoadedMap *m, int *io_tx, int *io_ty, int foot_w, int max_radius) {
+    int cx = *io_tx, cy = *io_ty;
+    if (pal_map_can_stand_tile(m, cx, cy, foot_w)) return 1;
+    for (int r = 1; r <= max_radius; r++) {
+        for (int dy = -r; dy <= r; dy++) {
+            for (int dx = -r; dx <= r; dx++) {
+                if (abs(dx) != r && abs(dy) != r) continue;
+                if (pal_map_can_stand_tile(m, cx + dx, cy + dy, foot_w)) {
+                    *io_tx = cx + dx;
+                    *io_ty = cy + dy;
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int pal_map_find_path_astar(
+    const PalLoadedMap *m,
+    int start_tx, int start_ty,
+    int goal_tx, int goal_ty,
+    int foot_w,
+    int *out_tx, int *out_ty, int max_steps
+) {
+    if (!m || !out_tx || !out_ty || max_steps <= 0) return 0;
+    int W = m->w_tiles, H = m->h_tiles;
+    if (W <= 0 || H <= 0) return 0;
+    int N = W * H;
+
+    if (!pal_map_nearest_walkable(m, &start_tx, &start_ty, foot_w, 6)) return 0;
+    if (!pal_map_nearest_walkable(m, &goal_tx, &goal_ty, foot_w, 6)) return 0;
+    if (start_tx == goal_tx && start_ty == goal_ty) return 0;
+
+    int32_t *g_score = (int32_t *)malloc((size_t)N * sizeof(int32_t));
+    int32_t *f_score = (int32_t *)malloc((size_t)N * sizeof(int32_t));
+    int32_t *parent  = (int32_t *)malloc((size_t)N * sizeof(int32_t));
+    uint8_t *state   = (uint8_t *)calloc((size_t)N, 1); /* 0=unseen, 1=open, 2=closed */
+    int heap_cap = N * 4 + 1;
+    int32_t *heap    = (int32_t *)malloc((size_t)heap_cap * sizeof(int32_t));
+    int32_t *rev_x   = (int32_t *)malloc((size_t)max_steps * sizeof(int32_t));
+    int32_t *rev_y   = (int32_t *)malloc((size_t)max_steps * sizeof(int32_t));
+
+    if (!g_score || !f_score || !parent || !state || !heap || !rev_x || !rev_y) {
+        free(g_score); free(f_score); free(parent); free(state); free(heap); free(rev_x); free(rev_y);
+        return 0;
+    }
+
+    for (int i = 0; i < N; i++) {
+        g_score[i] = 0x3FFFFFFF;
+        f_score[i] = 0x3FFFFFFF;
+        parent[i] = -1;
+    }
+
+    int start_idx = start_ty * W + start_tx;
+    int goal_idx  = goal_ty * W + goal_tx;
+    int dx0 = abs(goal_tx - start_tx), dy0 = abs(goal_ty - start_ty);
+    int h0 = (dx0 < dy0 ? 14 * dx0 + 10 * (dy0 - dx0) : 14 * dy0 + 10 * (dx0 - dy0));
+
+    g_score[start_idx] = 0;
+    f_score[start_idx] = h0;
+    state[start_idx] = 1;
+
+    int heap_sz = 0;
+    heap[heap_sz++] = start_idx;
+
+    static const int kDx[8] = { 0,  0, -1, 1, -1,  1, -1,  1};
+    static const int kDy[8] = {-1,  1,  0, 0, -1,  1,  1, -1};
+    static const int kCost[8] = {10, 10, 10, 10, 14, 14, 14, 14};
+
+    int found = 0;
+    while (heap_sz > 0) {
+        int cur = heap[0];
+        heap[0] = heap[--heap_sz];
+        int hi = 0;
+        while (1) {
+            int l = hi * 2 + 1, r = l + 1, sm = hi;
+            if (l < heap_sz && f_score[heap[l]] < f_score[heap[sm]]) sm = l;
+            if (r < heap_sz && f_score[heap[r]] < f_score[heap[sm]]) sm = r;
+            if (sm == hi) break;
+            int tmp = heap[hi]; heap[hi] = heap[sm]; heap[sm] = tmp;
+            hi = sm;
+        }
+
+        if (state[cur] == 2) continue;
+        state[cur] = 2;
+        if (cur == goal_idx) {
+            found = 1;
+            break;
+        }
+
+        int cx = cur % W;
+        int cy = cur / W;
+        for (int d = 0; d < 8; d++) {
+            int nx = cx + kDx[d];
+            int ny = cy + kDy[d];
+            if (!pal_map_can_stand_tile(m, nx, ny, foot_w)) continue;
+            /* Prevent corner clipping across blocked diagonal corners */
+            if (kDx[d] != 0 && kDy[d] != 0) {
+                if (!pal_map_can_stand_tile(m, cx + kDx[d], cy, foot_w) ||
+                    !pal_map_can_stand_tile(m, cx, cy + kDy[d], foot_w)) {
+                    continue;
+                }
+            }
+            int nidx = ny * W + nx;
+            if (state[nidx] == 2) continue;
+            int ng = g_score[cur] + kCost[d];
+            if (ng < g_score[nidx]) {
+                parent[nidx] = cur;
+                g_score[nidx] = ng;
+                int adx = abs(goal_tx - nx), ady = abs(goal_ty - ny);
+                int nh = (adx < ady ? 14 * adx + 10 * (ady - adx) : 14 * ady + 10 * (adx - ady));
+                f_score[nidx] = ng + nh;
+                state[nidx] = 1;
+                if (heap_sz < heap_cap) {
+                    int ci = heap_sz++;
+                    heap[ci] = nidx;
+                    while (ci > 0) {
+                        int pi = (ci - 1) / 2;
+                        if (f_score[heap[pi]] <= f_score[heap[ci]]) break;
+                        int tmp = heap[pi]; heap[pi] = heap[ci]; heap[ci] = tmp;
+                        ci = pi;
+                    }
+                }
+            }
+        }
+    }
+
+    int step_cnt = 0;
+    if (found) {
+        int cur = goal_idx;
+        while (cur != -1 && cur != start_idx && step_cnt < max_steps) {
+            rev_x[step_cnt] = cur % W;
+            rev_y[step_cnt] = cur / W;
+            step_cnt++;
+            cur = parent[cur];
+        }
+        for (int i = 0; i < step_cnt; i++) {
+            out_tx[i] = rev_x[step_cnt - 1 - i];
+            out_ty[i] = rev_y[step_cnt - 1 - i];
+        }
+    }
+
+    free(g_score); free(f_score); free(parent); free(state); free(heap); free(rev_x); free(rev_y);
+    return step_cnt;
+}
+
+int32_t pal_map_probe_m2(const char *game_dir, int32_t map_id, PalMapM2ProbeInfo *out_info) {
+    if (!game_dir || !out_info || map_id <= 0) return -1;
+    memset(out_info, 0, sizeof(*out_info));
+    out_info->map_id = map_id;
+
+    PalLoadedMap m = {0};
+    if (vfs_load_lmf_map_by_id(game_dir, (uint32_t)map_id, NULL, SDL_SCALEMODE_NEAREST, &m) != 0) {
+        return -1;
+    }
+
+    out_info->width_tiles = m.w_tiles;
+    out_info->height_tiles = m.h_tiles;
+    out_info->total_cells = m.w_tiles * m.h_tiles;
+    out_info->walkable_cells = m.walkable_count;
+    out_info->blocked_cells = m.blocked_count;
+    out_info->trigger_count = m.trigger_count;
+    out_info->fg_sprite_defs = m.fg_def_count;
+    out_info->fg_sprite_instances = m.fg_inst_count;
+    out_info->npc_count = m.npc_count;
+    out_info->step_speed_px = m.step_speed_px;
+    snprintf(out_info->map_title_utf8, sizeof(out_info->map_title_utf8), "%s", m.title_utf8);
+    snprintf(out_info->bgm_track, sizeof(out_info->bgm_track), "%s", m.bgm_track);
+
+    /* Anchor near playable center (inside isometric room bounds) and pick farthest reachable goal in the same component */
+    int sx = m.w_tiles > 2 ? m.w_tiles / 2 : 1;
+    int sy = m.h_tiles > 2 ? m.h_tiles / 2 : 1;
+    int max_r = m.w_tiles > m.h_tiles ? m.w_tiles : m.h_tiles;
+    if (pal_map_nearest_walkable(&m, &sx, &sy, 2, max_r) && m.w_tiles > 0 && m.h_tiles > 0) {
+        int N = m.w_tiles * m.h_tiles;
+        uint8_t *vis = (uint8_t *)calloc((size_t)N, 1);
+        int32_t *q = (int32_t *)malloc((size_t)N * sizeof(int32_t));
+        int gx = sx, gy = sy, best_dist = 0;
+        if (vis && q) {
+            int qh = 0, qt = 0;
+            int sidx = sy * m.w_tiles + sx;
+            vis[sidx] = 1;
+            q[qt++] = sidx;
+            static const int kBDx[4] = {0, 0, -1, 1};
+            static const int kBDy[4] = {-1, 1, 0, 0};
+            while (qh < qt) {
+                int cur = q[qh++];
+                int cx = cur % m.w_tiles, cy = cur / m.w_tiles;
+                int dist = abs(cx - sx) + abs(cy - sy);
+                if (dist > best_dist) {
+                    best_dist = dist;
+                    gx = cx;
+                    gy = cy;
+                }
+                for (int d = 0; d < 4; d++) {
+                    int nx = cx + kBDx[d], ny = cy + kBDy[d];
+                    if (!pal_map_can_stand_tile(&m, nx, ny, 2)) continue;
+                    int nidx = ny * m.w_tiles + nx;
+                    if (!vis[nidx]) {
+                        vis[nidx] = 1;
+                        q[qt++] = nidx;
+                    }
+                }
+            }
+        }
+        free(vis);
+        free(q);
+        if (best_dist >= 4) {
+            int path_tx[512], path_ty[512];
+            out_info->astar_path_steps = pal_map_find_path_astar(&m, sx, sy, gx, gy, 2, path_tx, path_ty, 512);
+        }
+    }
+
+    free_loaded_map(&m);
+    return 0;
 }
 
 static int load_tsw_from_toc_index(
@@ -2806,6 +3500,150 @@ static int count_existing_saves(const char *game_dir, char *out_summary, size_t 
  * SDL3 Metal Interactive Runtime & Self-Test (Boot -> Title -> Field/Talk)
  * ========================================================================= */
 
+#define PAL_TSW_CACHE_CAP 96
+
+typedef struct {
+    uint32_t fr_id;
+    PalLoadedSprite sprite;
+} PalTswCacheEntry;
+
+typedef struct {
+    PalTswCacheEntry items[PAL_TSW_CACHE_CAP];
+    int count;
+} PalTswCache;
+
+static PalLoadedSprite *tsw_cache_get(
+    PalTswCache *cache, const char *game_dir, SDL_Renderer *renderer,
+    SDL_ScaleMode scale_mode, int32_t fr_id
+) {
+    if (!cache || fr_id <= 0) return NULL;
+    for (int i = 0; i < cache->count; i++) {
+        if (cache->items[i].fr_id == (uint32_t)fr_id) {
+            return &cache->items[i].sprite;
+        }
+    }
+    const char *arch = NULL;
+    uint32_t tid = 0;
+    if (resolve_tsw_from_fr(fr_id, &arch, &tid) != 0) return NULL;
+    PalLoadedSprite sp = {0};
+    if (vfs_load_tsw_by_id(game_dir, arch, tid, renderer, scale_mode, &sp) != 0) return NULL;
+    if (cache->count >= PAL_TSW_CACHE_CAP) {
+        free_loaded_sprite(&cache->items[0].sprite);
+        memmove(&cache->items[0], &cache->items[1], sizeof(PalTswCacheEntry) * (PAL_TSW_CACHE_CAP - 1));
+        cache->count--;
+    }
+    PalTswCacheEntry *e = &cache->items[cache->count++];
+    e->fr_id = (uint32_t)fr_id;
+    e->sprite = sp;
+    return &e->sprite;
+}
+
+static void free_tsw_cache(PalTswCache *cache) {
+    if (!cache) return;
+    for (int i = 0; i < cache->count; i++) {
+        free_loaded_sprite(&cache->items[i].sprite);
+    }
+    memset(cache, 0, sizeof(*cache));
+}
+
+static int resolve_act_file_for_id(int32_t act_id, const char **out_act_file, uint32_t *out_slot_id) {
+    if (act_id <= 0) return -1;
+    *out_slot_id = (uint32_t)act_id;
+    if (act_id < 3000) *out_act_file = "all_char.act";
+    else if (act_id < 6000) *out_act_file = "all_item.act";
+    else if (act_id < 9000) *out_act_file = "all_magic.act";
+    else if (act_id < 13000) *out_act_file = "all_sys.act";
+    else if (act_id < 15000) *out_act_file = "all_map1.act";
+    else *out_act_file = "all_map2.act";
+    return 0;
+}
+
+typedef struct {
+    int active;
+    uint32_t act_id;
+    int sub_action;
+    int dir;          /* 0=U, 1=D, 2=L, 3=R, 4=UL, 5=DR, 6=DL, 7=UR */
+    int action_base;  /* 0=stand, 8=walk, 16=run */
+    int px;
+    int py;
+    PalActVM vm;
+    int vm_ok;
+} PalFieldActor;
+
+static void field_actor_set_sub(PalFieldActor *a, const char *game_dir, uint32_t act_id, int sub_action, int loop) {
+    if (!a) return;
+    if (a->vm_ok && a->act_id == act_id && a->sub_action == sub_action) return;
+    const char *act_file = NULL;
+    uint32_t sid = 0;
+    if (resolve_act_file_for_id((int32_t)act_id, &act_file, &sid) != 0) return;
+
+    PalActVM next_vm;
+    if (pal_act_vm_init(game_dir, act_file, sid, sub_action, &next_vm) != 0) {
+        /* Fallback to sub 8+dir or 0+dir if 16+dir absent */
+        int fb = sub_action >= 16 ? (8 + (sub_action - 16)) : 0;
+        if (pal_act_vm_init(game_dir, act_file, sid, fb, &next_vm) != 0) return;
+        sub_action = fb;
+    }
+    if (loop) next_vm.loop_remaining = -1;
+    a->vm = next_vm;
+    a->act_id = act_id;
+    a->sub_action = sub_action;
+    a->vm_ok = 1;
+    a->active = 1;
+}
+
+static int dir_from_delta(int dx, int dy, int prev_dir) {
+    if (dx == 0 && dy < 0) return 0; /* Up */
+    if (dx == 0 && dy > 0) return 1; /* Down */
+    if (dx < 0 && dy == 0) return 2; /* Left */
+    if (dx > 0 && dy == 0) return 3; /* Right */
+    if (dx < 0 && dy < 0) return 4;  /* Up-Left */
+    if (dx > 0 && dy > 0) return 5;  /* Down-Right */
+    if (dx < 0 && dy > 0) return 6;  /* Down-Left */
+    if (dx > 0 && dy < 0) return 7;  /* Up-Right */
+    return prev_dir;
+}
+
+static void pick_map_spawn_tile(const PalLoadedMap *m, int *out_tx, int *out_ty) {
+    int cx = m->w_tiles > 2 ? m->w_tiles / 2 : 1;
+    int cy = m->h_tiles > 2 ? m->h_tiles / 2 : 1;
+    if (pal_map_nearest_walkable(m, &cx, &cy, 2, m->w_tiles > m->h_tiles ? m->w_tiles : m->h_tiles)) {
+        *out_tx = cx;
+        *out_ty = cy;
+        return;
+    }
+    *out_tx = 4;
+    *out_ty = 4;
+}
+
+typedef enum {
+    PAL_RENDER_FG_INST = 0,
+    PAL_RENDER_ACTOR   = 1
+} PalRenderItemKind;
+
+typedef struct {
+    PalRenderItemKind kind;
+    int sort_y;
+    int draw_x;
+    int draw_y;
+    int draw_w;
+    int draw_h;
+    SDL_Texture *tex;
+    int is_leader;
+    int is_party;
+} PalRenderItem;
+
+static int cmp_render_item(const void *a, const void *b) {
+    const PalRenderItem *ra = (const PalRenderItem *)a;
+    const PalRenderItem *rb = (const PalRenderItem *)b;
+    if (ra->sort_y != rb->sort_y) return (ra->sort_y < rb->sort_y) ? -1 : 1;
+    /* Tie-break slightly: map props before actors at exact same Y? Or kind order */
+    return (int)ra->kind - (int)rb->kind;
+}
+
+static const uint32_t kM2QuickMaps[] = {501u, 1u, 2u, 3u, 502u};
+static const uint32_t kPartyHeroActIds[4] = {1u, 2u, 3u, 4u}; /* 李逍遙, 趙靈兒, 林月如, 阿奴 */
+
 typedef enum {
     PAL_SCENE_TITLE = 0,
     PAL_SCENE_LOAD_OVERLAY = 1,
@@ -2933,13 +3771,59 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             if (title_btns[0].vm.frame_index != prev_fr) stepped_frames++;
         }
 
-        /* Render both Title composition & Field composition onto Metal swapchain */
+        /* M2 Automated Probes: Map 1 (盛漁村), Map 2 (盛漁村市場), Map 501 (羅剎峰) + Char .act VMs */
+        PalMapM2ProbeInfo m2_1 = {0}, m2_2 = {0}, m2_501 = {0};
+        int m2_1_ok = (pal_map_probe_m2(cfg->game_dir, 1, &m2_1) == 0 &&
+                       m2_1.width_tiles == 40 && m2_1.height_tiles == 30 &&
+                       m2_1.walkable_cells > 0 && m2_1.blocked_cells > 0 &&
+                       m2_1.trigger_count == 2 && m2_1.fg_sprite_defs == 14 &&
+                       m2_1.fg_sprite_instances == 14 && m2_1.astar_path_steps > 0);
+        int m2_2_ok = (pal_map_probe_m2(cfg->game_dir, 2, &m2_2) == 0 &&
+                       m2_2.width_tiles == 60 && m2_2.height_tiles == 45 &&
+                       m2_2.trigger_count == 10 && m2_2.astar_path_steps > 0);
+        int m2_501_ok = (pal_map_probe_m2(cfg->game_dir, 501, &m2_501) == 0 &&
+                         m2_501.width_tiles == 40 && m2_501.height_tiles == 30 &&
+                         m2_501.walkable_cells > 0);
+
+        PalLoadedMap m2_render_map = {0};
+        int m2_render_ok = (vfs_load_lmf_map_by_id(cfg->game_dir, 1, renderer, scale_mode, &m2_render_map) == 0 &&
+                            m2_render_map.texture != NULL && m2_render_map.fg_def_count == 14);
+
+        PalActVM char_stand_vm = {0}, char_walk_vm = {0}, char_h2_vm = {0}, char_h3_vm = {0}, char_h4_vm = {0};
+        int char_act_ok = (pal_act_vm_init(cfg->game_dir, "all_char.act", 1, 0, &char_stand_vm) == 0 &&
+                           pal_act_vm_init(cfg->game_dir, "all_char.act", 1, 8, &char_walk_vm) == 0 &&
+                           pal_act_vm_init(cfg->game_dir, "all_char.act", 2, 8, &char_h2_vm) == 0 &&
+                           pal_act_vm_init(cfg->game_dir, "all_char.act", 3, 8, &char_h3_vm) == 0 &&
+                           pal_act_vm_init(cfg->game_dir, "all_char.act", 4, 8, &char_h4_vm) == 0);
+        char_walk_vm.loop_remaining = -1;
+        int walk_frames_changed = 0;
+        for (int t = 0; t < 24; t++) {
+            int pf = char_walk_vm.frame_index;
+            pal_act_vm_step_tick(&char_walk_vm);
+            if (char_walk_vm.frame_index != pf) walk_frames_changed++;
+        }
+        char_act_ok = char_act_ok && (char_stand_vm.fr_tsw_id == 187 && char_walk_vm.fr_tsw_id == 208 && walk_frames_changed >= 4);
+
+        /* Render Title composition, M1 Field, & M2 Full Y-sorted Occlusion onto Metal swapchain */
         for (int f = 0; f < 3; f++) {
             SDL_SetRenderDrawColor(renderer, 8, 10, 14, 255);
             SDL_RenderClear(renderer);
             if (f == 0) {
                 draw_act_sprite_node(renderer, &title_bg, 0);
                 draw_act_sprite_node(renderer, &title_btns[0], 0);
+            } else if (f == 1 && m2_render_ok) {
+                SDL_FRect dst = {0.0f, 0.0f, 640.0f, 480.0f};
+                SDL_RenderTexture(renderer, m2_render_map.texture, NULL, &dst);
+                for (int k = 0; k < m2_render_map.fg_inst_count; k++) {
+                    const PalMapFgInst *inst = &m2_render_map.fg_insts[k];
+                    for (int d = 0; d < m2_render_map.fg_def_count; d++) {
+                        if (m2_render_map.fg_defs[d].sid == inst->sid && m2_render_map.fg_defs[d].tex) {
+                            SDL_FRect fd = {(float)inst->px, (float)inst->py_top, (float)m2_render_map.fg_defs[d].w, (float)m2_render_map.fg_defs[d].h};
+                            SDL_RenderTexture(renderer, m2_render_map.fg_defs[d].tex, NULL, &fd);
+                            break;
+                        }
+                    }
+                }
             } else {
                 SDL_FRect dst = {0.0f, 0.0f, (float)map.w_px, (float)map.h_px};
                 SDL_RenderTexture(renderer, map.texture, NULL, &dst);
@@ -2955,12 +3839,14 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             SDL_RenderPresent(renderer);
         }
         if (rt_tex) SDL_DestroyTexture(rt_tex);
+        free_loaded_map(&m2_render_map);
 
         int backend_ok = (active_backend && strcmp(active_backend, "metal") == 0);
         int title_assets_ok = (act_bg_ok && act_btn_ok && title_bg.sprite.nframes > 0 &&
                                title_btns[0].sprite.nframes == 15 && menu_cursor.nframes > 0 && dlg_box.nframes > 0);
+        int m2_ok = m2_1_ok && m2_2_ok && m2_501_ok && m2_render_ok && char_act_ok;
 
-        printf("=== NewPal SDL3 Metal + BYOD VFS Self-Test (M0+M1) ===\n");
+        printf("=== NewPal SDL3 Metal + BYOD VFS Self-Test (M0+M1+M2) ===\n");
         printf("GameDir: %s\n", cfg->game_dir);
         printf("Validation: %d/%d (is_valid=%d)\n", report.valid_archives_count, report.total_required_archives, report.is_valid);
         printf("Renderer: %s (expected: metal)\n", active_backend ? active_backend : "null");
@@ -3002,8 +3888,26 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         SDL_DestroyWindow(window);
         SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS);
 
+        printf("MapM2[1]: ok=%d title=%s size=%dx%d walkable=%d blocked=%d triggers=%d fg=%d/%d npcs=%d astar_steps=%d bgm=%s\n",
+               m2_1_ok, m2_1.map_title_utf8, m2_1.width_tiles, m2_1.height_tiles,
+               m2_1.walkable_cells, m2_1.blocked_cells, m2_1.trigger_count,
+               m2_1.fg_sprite_defs, m2_1.fg_sprite_instances, m2_1.npc_count,
+               m2_1.astar_path_steps, m2_1.bgm_track);
+        printf("MapM2[2]: ok=%d title=%s size=%dx%d walkable=%d blocked=%d triggers=%d astar_steps=%d bgm=%s\n",
+               m2_2_ok, m2_2.map_title_utf8, m2_2.width_tiles, m2_2.height_tiles,
+               m2_2.walkable_cells, m2_2.blocked_cells, m2_2.trigger_count,
+               m2_2.astar_path_steps, m2_2.bgm_track);
+        printf("MapM2[501]: ok=%d title=%s size=%dx%d walkable=%d blocked=%d npcs=%d bgm=%s\n",
+               m2_501_ok, m2_501.map_title_utf8, m2_501.width_tiles, m2_501.height_tiles,
+               m2_501.walkable_cells, m2_501.blocked_cells, m2_501.npc_count, m2_501.bgm_track);
+        printf("CharActVM[1..4]: ok=%d stand_fr=%d(anchor=%d,%d) walk_fr=%d(delay=%d,changes=%d) party_walk_frs=(%d,%d,%d)\n",
+               char_act_ok, char_stand_vm.fr_tsw_id, char_stand_vm.offset_x, char_stand_vm.offset_y,
+               char_walk_vm.fr_tsw_id, char_walk_vm.duration_ticks, walk_frames_changed,
+               char_h2_vm.fr_tsw_id, char_h3_vm.fr_tsw_id, char_h4_vm.fr_tsw_id);
+
         int all_ok = backend_ok && report.is_valid && act_rc == 0 && snd_ok &&
-                     bik_ok && bgm_title_ok && title_assets_ok && font_ok && rt_tex != NULL;
+                     bik_ok && bgm_title_ok && title_assets_ok && font_ok && rt_tex != NULL && m2_ok;
+        printf("[SelfTest] ALL CHECKS %s.\n", all_ok ? "PASSED" : "FAILED");
         return all_ok ? 0 : -1;
     }
 
@@ -3031,16 +3935,84 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     PalSceneState scene = PAL_SCENE_TITLE;
     int selected_btn = 0;
     int show_hud = 1;
-    float player_x = (float)map.w_px * 0.5f;
-    float player_y = (float)map.h_px * 0.5f;
-    int walk_frame = 0;
-    float walk_acc = 0.0f;
+    int show_collision_grid = 0;
+    int party_follow_enabled = 1;
+    int noclip_mode = 0;
+    int quick_map_pos = 0;
+    uint32_t leader_hero_idx = 0; /* 0..3 -> 李逍遙, 趙靈兒, 林月如, 阿奴 */
+
+    show_dialogue = 0; /* Unobstructed M2 field view by default; press T to toggle dialogue sample */
+
+    PalTswCache tsw_cache = {0};
+    PalFieldActor party[4] = {{0}};
+    PalFieldActor map_npcs[64] = {{0}};
+    int map_npc_actor_cnt = 0;
+
+    int trail_x[64] = {0}, trail_y[64] = {0}, trail_dir[64] = {0};
+    int astar_tx[512] = {0}, astar_ty[512] = {0};
+    int astar_count = 0, astar_cursor = 0;
+
+    SDL_Texture *map_banner_tex = NULL;
+    int map_banner_w = 0, map_banner_h = 0;
+    float map_banner_timer = 0.0f;
+    uint8_t active_trig_id = 0;
+    char cur_bgm_playing[64] = {0};
+
+    /* Initial map placement helper */
+    {
+        int stx = 0, sty = 0;
+        pick_map_spawn_tile(&map, &stx, &sty);
+        for (int p = 0; p < 4; p++) {
+            party[p].px = stx << 4;
+            party[p].py = sty << 4;
+            party[p].dir = 1;
+            field_actor_set_sub(&party[p], cfg->game_dir, kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u], 1, 0);
+        }
+        for (int t = 0; t < 64; t++) {
+            trail_x[t] = party[0].px;
+            trail_y[t] = party[0].py;
+            trail_dir[t] = 1;
+        }
+    }
+
+    /* Populate initial map NPCs + banner */
+    map_npc_actor_cnt = map.npc_count < 64 ? map.npc_count : 64;
+    for (int i = 0; i < map_npc_actor_cnt; i++) {
+        const PalMapNpcDef *nd = &map.npcs[i];
+        map_npcs[i].active = (nd->flags & 0x8000u) != 0 ? 1 : 0;
+        map_npcs[i].px = (int)nd->tx << 4;
+        map_npcs[i].py = (int)nd->ty << 4;
+        map_npcs[i].dir = (int)(nd->dir & 7u);
+        if (map_npcs[i].active) {
+            field_actor_set_sub(&map_npcs[i], cfg->game_dir, nd->act_id, (int)nd->sub_state + (int)nd->dir, 1);
+        }
+    }
+
+    float cam_x = 0.0f, cam_y = 0.0f;
+    {
+        int cx = party[0].px - 304, cy = party[0].py - 240;
+        if (map.w_px > 640) {
+            if (cx < 0) cx = 0;
+            if (cx > map.w_px - 640) cx = map.w_px - 640;
+        } else cx = -(640 - map.w_px) / 2;
+        if (map.h_px > 480) {
+            if (cy < 0) cy = 0;
+            if (cy > map.h_px - 480) cy = map.h_px - 480;
+        } else cy = -(480 - map.h_px) / 2;
+        cam_x = (float)cx;
+        cam_y = (float)cy;
+    }
+
     float mouse_lx = 320.0f, mouse_ly = 298.0f;
 
     if (!app_quit) {
         pal_bgm_play_track(&bgm, cfg->game_dir, "Music/M001.mp3", cfg->master_volume, cfg->mute_audio);
+        snprintf(cur_bgm_playing, sizeof(cur_bgm_playing), "Music/M001.mp3");
         SDL_HideCursor();
     }
+
+    /* Inline macro-like state reset block via helper lambda pattern avoided -> simple local helper flag */
+    int need_setup_loaded_map = 0;
 
     Uint64 last_ns = SDL_GetTicksNS();
     double tick35_acc = 0.0;
@@ -3098,9 +4070,24 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     if (key == SDLK_ESCAPE) {
                         if (run_fade_transition(window, renderer, 0, 200, &bgm) == 1) { app_quit = 1; break; }
                         scene = PAL_SCENE_TITLE;
+                        SDL_HideCursor();
                         pal_bgm_play_track(&bgm, cfg->game_dir, "Music/M001.mp3", cfg->master_volume, cfg->mute_audio);
+                        snprintf(cur_bgm_playing, sizeof(cur_bgm_playing), "Music/M001.mp3");
                     } else if (key == SDLK_TAB) {
                         show_hud = !show_hud;
+                    } else if (key == SDLK_G) {
+                        show_collision_grid = !show_collision_grid;
+                    } else if (key == SDLK_P) {
+                        party_follow_enabled = !party_follow_enabled;
+                    } else if (key == SDLK_C) {
+                        noclip_mode = !noclip_mode;
+                    } else if (key == SDLK_V) {
+                        leader_hero_idx = (leader_hero_idx + 1u) % 4u;
+                        for (int p = 0; p < 4; p++) {
+                            field_actor_set_sub(&party[p], cfg->game_dir,
+                                                kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u],
+                                                party[p].dir, 0);
+                        }
                     } else if (key == SDLK_T) {
                         show_dialogue = !show_dialogue;
                     } else if (key == SDLK_B) {
@@ -3109,31 +4096,28 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             app_quit = 1;
                         }
                         if (bgm.stream) SDL_ResumeAudioStreamDevice(bgm.stream);
-                    } else if (key == SDLK_SPACE || key == SDLK_RETURN) {
-                        if (show_dialogue && dialogues.count > 0) {
-                            dlg_idx = (dlg_idx + 1) % dialogues.count;
-                            if (dlg_text_tex) SDL_DestroyTexture(dlg_text_tex);
-                            dlg_text_tex = create_richtext_texture(renderer, dialogues.lines[dlg_idx], 18.0f, 520, &cur_dlg_w, &cur_dlg_h);
-                            play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+                    } else if ((key == SDLK_SPACE || key == SDLK_RETURN) && show_dialogue && dialogues.count > 0) {
+                        dlg_idx = (dlg_idx + 1) % dialogues.count;
+                        if (dlg_text_tex) SDL_DestroyTexture(dlg_text_tex);
+                        dlg_text_tex = create_richtext_texture(renderer, dialogues.lines[dlg_idx], 18.0f, 520, &cur_dlg_w, &cur_dlg_h);
+                        play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+                    } else if (key == SDLK_M) {
+                        quick_map_pos = (quick_map_pos + 1) % (int)(sizeof(kM2QuickMaps) / sizeof(kM2QuickMaps[0]));
+                        PalLoadedMap next_map = {0};
+                        if (vfs_load_lmf_map_by_id(cfg->game_dir, kM2QuickMaps[quick_map_pos], renderer, scale_mode, &next_map) == 0) {
+                            free_loaded_map(&map);
+                            map = next_map;
+                            need_setup_loaded_map = 1;
                         }
                     } else if (key == SDLK_RIGHTBRACKET || key == SDLK_LEFTBRACKET) {
                         int delta = (key == SDLK_RIGHTBRACKET) ? 1 : -1;
-                        map_idx = (map_idx + delta + map.total_maps) % map.total_maps;
+                        int total_cur = map.total_maps > 0 ? map.total_maps : 1;
+                        map_idx = (map.map_idx + delta + total_cur) % total_cur;
                         PalLoadedMap next_map = {0};
-                        if (vfs_load_lmf_map(cfg->game_dir, "huge.lmf", map_idx, renderer, scale_mode, &next_map) == 0) {
+                        if (vfs_load_lmf_map(cfg->game_dir, map.lmf_file[0] ? map.lmf_file : "huge.lmf", map_idx, renderer, scale_mode, &next_map) == 0) {
                             free_loaded_map(&map);
                             map = next_map;
-                            player_x = (float)map.w_px * 0.5f;
-                            player_y = (float)map.h_px * 0.5f;
-                        }
-                    } else if (key == SDLK_N || key == SDLK_P) {
-                        int delta = (key == SDLK_N) ? 1 : -1;
-                        sprite_idx = (sprite_idx + delta + hero_sprite.total_slots) % hero_sprite.total_slots;
-                        PalLoadedSprite next_sp = {0};
-                        if (vfs_load_tsw_slot(cfg->game_dir, "all_char.tsw", sprite_idx, renderer, scale_mode, &next_sp) == 0) {
-                            free_loaded_sprite(&hero_sprite);
-                            hero_sprite = next_sp;
-                            walk_frame = 0;
+                            need_setup_loaded_map = 1;
                         }
                     }
                 }
@@ -3150,11 +4134,25 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     }
                 } else if (scene == PAL_SCENE_LOAD_OVERLAY) {
                     scene = PAL_SCENE_TITLE;
-                } else if (scene == PAL_SCENE_FIELD && show_dialogue && dialogues.count > 0) {
-                    dlg_idx = (dlg_idx + 1) % dialogues.count;
-                    if (dlg_text_tex) SDL_DestroyTexture(dlg_text_tex);
-                    dlg_text_tex = create_richtext_texture(renderer, dialogues.lines[dlg_idx], 18.0f, 520, &cur_dlg_w, &cur_dlg_h);
-                    play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+                } else if (scene == PAL_SCENE_FIELD) {
+                    if (show_dialogue && mouse_ly >= 336.0f && dialogues.count > 0) {
+                        dlg_idx = (dlg_idx + 1) % dialogues.count;
+                        if (dlg_text_tex) SDL_DestroyTexture(dlg_text_tex);
+                        dlg_text_tex = create_richtext_texture(renderer, dialogues.lines[dlg_idx], 18.0f, 520, &cur_dlg_w, &cur_dlg_h);
+                        play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+                    } else {
+                        int world_mx = (int)(mouse_lx + cam_x);
+                        int world_my = (int)(mouse_ly + cam_y);
+                        int goal_tx = (world_mx >> 4) - 1;
+                        int goal_ty = world_my >> 4;
+                        if (goal_tx < 0) goal_tx = 0;
+                        if (goal_ty < 0) goal_ty = 0;
+                        astar_count = pal_map_find_path_astar(
+                            &map, party[0].px >> 4, party[0].py >> 4,
+                            goal_tx, goal_ty, 2, astar_tx, astar_ty, 512
+                        );
+                        astar_cursor = 0;
+                    }
                 }
             }
         }
@@ -3180,21 +4178,16 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 break;
             }
             if (cfg->initial_map_index == 0) {
-                int open_idx = find_lmf_index_by_id(cfg->game_dir, "huge.lmf", 501);
-                if (open_idx >= 0) {
-                    PalLoadedMap next_map = {0};
-                    if (vfs_load_lmf_map(cfg->game_dir, "huge.lmf", open_idx, renderer, scale_mode, &next_map) == 0) {
-                        free_loaded_map(&map);
-                        map = next_map;
-                        map_idx = open_idx;
-                        player_x = (float)map.w_px * 0.5f;
-                        player_y = (float)map.h_px * 0.5f;
-                    }
+                PalLoadedMap next_map = {0};
+                if (vfs_load_lmf_map_by_id(cfg->game_dir, 501u, renderer, scale_mode, &next_map) == 0) {
+                    free_loaded_map(&map);
+                    map = next_map;
                 }
             }
+            need_setup_loaded_map = 1;
             scene = PAL_SCENE_FIELD;
+            SDL_ShowCursor();
             last_ns = SDL_GetTicksNS();
-            pal_bgm_play_track(&bgm, cfg->game_dir, "Music/F001.mp3", cfg->master_volume, cfg->mute_audio);
         } else if (activate_btn == 1) {
             play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
             scene = PAL_SCENE_LOAD_OVERLAY;
@@ -3205,12 +4198,58 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             break;
         }
 
+        if (need_setup_loaded_map) {
+            need_setup_loaded_map = 0;
+            astar_count = 0;
+            astar_cursor = 0;
+            int stx = 0, sty = 0;
+            pick_map_spawn_tile(&map, &stx, &sty);
+            for (int p = 0; p < 4; p++) {
+                party[p].px = stx << 4;
+                party[p].py = sty << 4;
+                party[p].dir = 1;
+                field_actor_set_sub(&party[p], cfg->game_dir,
+                                    kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u], 1, 0);
+            }
+            for (int t = 0; t < 64; t++) {
+                trail_x[t] = party[0].px;
+                trail_y[t] = party[0].py;
+                trail_dir[t] = 1;
+            }
+            map_npc_actor_cnt = map.npc_count < 64 ? map.npc_count : 64;
+            memset(map_npcs, 0, sizeof(map_npcs));
+            for (int i = 0; i < map_npc_actor_cnt; i++) {
+                const PalMapNpcDef *nd = &map.npcs[i];
+                map_npcs[i].active = (nd->flags & 0x8000u) != 0 ? 1 : 0;
+                map_npcs[i].px = (int)nd->tx << 4;
+                map_npcs[i].py = (int)nd->ty << 4;
+                map_npcs[i].dir = (int)(nd->dir & 7u);
+                if (map_npcs[i].active) {
+                    field_actor_set_sub(&map_npcs[i], cfg->game_dir, nd->act_id, (int)nd->sub_state + (int)nd->dir, 1);
+                }
+            }
+            if (strcmp(cur_bgm_playing, map.bgm_track) != 0) {
+                pal_bgm_play_track(&bgm, cfg->game_dir, map.bgm_track, cfg->master_volume, cfg->mute_audio);
+                snprintf(cur_bgm_playing, sizeof(cur_bgm_playing), "%s", map.bgm_track);
+            }
+            if (map_banner_tex) SDL_DestroyTexture(map_banner_tex);
+            char banner_msg[128];
+            snprintf(banner_msg, sizeof(banner_msg), "%%C6%s %%C3(Map #%u)", map.title_utf8, map.map_id);
+            map_banner_tex = create_richtext_texture(renderer, banner_msg, 20.0f, 360, &map_banner_w, &map_banner_h);
+            map_banner_timer = 3.0f;
+            active_trig_id = pal_map_trigger_at_px(&map, party[0].px, party[0].py, 2);
+        }
+
         Uint64 now_ns = SDL_GetTicksNS();
         float dt = (float)(now_ns - last_ns) / 1e9f;
         if (dt > 0.1f) dt = 0.1f;
         last_ns = now_ns;
+        if (map_banner_timer > 0.0f) {
+            map_banner_timer -= dt;
+            if (map_banner_timer < 0.0f) map_banner_timer = 0.0f;
+        }
 
-        /* 35ms engine tick cadence for .act bytecode VMs & cursors */
+        /* 35ms authentic SWD2k engine tick (character walking, collision, party trail, .act VMs) */
         tick35_acc += (double)dt;
         while (tick35_acc >= 0.035) {
             tick35_acc -= 0.035;
@@ -3229,6 +4268,116 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         title_btns[i].vm.frame_index = 0;
                     }
                 }
+            } else if (scene == PAL_SCENE_FIELD) {
+                const bool *keys = SDL_GetKeyboardState(NULL);
+                int kx = 0, ky = 0;
+                if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT])  kx -= 1;
+                if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT]) kx += 1;
+                if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP])    ky -= 1;
+                if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN])  ky += 1;
+                int running = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT]) ? 1 : 0;
+                int step_px = running ? (map.step_speed_px * 2) : map.step_speed_px;
+                if (step_px <= 0) step_px = running ? 8 : 4;
+
+                int move_dx = 0, move_dy = 0;
+                if (kx != 0 || ky != 0) {
+                    /* Manual keyboard cancels click A* path */
+                    astar_count = 0;
+                    astar_cursor = 0;
+                    move_dx = kx * step_px;
+                    move_dy = ky * step_px;
+                } else if (astar_cursor < astar_count) {
+                    int wtx = astar_tx[astar_cursor] << 4;
+                    int wty = astar_ty[astar_cursor] << 4;
+                    int ddx = wtx - party[0].px;
+                    int ddy = wty - party[0].py;
+                    if (abs(ddx) <= step_px && abs(ddy) <= step_px) {
+                        party[0].px = wtx;
+                        party[0].py = wty;
+                        astar_cursor++;
+                        if (astar_cursor < astar_count) {
+                            wtx = astar_tx[astar_cursor] << 4;
+                            wty = astar_ty[astar_cursor] << 4;
+                            ddx = wtx - party[0].px;
+                            ddy = wty - party[0].py;
+                        } else {
+                            ddx = 0; ddy = 0;
+                        }
+                    }
+                    if (ddx != 0) move_dx = ddx > 0 ? (ddx < step_px ? ddx : step_px) : (-ddx < step_px ? ddx : -step_px);
+                    if (ddy != 0) move_dy = ddy > 0 ? (ddy < step_px ? ddy : step_px) : (-ddy < step_px ? ddy : -step_px);
+                }
+
+                int moved = 0;
+                if (move_dx != 0 || move_dy != 0) {
+                    int want_dir = dir_from_delta(move_dx, move_dy, party[0].dir);
+                    party[0].dir = want_dir;
+
+                    int foot_w = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 2;
+                    int nx = party[0].px + move_dx;
+                    int ny = party[0].py + move_dy;
+                    if (pal_map_can_stand_px(&map, nx, ny, foot_w, noclip_mode)) {
+                        party[0].px = nx;
+                        party[0].py = ny;
+                        moved = 1;
+                    } else if (move_dx != 0 && pal_map_can_stand_px(&map, party[0].px + move_dx, party[0].py, foot_w, noclip_mode)) {
+                        party[0].px += move_dx;
+                        moved = 1;
+                    } else if (move_dy != 0 && pal_map_can_stand_px(&map, party[0].px, party[0].py + move_dy, foot_w, noclip_mode)) {
+                        party[0].py += move_dy;
+                        moved = 1;
+                    } else {
+                        /* Cancel stuck A* path on obstacle */
+                        astar_count = 0;
+                        astar_cursor = 0;
+                    }
+                }
+
+                if (moved) {
+                    memmove(&trail_x[1], &trail_x[0], sizeof(int) * 63);
+                    memmove(&trail_y[1], &trail_y[0], sizeof(int) * 63);
+                    memmove(&trail_dir[1], &trail_dir[0], sizeof(int) * 63);
+                    trail_x[0] = party[0].px;
+                    trail_y[0] = party[0].py;
+                    trail_dir[0] = party[0].dir;
+                    active_trig_id = pal_map_trigger_at_px(&map, party[0].px, party[0].py, 2);
+                }
+
+                int lbase = moved ? (running ? 16 : 8) : 0;
+                party[0].action_base = lbase;
+                field_actor_set_sub(&party[0], cfg->game_dir,
+                                    kPartyHeroActIds[leader_hero_idx % 4u],
+                                    lbase + party[0].dir, moved ? 1 : 0);
+
+                static const int kLagTicks[4] = {0, 8, 16, 24};
+                for (int p = 1; p < 4; p++) {
+                    if (party_follow_enabled) {
+                        int lag = kLagTicks[p];
+                        int fdx = trail_x[lag] - party[p].px;
+                        int fdy = trail_y[lag] - party[p].py;
+                        int fmoved = (fdx != 0 || fdy != 0);
+                        if (fmoved) {
+                            party[p].dir = trail_dir[lag];
+                            party[p].px = trail_x[lag];
+                            party[p].py = trail_y[lag];
+                        }
+                        int fbase = fmoved ? (running ? 16 : 8) : 0;
+                        field_actor_set_sub(&party[p], cfg->game_dir,
+                                            kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u],
+                                            fbase + party[p].dir, fmoved ? 1 : 0);
+                    }
+                }
+
+                for (int p = 0; p < (party_follow_enabled ? 4 : 1); p++) {
+                    if (party[p].vm_ok && !party[p].vm.finished) {
+                        pal_act_vm_step_tick(&party[p].vm);
+                    }
+                }
+                for (int n = 0; n < map_npc_actor_cnt; n++) {
+                    if (map_npcs[n].active && map_npcs[n].vm_ok && !map_npcs[n].vm.finished) {
+                        pal_act_vm_step_tick(&map_npcs[n].vm);
+                    }
+                }
             }
         }
 
@@ -3237,7 +4386,6 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
 
         if (scene == PAL_SCENE_TITLE || scene == PAL_SCENE_LOAD_OVERLAY) {
             draw_act_sprite_node(renderer, &title_bg, 0);
-            /* Focused button shimmers via additive .act animation; others stay subtle or unhighlighted */
             draw_act_sprite_node(renderer, &title_btns[selected_btn], -1);
 
             if (ver_tex) {
@@ -3264,50 +4412,160 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 SDL_RenderTexture(renderer, ctex, NULL, &cdst);
             }
         } else {
-            const bool *keys = SDL_GetKeyboardState(NULL);
-            float vx = 0.0f, vy = 0.0f;
-            if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT])  vx -= 1.0f;
-            if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT]) vx += 1.0f;
-            if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP])    vy -= 1.0f;
-            if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN])  vy += 1.0f;
+            /* Authentic SWD2k camera deadzone (304, 240) clamped to map pixels (0x41aab1) */
+            float target_cx = (float)(party[0].px - 304);
+            float target_cy = (float)(party[0].py - 240);
+            if (map.w_px > 640) {
+                if (target_cx < 0.0f) target_cx = 0.0f;
+                if (target_cx > (float)(map.w_px - 640)) target_cx = (float)(map.w_px - 640);
+            } else target_cx = -0.5f * (float)(640 - map.w_px);
+            if (map.h_px > 480) {
+                if (target_cy < 0.0f) target_cy = 0.0f;
+                if (target_cy > (float)(map.h_px - 480)) target_cy = (float)(map.h_px - 480);
+            } else target_cy = -0.5f * (float)(480 - map.h_px);
+            cam_x = target_cx;
+            cam_y = target_cy;
 
-            if (vx != 0.0f || vy != 0.0f) {
-                player_x += vx * 180.0f * dt;
-                player_y += vy * 180.0f * dt;
-                if (player_x < 0.0f) player_x = 0.0f;
-                if (player_y < 0.0f) player_y = 0.0f;
-                if (player_x > (float)map.w_px) player_x = (float)map.w_px;
-                if (player_y > (float)map.h_px) player_y = (float)map.h_px;
-                walk_acc += dt;
-                if (walk_acc >= 0.12f && hero_sprite.nframes > 0) {
-                    walk_acc = 0.0f;
-                    walk_frame = (walk_frame + 1) % hero_sprite.nframes;
+            /* Pass 0: Map Background Layer */
+            SDL_FRect map_dst = {-cam_x, -cam_y, (float)map.w_px, (float)map.h_px};
+            if (map.texture) SDL_RenderTexture(renderer, map.texture, NULL, &map_dst);
+
+            /* Pass 1: Bucket 2 (below actors: ground shadows / decals) */
+            for (int k = 0; k < map.fg_inst_count; k++) {
+                const PalMapFgInst *inst = &map.fg_insts[k];
+                if (inst->layer_bucket != 2) continue;
+                for (int d = 0; d < map.fg_def_count; d++) {
+                    if (map.fg_defs[d].sid == inst->sid && map.fg_defs[d].tex) {
+                        SDL_FRect fd = {(float)inst->px - cam_x, (float)inst->py_top - cam_y,
+                                        (float)map.fg_defs[d].w, (float)map.fg_defs[d].h};
+                        SDL_RenderTexture(renderer, map.fg_defs[d].tex, NULL, &fd);
+                        break;
+                    }
                 }
             }
 
-            float cam_x = player_x - 320.0f;
-            float cam_y = player_y - 240.0f;
-            if (map.w_px > 640) {
-                if (cam_x < 0.0f) cam_x = 0.0f;
-                if (cam_x > (float)(map.w_px - 640)) cam_x = (float)(map.w_px - 640);
-            } else cam_x = -0.5f * (float)(640 - map.w_px);
-            if (map.h_px > 480) {
-                if (cam_y < 0.0f) cam_y = 0.0f;
-                if (cam_y > (float)(map.h_px - 480)) cam_y = (float)(map.h_px - 480);
-            } else cam_y = -0.5f * (float)(480 - map.h_px);
+            /* Pass 2: Bucket 0 (Y-sorted Map Props + NPCs + Party + Leader) */
+            PalRenderItem items[1024];
+            int item_cnt = 0;
+            for (int k = 0; k < map.fg_inst_count && item_cnt < 1024; k++) {
+                const PalMapFgInst *inst = &map.fg_insts[k];
+                if (inst->layer_bucket != 0) continue;
+                for (int d = 0; d < map.fg_def_count; d++) {
+                    if (map.fg_defs[d].sid == inst->sid && map.fg_defs[d].tex) {
+                        PalRenderItem *it = &items[item_cnt++];
+                        it->kind = PAL_RENDER_FG_INST;
+                        it->sort_y = inst->sort_y;
+                        it->draw_x = inst->px;
+                        it->draw_y = inst->py_top;
+                        it->draw_w = map.fg_defs[d].w;
+                        it->draw_h = map.fg_defs[d].h;
+                        it->tex = map.fg_defs[d].tex;
+                        it->is_leader = 0;
+                        it->is_party = 0;
+                        break;
+                    }
+                }
+            }
 
-            SDL_FRect map_dst = {-cam_x, -cam_y, (float)map.w_px, (float)map.h_px};
-            SDL_RenderTexture(renderer, map.texture, NULL, &map_dst);
+            int pmax = party_follow_enabled ? 4 : 1;
+            for (int p = 0; p < pmax && item_cnt < 1024; p++) {
+                if (!party[p].vm_ok || !party[p].vm.visible) continue;
+                PalLoadedSprite *sp = tsw_cache_get(&tsw_cache, cfg->game_dir, renderer, scale_mode, party[p].vm.fr_tsw_id);
+                if (!sp || sp->nframes <= 0) continue;
+                int fi = party[p].vm.frame_index;
+                if (fi < 0) fi = 0;
+                fi %= sp->nframes;
+                PalRenderItem *it = &items[item_cnt++];
+                it->kind = PAL_RENDER_ACTOR;
+                it->sort_y = party[p].py + 15;
+                it->draw_x = party[p].px - party[p].vm.offset_x;
+                it->draw_y = party[p].py - party[p].vm.offset_y;
+                it->draw_w = sp->w;
+                it->draw_h = sp->h;
+                it->tex = sp->frames[fi];
+                it->is_leader = (p == 0);
+                it->is_party = 1;
+            }
 
-            if (hero_sprite.nframes > 0) {
-                SDL_Texture *fr = hero_sprite.frames[walk_frame % hero_sprite.nframes];
-                SDL_FRect sp_dst = {
-                    player_x - cam_x - (float)hero_sprite.w * 0.5f,
-                    player_y - cam_y - (float)hero_sprite.h,
-                    (float)hero_sprite.w,
-                    (float)hero_sprite.h
+            for (int n = 0; n < map_npc_actor_cnt && item_cnt < 1024; n++) {
+                if (!map_npcs[n].active || !map_npcs[n].vm_ok || !map_npcs[n].vm.visible) continue;
+                PalLoadedSprite *sp = tsw_cache_get(&tsw_cache, cfg->game_dir, renderer, scale_mode, map_npcs[n].vm.fr_tsw_id);
+                if (!sp || sp->nframes <= 0) continue;
+                int fi = map_npcs[n].vm.frame_index;
+                if (fi < 0) fi = 0;
+                fi %= sp->nframes;
+                PalRenderItem *it = &items[item_cnt++];
+                it->kind = PAL_RENDER_ACTOR;
+                it->sort_y = map_npcs[n].py + 15;
+                it->draw_x = map_npcs[n].px - map_npcs[n].vm.offset_x;
+                it->draw_y = map_npcs[n].py - map_npcs[n].vm.offset_y;
+                it->draw_w = sp->w;
+                it->draw_h = sp->h;
+                it->tex = sp->frames[fi];
+                it->is_leader = 0;
+                it->is_party = 0;
+            }
+
+            if (item_cnt > 1) qsort(items, (size_t)item_cnt, sizeof(PalRenderItem), cmp_render_item);
+            for (int i = 0; i < item_cnt; i++) {
+                SDL_FRect dst = {
+                    (float)items[i].draw_x - cam_x,
+                    (float)items[i].draw_y - cam_y,
+                    (float)items[i].draw_w,
+                    (float)items[i].draw_h
                 };
-                SDL_RenderTexture(renderer, fr, NULL, &sp_dst);
+                if (items[i].tex) SDL_RenderTexture(renderer, items[i].tex, NULL, &dst);
+            }
+
+            /* Pass 3: Bucket 1 (above actors: overhead roofs / tree canopies) */
+            for (int k = 0; k < map.fg_inst_count; k++) {
+                const PalMapFgInst *inst = &map.fg_insts[k];
+                if (inst->layer_bucket != 1) continue;
+                for (int d = 0; d < map.fg_def_count; d++) {
+                    if (map.fg_defs[d].sid == inst->sid && map.fg_defs[d].tex) {
+                        SDL_FRect fd = {(float)inst->px - cam_x, (float)inst->py_top - cam_y,
+                                        (float)map.fg_defs[d].w, (float)map.fg_defs[d].h};
+                        SDL_RenderTexture(renderer, map.fg_defs[d].tex, NULL, &fd);
+                        break;
+                    }
+                }
+            }
+
+            /* Optional Collision + Trigger + A* Path Debug Overlay (G key) */
+            if (show_collision_grid && map.walk_grid) {
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                int tx_min = (int)(cam_x / 16.0f) - 1; if (tx_min < 0) tx_min = 0;
+                int tx_max = (int)((cam_x + 640.0f) / 16.0f) + 1; if (tx_max > map.w_tiles) tx_max = map.w_tiles;
+                int ty_min = (int)(cam_y / 16.0f) - 1; if (ty_min < 0) ty_min = 0;
+                int ty_max = (int)((cam_y + 480.0f) / 16.0f) + 1; if (ty_max > map.h_tiles) ty_max = map.h_tiles;
+                for (int ty = ty_min; ty < ty_max; ty++) {
+                    for (int tx = tx_min; tx < tx_max; tx++) {
+                        uint32_t cell = map.walk_grid[(size_t)ty * (size_t)map.w_tiles + (size_t)tx];
+                        if ((cell & 0x60000000u) != 0) {
+                            SDL_SetRenderDrawColor(renderer, 220, 40, 40, 95);
+                            SDL_FRect r = {(float)(tx * 16) - cam_x, (float)(ty * 16) - cam_y, 16.0f, 16.0f};
+                            SDL_RenderFillRect(renderer, &r);
+                        } else if ((cell & 0xFFu) != 0) {
+                            SDL_SetRenderDrawColor(renderer, 250, 200, 40, 125);
+                            SDL_FRect r = {(float)(tx * 16) - cam_x, (float)(ty * 16) - cam_y, 16.0f, 16.0f};
+                            SDL_RenderFillRect(renderer, &r);
+                        }
+                    }
+                }
+                /* Leader footprint hitbox */
+                SDL_SetRenderDrawColor(renderer, 40, 240, 120, 220);
+                SDL_FRect foot_r = {(float)party[0].px - cam_x, (float)party[0].py - cam_y, 32.0f, 16.0f};
+                SDL_RenderRect(renderer, &foot_r);
+            }
+
+            /* Render active A* target & path breadcrumbs */
+            if (astar_cursor < astar_count) {
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                for (int s = astar_cursor; s < astar_count; s++) {
+                    SDL_SetRenderDrawColor(renderer, 60, 225, 255, s == astar_count - 1 ? 220 : 120);
+                    SDL_FRect pt = {(float)(astar_tx[s] * 16 + 12) - cam_x, (float)(astar_ty[s] * 16 + 4) - cam_y, 8.0f, 8.0f};
+                    SDL_RenderFillRect(renderer, &pt);
+                }
             }
 
             if (show_dialogue) {
@@ -3331,22 +4589,45 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 }
             }
 
+            if (map_banner_timer > 0.0f && map_banner_tex) {
+                float alpha_f = map_banner_timer < 0.6f ? (map_banner_timer / 0.6f) : 1.0f;
+                Uint8 ba = (Uint8)(alpha_f * 255.0f);
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(renderer, 10, 14, 24, (Uint8)(alpha_f * 185.0f));
+                float bx = (640.0f - (float)(map_banner_w + 36)) * 0.5f;
+                SDL_FRect br = {bx, 66.0f, (float)(map_banner_w + 36), (float)(map_banner_h + 16)};
+                SDL_RenderFillRect(renderer, &br);
+                SDL_SetRenderDrawColor(renderer, 212, 178, 112, ba);
+                SDL_RenderRect(renderer, &br);
+                SDL_SetTextureAlphaMod(map_banner_tex, ba);
+                SDL_FRect bt = {bx + 18.0f, 74.0f, (float)map_banner_w, (float)map_banner_h};
+                SDL_RenderTexture(renderer, map_banner_tex, NULL, &bt);
+            }
+
             if (show_hud) {
                 SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
                 SDL_SetRenderDrawColor(renderer, 0, 0, 0, 165);
-                SDL_FRect hud = {8.0f, 8.0f, 624.0f, 46.0f};
+                SDL_FRect hud = {8.0f, 8.0f, 624.0f, 52.0f};
                 SDL_RenderFillRect(renderer, &hud);
                 SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
                 SDL_RenderDebugTextFormat(
-                    renderer, 16.0f, 16.0f,
-                    "SDL3 %s | Map %d/%d (ID %u) | Sprite %u | Talk %d/%d",
+                    renderer, 16.0f, 15.0f,
+                    "SDL3 %s | Map #%u (%dx%d) | Tile(%d,%d) Dir:%d | Fg:%d NPC:%d Trig:%u | %s",
                     active_backend ? active_backend : "metal",
-                    map_idx + 1, map.total_maps, map.map_id, hero_sprite.slot_id,
-                    dlg_idx + 1, dialogues.count
+                    map.map_id, map.w_tiles, map.h_tiles,
+                    party[0].px >> 4, party[0].py >> 4, party[0].dir,
+                    map.fg_inst_count, map_npc_actor_cnt, (unsigned)active_trig_id,
+                    map.bgm_track
+                );
+                SDL_RenderDebugTextFormat(
+                    renderer, 16.0f, 30.0f,
+                    "[WASD/Click] Move (+Shift Run)  [M] Tour Maps  [[/]] All Maps  [P] Party(%s)  [G] Grid(%s)",
+                    party_follow_enabled ? "ON" : "OFF",
+                    show_collision_grid ? "ON" : "OFF"
                 );
                 SDL_RenderDebugText(
-                    renderer, 16.0f, 32.0f,
-                    "[WASD] Move  [[/]] Map  [N/P] Char  [Space/Click] Next Talk  [T] Box  [B] Intro  [Esc] Title"
+                    renderer, 16.0f, 44.0f,
+                    "[V] Swap Hero  [C] NoClip  [T] TalkBox  [B] Intro Bik  [Tab] Hide HUD  [Esc] Title"
                 );
             }
         }
@@ -3360,6 +4641,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     if (ver_tex) SDL_DestroyTexture(ver_tex);
     if (save_tex) SDL_DestroyTexture(save_tex);
     if (dlg_text_tex) SDL_DestroyTexture(dlg_text_tex);
+    if (map_banner_tex) SDL_DestroyTexture(map_banner_tex);
+    free_tsw_cache(&tsw_cache);
     free_act_sprite_node(&title_bg);
     for (int i = 0; i < 3; i++) free_act_sprite_node(&title_btns[i]);
     free_loaded_sprite(&menu_cursor);
