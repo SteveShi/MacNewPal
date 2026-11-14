@@ -21,6 +21,10 @@ targets:
     sources:
       - path: Sources/Engine
       - path: Sources/App
+    info:
+      path: Sources/App/Info.plist
+      properties:
+        CFBundleIconFile: AppIcon
     settings:
       base:
         PRODUCT_NAME: NewPal
@@ -58,5 +62,6 @@ targets:
           - "-Wall"
           - "-Wextra"
         GENERATE_INFOPLIST_FILE: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
         INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © Steve Shi. Clean-Room Engine Only."
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.games"

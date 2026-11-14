@@ -9587,6 +9587,12 @@ typedef struct {
     PalCombatPose pose;
     float anim_dx, anim_dy;
     float hit_flash;
+    int32_t death_script; /* gmon prop[182] death script (61439 -> 8000) */
+    int death_state;      /* 0=alive/normal, 1=dying anim (1.12s), 2=vanished */
+    float death_timer;
+    float death_dur;
+    uint32_t death_sfx_id;
+    int death_has_sub52;
 } PalCombatEnemyUnit;
 
 typedef struct {
@@ -9659,6 +9665,7 @@ typedef struct {
     float shake_timer;
     float hit_ring_timer;
     int hit_ring_x, hit_ring_y;
+    uint32_t pending_death_sfx_id;
     int hover_cmd;
     int hover_other;
     int hover_sub;
@@ -10332,6 +10339,81 @@ static uint32_t pal_combat_resolve_magic_vfx_act(const PalTalkWorldState *ws, in
     return pal_combat_fallback_magic_vfx(-1, hero_id, is_heal, 0);
 }
 
+static void combat_resolve_monster_death_script(
+    const PalGameDatabase *db, int32_t prop182,
+    int32_t *out_script_id, uint32_t *out_sfx_id, int *out_has_sub52
+) {
+    int32_t sid = (prop182 > 0 && prop182 != 61439 && prop182 != 65535) ? prop182 : 8000;
+    const PalScript7fRecord *sc = db ? pal_db_find_script_kind(db, sid, PAL_DB_KIND_FIGHT) : NULL;
+    if (!sc && db && sid != 8000) {
+        sid = 8000;
+        sc = pal_db_find_script_kind(db, 8000, -1);
+    }
+    uint32_t sfx = 0u;
+    int sub52 = 0;
+    if (sc) {
+        for (int32_t i = 0; i < sc->op_count; i++) {
+            const PalScript7fOp *op = &sc->ops[i];
+            if (op->tag == 0x7F102038u && op->arg_count >= 1 && op->args[0] > 0) {
+                sfx = (uint32_t)op->args[0];
+            } else if (op->tag == 0x7FF0203Eu && op->arg_count >= 2 && op->args[1] == 52) {
+                sub52 = 1;
+            }
+        }
+    }
+    if (out_script_id) *out_script_id = sid;
+    if (out_sfx_id) *out_sfx_id = sfx;
+    if (out_has_sub52) *out_has_sub52 = sub52;
+}
+
+static void combat_start_enemy_death(PalCombatState *cb, const PalTalkWorldState *ws, PalCombatEnemyUnit *eu) {
+    if (!cb || !eu || eu->death_state != 0) return;
+    eu->death_state = 1;
+    eu->death_timer = 0.0f;
+    eu->death_dur = 1.12f; /* FUN_004cf77d case 7: 32 ticks * 35ms */
+    int32_t resolved_sid = 8000;
+    combat_resolve_monster_death_script(ws ? ws->db : NULL, eu->death_script,
+                                        &resolved_sid, &eu->death_sfx_id, &eu->death_has_sub52);
+    uint32_t m_act = eu->act_id ? eu->act_id : (uint32_t)(2000 + eu->mon_id / 10);
+    eu->pose = PAL_CPOSE_DEAD;
+    if (eu->death_has_sub52 && cb->game_dir[0]) {
+        int32_t prefs52[4] = {52, 39, 37, 35};
+        PalActVM dvm = {0};
+        if (pal_act_vm_init_with_prefs(cb->game_dir, "all_char.act", m_act, prefs52, 4, 1, &dvm) == 0) {
+            pal_act_warm_start(&dvm, 0);
+            eu->act_vm = dvm;
+            eu->vm_ok = 1;
+        } else {
+            pal_combat_set_actor_vm(cb->game_dir, m_act, (uint32_t)(2000 + eu->mon_id / 10), PAL_CPOSE_DEAD,
+                                    &eu->act_vm, &eu->vm_ok, &eu->shadow_vm, &eu->shadow_ok, &eu->act_id);
+        }
+    } else {
+        pal_combat_set_actor_vm(cb->game_dir, m_act, (uint32_t)(2000 + eu->mon_id / 10), PAL_CPOSE_DEAD,
+                                &eu->act_vm, &eu->vm_ok, &eu->shadow_vm, &eu->shadow_ok, &eu->act_id);
+    }
+    if (eu->death_sfx_id > 0u && cb->pending_death_sfx_id == 0u) {
+        cb->pending_death_sfx_id = eu->death_sfx_id;
+    }
+    (void)resolved_sid;
+}
+
+static int combat_step_death_anims(PalCombatState *cb, float dt) {
+    if (!cb) return 0;
+    int any_dying = 0;
+    for (int e = 0; e < cb->enemy_count; e++) {
+        PalCombatEnemyUnit *eu = &cb->enemies[e];
+        if (!eu->active || eu->death_state != 1) continue;
+        eu->death_timer += dt;
+        if (eu->death_timer >= eu->death_dur) {
+            eu->death_timer = eu->death_dur;
+            eu->death_state = 2;
+        } else {
+            any_dying = 1;
+        }
+    }
+    return any_dying;
+}
+
 static void combat_sync_idle_poses(PalCombatState *cb, const PalTalkWorldState *ws) {
     if (!cb || !ws || !cb->game_dir[0]) return;
     for (int p = 0; p < ws->party_member_count && p < 4; p++) {
@@ -10353,7 +10435,12 @@ static void combat_sync_idle_poses(PalCombatState *cb, const PalTalkWorldState *
     }
     for (int e = 0; e < cb->enemy_count; e++) {
         PalCombatEnemyUnit *eu = &cb->enemies[e];
-        if (!eu->active) continue;
+        if (!eu->active || eu->death_state >= 2) continue;
+        if (eu->death_state == 1) {
+            eu->anim_dx = 0.0f;
+            eu->anim_dy = 0.0f;
+            continue;
+        }
         PalCombatPose want = PAL_CPOSE_IDLE;
         if (!eu->alive || eu->cur_hp <= 0) want = PAL_CPOSE_DEAD;
         else if (eu->max_hp > 0 && eu->cur_hp * 3 < eu->max_hp) want = PAL_CPOSE_WEAK;
@@ -10477,6 +10564,15 @@ static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws,
 
     combat_sync_idle_poses(cb, ws);
 
+    int any_died = 0;
+    for (int e = 0; e < cb->enemy_count; e++) {
+        PalCombatEnemyUnit *eu = &cb->enemies[e];
+        if (eu->active && (!eu->alive || eu->cur_hp <= 0) && eu->death_state == 0) {
+            combat_start_enemy_death(cb, ws, eu);
+            any_died = 1;
+        }
+    }
+
     int n_tgts = (b->tgt_count > 0) ? b->tgt_count : 1;
     if (b->is_hero && b->actor_idx >= 0 && b->actor_idx < ws->party_member_count) {
         int p = b->actor_idx;
@@ -10558,6 +10654,7 @@ static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws,
     }
     cb->anim_beat_dur = (cb->fx_active_count > 0) ? ((b->action_type == 1) ? 4.50f : 1.80f)
                                                   : ((b->action_type == 1) ? 0.65f : 0.46f);
+    if (any_died && cb->anim_beat_dur < 1.15f) cb->anim_beat_dur = 1.15f;
     cb->anim_beat_timer = cb->anim_beat_dur;
     if (b->value > 0 && !b->is_heal) {
         cb->hit_ring_timer = 0.28f;
@@ -10644,6 +10741,7 @@ static int pal_combat_init(
                 for (int r = 0; r < 6; r++) eu->res[r] = mr->res[r];
                 eu->monster_mag = mr->monster_mag;
                 eu->ai_script = mr->ai_script;
+                eu->death_script = mr->act_id;
                 eu->exp_reward = mr->exp_reward;
                 eu->gold_reward = mr->gold_reward;
                 for (int d = 0; d < 4; d++) {
@@ -12472,27 +12570,51 @@ static void combat_draw_scene(
     /* 2. Render enemy ground shadows + battle sprites + HP gauges */
     for (int i = 0; i < cb->enemy_count; i++) {
         PalCombatEnemyUnit *eu = &cb->enemies[i];
-        if (!eu->active) continue;
+        if (!eu->active || eu->death_state >= 2) continue;
         float shake_x = (eu->hit_flash > 0.0f) ? (((int)(eu->hit_flash * 80.0f) & 1) ? 4.0f : -4.0f) : 0.0f;
         float ex = (float)eu->screen_x + eu->anim_dx + shake_x + cam_sx;
         float ey = (float)eu->screen_y + eu->anim_dy + cam_sy;
+        float death_t = 0.0f;
+        if (eu->death_state == 1 && eu->death_dur > 0.0f) {
+            death_t = eu->death_timer / eu->death_dur;
+            if (death_t < 0.0f) death_t = 0.0f;
+            if (death_t > 1.0f) death_t = 1.0f;
+        }
 
         if (eu->shadow_ok) {
             PalLoadedSprite *ssp = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, eu->shadow_vm.fr_tsw_id);
             if (ssp && ssp->nframes > 0) {
-                pal_draw_sprite_vm(renderer, ssp, &eu->shadow_vm, ex, ey, eu->alive ? 190 : 80, 255, 255, 255, 0);
+                uint8_t sa = (eu->death_state == 1) ? (uint8_t)(190.0f * (1.0f - death_t))
+                                                    : (eu->alive ? 190 : 80);
+                pal_draw_sprite_vm(renderer, ssp, &eu->shadow_vm, ex, ey, sa, 255, 255, 255, 0);
             }
         }
 
-        if (!eu->alive && eu->pose != PAL_CPOSE_DEAD) continue;
+        if (!eu->alive && eu->death_state == 0 && eu->pose != PAL_CPOSE_DEAD) continue;
         PalLoadedSprite *esp = eu->vm_ok ? tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, eu->act_vm.fr_tsw_id) : NULL;
         if (esp && esp->nframes > 0) {
-            uint8_t ea = eu->alive ? 255 : 105;
             uint8_t mr = 255, mg = eu->hit_flash > 0.0f ? 110 : 255, mb = eu->hit_flash > 0.0f ? 110 : 255;
-            pal_draw_sprite_vm(renderer, esp, &eu->act_vm, ex, ey, ea, mr, mg, mb, 0);
-        } else if (eu->alive) {
-            SDL_SetRenderDrawColor(renderer, 185, 65, 75, 230);
-            SDL_FRect er = {ex - 24.0f, ey - 48.0f, 48.0f, 52.0f};
+            if (eu->death_state == 1) {
+                /* FUN_004cf77d case 7: Pass 1 holds ~15/16 alpha on ticks 0..15 then fades 15..0 */
+                float p1_f = (death_t < 0.5f) ? 1.0f : (1.0f - (death_t - 0.5f) * 2.0f);
+                if (p1_f < 0.0f) p1_f = 0.0f;
+                uint8_t ea1 = (uint8_t)(240.0f * p1_f);
+                if (ea1 > 0) pal_draw_sprite_vm(renderer, esp, &eu->act_vm, ex, ey, ea1, mr, mg, mb, 0);
+                /* Pass 2: ascending darkening soul/afterimage at (ex, ey - 310 * t) */
+                float rise_y = -310.0f * death_t;
+                uint8_t ea2 = (uint8_t)(185.0f * (1.0f - death_t));
+                uint8_t tint = (uint8_t)(210.0f * (1.0f - 0.65f * death_t));
+                if (ea2 > 0) {
+                    pal_draw_sprite_vm(renderer, esp, &eu->act_vm, ex, ey + rise_y, ea2, tint, tint, tint, 0);
+                }
+            } else {
+                uint8_t ea = eu->alive ? 255 : 105;
+                pal_draw_sprite_vm(renderer, esp, &eu->act_vm, ex, ey, ea, mr, mg, mb, 0);
+            }
+        } else if (eu->alive || eu->death_state == 1) {
+            uint8_t ra = (eu->death_state == 1) ? (uint8_t)(230.0f * (1.0f - death_t)) : 230;
+            SDL_SetRenderDrawColor(renderer, 185, 65, 75, ra);
+            SDL_FRect er = {ex - 24.0f, ey - 48.0f - 80.0f * death_t, 48.0f, 52.0f};
             SDL_RenderFillRect(renderer, &er);
         }
 
@@ -13777,13 +13899,34 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
                              ws->party_members[1].cur_hp == ws->party_members[1].eff_max_hp / 3 &&
                              ws->party_members[0].cur_hp > ws->party_members[0].eff_max_hp / 2);
 
+        /* 6) Monster death animation & SFX resolution (gmon prop[182] -> gitem script -> 1.12s ghost-fade) */
+        pal_combat_init(cb, ws, game_dir, 2001);
+        int monster_death_ok = 0;
+        if (cb->enemy_count > 0) {
+            cb->enemies[0].cur_hp = 1;
+            PalCombatAnimBeat kbeat = {0};
+            pal_combat_execute_hero_action_ex(cb, ws, 0, 0, 0, 0, &kbeat);
+            if (!cb->enemies[0].alive && cb->enemies[0].death_state == 0) {
+                cb->anim_queue[0] = kbeat;
+                cb->anim_count = 1;
+                cb->anim_cursor = 0;
+                combat_activate_anim_beat(cb, ws, 0);
+                int started = (cb->enemies[0].death_state == 1 && cb->anim_beat_dur >= 1.12f && cb->pending_death_sfx_id > 0u);
+                int still_dying = combat_step_death_anims(cb, 0.50f);
+                int mid_ok = (still_dying == 1 && cb->enemies[0].death_state == 1);
+                int done_dying = combat_step_death_anims(cb, 0.70f);
+                int end_ok = (done_dying == 0 && cb->enemies[0].death_state == 2);
+                monster_death_ok = (started && mid_ok && end_ok) ? 1 : 0;
+            }
+        }
+
         formula_rules_ok = (dmg_mods_ok && throw_aoe_ok && throw_single_ok &&
                             lv2009_ok && cap999_ok && boss_noflee_ok && slow_flee_fail && fast_flee_ok &&
-                            fury_ok && battle_end_ok) ? 1 : 0;
+                            fury_ok && battle_end_ok && monster_death_ok) ? 1 : 0;
         if (!formula_rules_ok) {
-            fprintf(stderr, "[SelfTest] formula_rules failed: dmg=%d throwA=%d throwS=%d lv2009=%d cap=%d boss=%d sf=%d ff=%d fury=%d end=%d\n",
+            fprintf(stderr, "[SelfTest] formula_rules failed: dmg=%d throwA=%d throwS=%d lv2009=%d cap=%d boss=%d sf=%d ff=%d fury=%d end=%d mdeath=%d\n",
                     dmg_mods_ok, throw_aoe_ok, throw_single_ok, lv2009_ok, cap999_ok,
-                    boss_noflee_ok, slow_flee_fail, fast_flee_ok, fury_ok, battle_end_ok);
+                    boss_noflee_ok, slow_flee_fail, fast_flee_ok, fury_ok, battle_end_ok, monster_death_ok);
         }
     }
 
@@ -15840,14 +15983,20 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     }
                 }
             }
+            if (combat_state.pending_death_sfx_id > 0u) {
+                play_ui_sfx(cfg->game_dir, combat_state.pending_death_sfx_id, &sfx_stream, cfg->master_volume, runtime_mute);
+                combat_state.pending_death_sfx_id = 0u;
+            }
+            int any_dying = combat_step_death_anims(&combat_state, dt);
             if (combat_state.phase == COMBAT_PHASE_ANIMATE) {
                 if (combat_state.anim_count > 0 && combat_state.anim_cursor < combat_state.anim_count) {
                     combat_state.anim_beat_timer -= dt;
                     float beat_elapsed = combat_state.anim_beat_dur - combat_state.anim_beat_timer;
                     int fx_all_done = (combat_state.fx_active_count == 0 &&
                                        (!combat_state.fx_has_cur_beat || combat_state.fx_cur_phase >= combat_state.fx_max_phase));
-                    int beat_done = (combat_state.anim_beat_timer <= 0.0f) ||
-                                    (combat_state.fx_has_cur_beat ? (fx_all_done && beat_elapsed >= 0.42f) : 0);
+                    int beat_done = !any_dying &&
+                                    ((combat_state.anim_beat_timer <= 0.0f) ||
+                                     (combat_state.fx_has_cur_beat ? (fx_all_done && beat_elapsed >= 0.42f) : 0));
                     if (beat_done) {
                         combat_state.anim_cursor++;
                         if (combat_state.anim_cursor < combat_state.anim_count) {
