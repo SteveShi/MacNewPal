@@ -49,8 +49,9 @@
      - **主菜单 → 原版开场剧情脚本 → 场景游历循环**：启动直入主菜单竹简界面（`all_sys.act` `10000`、`Music/M001.mp3`），支持「舊的回憶」10 槽读档；点击「新的故事」执行 `talk1.dat` `talk_id=100` 原版开场剧情（`532` -> `533` -> `Video/begin.bik` -> `501` `羅剎峰` -> `502` `羅剎洞外`，夢境李逍遙 `2009` 单人开局），支持自由行走、宝箱开盖状态切换（`OP 0x0A`）与跳出土怪、脚本内遇敌战斗（`2801` / `5001+`）、触发器切图、商店与营地系统。
      - **`all.snd` 音效与 `MZ + 0x200` 数据库**：`RIFF` 直通及 44 字节 PCM WAV 头重构，以及内存 TLV 解析（`ghero.dat`、`gmon.dat`、`gitem.dat`、`gmagic.dat`、`GFight1.dat`、`namex.dat`、`maps.dat`、`talk1.dat`）。
 
-3. **逆向工程规范与离线验证工具链**：
+3. **逆向工程规范、测试模块与离线验证工具链**：
    - 完整格式规范与战斗公式文档：[REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md)。
+   - 可选 QA 测试模式模块说明（`PAL_ENABLE_TEST_MODE`）：[docs/TEST_MODE.zh-CN.md](docs/TEST_MODE.zh-CN.md)（[English](docs/TEST_MODE.md)）。
    - 独立只读 Python 解析工具位于 `Tools/`：
      - `Tools/pal_unpack.py`：生成目录清单、LZO1X/ARLE `.tsw` 导图、35 操作码 `.act` 反汇编、`all.snd` WAV 导出及 `MSF3` 地图渲染。
      - `Tools/pal_db_unpack.py`：`0x7F` TLV 数据库导出（含全部 88 个 `GFight` 战斗指令注释）、`Talk.cpp` 脚本反汇编及 `maps.dat` / `namex.dat` / `path1..10.dat` 解析。

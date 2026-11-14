@@ -49,8 +49,9 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
      - **Title Screen → Authentic Opening Script → Field Loop**: Launches into the bamboo-scroll Title Screen (`all_sys.act` `10000`, `Music/M001.mp3`) with Title Load ("舊的回憶"); "新的故事" runs the authentic `talk1.dat` `talk_id=100` opening (`532` -> `533` -> `Video/begin.bik` -> `501` `羅剎峰` -> `502` `羅剎洞外`, Dream 李逍遙 `2009` solo) with interactive field movement, chests/objects (`OP 0x0A` state toggle & pop-out `土怪`), mid-script combat (`2801` / `5001+`), scripted triggers, shops, and camp menus.
      - **`all.snd` SFX & `MZ + 0x200` Databases**: RIFF passthrough / 44-byte PCM WAV reconstruction and in-memory TLV parsing (`ghero.dat`, `gmon.dat`, `gitem.dat`, `gmagic.dat`, `GFight1.dat`, `namex.dat`, `maps.dat`, `talk1.dat`).
 
-3. **Reverse Engineering Specification & Verification Toolkit**:
+3. **Reverse Engineering Specification, Test Module & Verification Toolkit**:
    - Complete binary format & combat formula documentation: [REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md).
+   - Optional QA Test Mode module documentation (`PAL_ENABLE_TEST_MODE`): [docs/TEST_MODE.md](docs/TEST_MODE.md) ([简体中文](docs/TEST_MODE.zh-CN.md)).
    - Standalone read-only unpacker and database analyzer scripts in `Tools/`:
      - `Tools/pal_unpack.py`: Manifest generator, LZO1X/ARLE `.tsw` PNG extractor, 35-opcode `.act` disassembler, `all.snd` WAV extractor, and `MSF3` `.lmf` map renderer.
      - `Tools/pal_db_unpack.py`: `0x7F` TLV database dumper (annotating all `88` `GFight` opcodes), `Talk.cpp` bytecode disassembler, `maps.dat` / `namex.dat` / `path1..10.dat` parser.

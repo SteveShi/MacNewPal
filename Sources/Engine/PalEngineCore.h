@@ -2,6 +2,7 @@
 #define PAL_ENGINE_CORE_H
 
 #include <stdint.h>
+#include "PalTestMode.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -71,6 +72,9 @@ typedef struct {
     int32_t hd_mode;         /* 0 = Original 640x480 Classic, 1 = HD Remastered 2x */
     float master_volume;     /* 0.0f .. 1.0f */
     int32_t mute_audio;      /* 0 or 1 */
+#if PAL_ENABLE_TEST_MODE
+    PalTestConfig test_cfg;
+#endif
 } PalLaunchConfig;
 
 typedef struct {

@@ -133,28 +133,10 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "SDL3 Metal 运行时启动" } }
       }
     },
-    "launch.initial_map": {
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Initial Map Index" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "初始地图索引" } }
-      }
-    },
-    "launch.initial_char": {
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Initial Sprite Slot" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "初始角色精灵槽" } }
-      }
-    },
     "launch.button": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Launch Game Engine (SDL3 Metal)" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "启动游戏引擎（SDL3 Metal）" } }
-      }
-    },
-    "launch.controls_hint": {
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Runtime Controls: WASD / Arrows to move, [ / ] to switch maps, N / P to switch sprites, Space to test SFX, Tab for HUD, Esc to return." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "运行时快捷键：WASD/方向键移动，[ / ] 切换地图，N / P 切换角色精灵，空格试听音效，Tab 切换调试面板，Esc 返回启动器。" } }
       }
     },
     "settings.tab_general": {
@@ -289,12 +271,6 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "完成" } }
       }
     },
-    "hero.preview_title": {
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Decoded Party Preview (ghero.dat)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "角色数据实时解码预览（ghero.dat）" } }
-      }
-    },
     "settings.render_quality": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Resolution Mode" } },
@@ -317,6 +293,66 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "HD Remastered uses 2× edge-preserving upscaling and linear smoothing automatically." } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "高清重制模式下自动启用 2× 保边超分与平滑采样。" } }
+      }
+    },
+    "test_mode.section_title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "QA Test Mode (Optional Module)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "QA 测试模式（独立可选模块）" } }
+      }
+    },
+    "test_mode.enable_toggle": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Enable Test Mode in Game (~ Toolbox / F12 Switch)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启用游戏内测试模式（按 ~ 展开工具箱 / F12 总开关）" } }
+      }
+    },
+    "test_mode.god_mode": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "God Mode (No HP/MP Loss)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "人物无敌（锁血免蓝／免疫异常）" } }
+      }
+    },
+    "test_mode.no_encounter": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No Encounters" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "屏蔽遇敌" } }
+      }
+    },
+    "test_mode.auto_instant_kill": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Auto Instant-Kill on Battle" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "入战自动秒杀" } }
+      }
+    },
+    "test_mode.speed_mult": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Field Speed" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "移动倍速" } }
+      }
+    },
+    "test_mode.speed_1x": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "1× Normal" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "1× 原速" } }
+      }
+    },
+    "test_mode.speed_2x": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "2× Fast" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "2× 加速" } }
+      }
+    },
+    "test_mode.speed_3x": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "3× Turbo" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "3× 极速" } }
+      }
+    },
+    "test_mode.hotkeys_hint": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Hotkeys: [~]/[F11] Toolbox · [K]/[F4] Instant Kill · [F2] God · [F3] No-Encounter · [F5] Full Heal · [F6] +50k Gold · [F7] Level Up · [F8] Speed · [F9] NoClip · [F10] Skip Wait" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "快捷键：[~]/[F11] 工具箱 · [K]/[F4] 战斗秒杀 · [F2] 无敌 · [F3] 免遇敌 · [F5] 满状态 · [F6] +5万文 · [F7] 升级 · [F8] 倍速 · [F9] 穿墙 · [F10] 跳等待（Option+~ 也可随时唤醒）" } }
       }
     }
   },

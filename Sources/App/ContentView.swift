@@ -9,8 +9,6 @@ struct ContentView: View {
     @AppStorage("hdMode") private var hdMode: Bool = true
     @AppStorage("masterVolume") private var masterVolume: Double = 0.85
     @AppStorage("muteAudio") private var muteAudio: Bool = false
-    @State private var initialMapIndex: Int = 0
-    @State private var initialCharSlot: Int = 0
 
     let store: PalLauncherStore
 
@@ -19,14 +17,13 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 16) {
                 headerSection
                 byodSection
+                launchSection
+#if PAL_ENABLE_TEST_MODE
+                TestModeLauncherGroupBox()
+#endif
                 if let val = store.validation {
-                    metricsSection(val)
-                    if !val.heroes.isEmpty {
-                        heroPreviewSection(val.heroes)
-                    }
                     checklistSection(val)
                 }
-                launchSection
             }
             .padding(20)
         }
@@ -129,76 +126,6 @@ struct ContentView: View {
         }
     }
 
-    private func metricsSection(_ val: ValidationSummaryModel) -> some View {
-        GroupBox("metrics.section_title") {
-            VStack(alignment: .leading, spacing: 10) {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                    metricTile("metrics.archives", value: "\(val.validArchivesCount)/\(val.totalRequiredArchives)")
-                    metricTile("metrics.sprites", value: "\(val.charSpriteSlots)")
-                    metricTile("metrics.maps", value: "\(val.hugeMapCount) + \(val.huge2MapCount)")
-                    metricTile("metrics.sfx", value: "\(val.sndSlots)")
-                    metricTile("metrics.titles", value: "\(val.mapTitleCount)")
-                    metricTile("metrics.heroes", value: "\(val.heroCount) / \(val.monsterCount)")
-                }
-
-                if !val.sampleMapTitle.isEmpty || !val.sampleDialogue.isEmpty {
-                    Divider()
-                    VStack(alignment: .leading, spacing: 4) {
-                        if !val.sampleMapTitle.isEmpty {
-                            Text("\(val.encodingName) • \(val.sampleMapTitle)")
-                                .font(.caption.weight(.medium))
-                        }
-                        if !val.sampleDialogue.isEmpty {
-                            Text(val.sampleDialogue)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    }
-                }
-            }
-            .padding(6)
-        }
-    }
-
-    private func metricTile(_ titleKey: LocalizedStringKey, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(titleKey)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.title3.bold().monospacedDigit())
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(8)
-        .background(.background.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func heroPreviewSection(_ heroes: [HeroPreviewItem]) -> some View {
-        GroupBox("hero.preview_title") {
-            VStack(spacing: 6) {
-                ForEach(heroes.prefix(4)) { hero in
-                    HStack {
-                        Text(hero.name)
-                            .font(.subheadline.weight(.semibold))
-                            .frame(width: 96, alignment: .leading)
-                        Text("HP \(hero.hpText)")
-                            .font(.caption.monospacedDigit())
-                            .frame(width: 90, alignment: .leading)
-                        Text("MP \(hero.mpText)")
-                            .font(.caption.monospacedDigit())
-                            .frame(width: 80, alignment: .leading)
-                        Spacer()
-                        Text(hero.statsText)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .padding(6)
-        }
-    }
-
     private func checklistSection(_ val: ValidationSummaryModel) -> some View {
         GroupBox("checklist.title") {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
@@ -226,33 +153,22 @@ struct ContentView: View {
     private var launchSection: some View {
         GroupBox("launch.section_title") {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 18) {
-                    let maxMap = max(0, (store.validation?.hugeMapCount ?? 1) - 1)
-                    let maxSprite = max(0, (store.validation?.charSpriteSlots ?? 1) - 1)
-
-                    Stepper(value: $initialMapIndex, in: 0...maxMap) {
-                        HStack {
-                            Text("launch.initial_map")
-                            Text("#\(initialMapIndex)")
-                                .monospacedDigit()
-                        }
+                HStack(spacing: 12) {
+                    Text("settings.render_quality")
+                        .font(.callout.weight(.medium))
+                    Picker("settings.render_quality", selection: $hdMode) {
+                        Text("settings.quality_original").tag(false)
+                        Text("settings.quality_hd").tag(true)
                     }
-
-                    Stepper(value: $initialCharSlot, in: 0...maxSprite) {
-                        HStack {
-                            Text("launch.initial_char")
-                            Text("#\(initialCharSlot)")
-                                .monospacedDigit()
-                        }
-                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 320)
 
                     Spacer()
 
                     Button {
                         store.launchEngine(
                             gameDir: gameDataPath,
-                            initialMapIndex: initialMapIndex,
-                            initialCharSlot: initialCharSlot,
                             windowScale: windowScale,
                             vsyncEnabled: vsyncEnabled,
                             nearestFilter: nearestFilter,
@@ -269,22 +185,6 @@ struct ContentView: View {
                     .controlSize(.large)
                     .disabled(store.validation?.isValid != true || store.isRunningEngine)
                 }
-
-                HStack(spacing: 12) {
-                    Text("settings.render_quality")
-                        .font(.callout.weight(.medium))
-                    Picker("settings.render_quality", selection: $hdMode) {
-                        Text("settings.quality_original").tag(false)
-                        Text("settings.quality_hd").tag(true)
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 320)
-                }
-
-                Text("launch.controls_hint")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
 
                 if !store.lastErrorMessage.isEmpty {
                     Text(store.lastErrorMessage)

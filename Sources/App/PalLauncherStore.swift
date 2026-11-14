@@ -12,15 +12,6 @@ struct ArchiveCheckItem: Identifiable, Sendable {
     let detail: String
 }
 
-struct HeroPreviewItem: Identifiable, Sendable {
-    let id: Int
-    let name: String
-    let lv: Int
-    let hpText: String
-    let mpText: String
-    let statsText: String
-}
-
 struct ValidationSummaryModel: Sendable {
     let isValid: Bool
     let validArchivesCount: Int
@@ -42,7 +33,6 @@ struct ValidationSummaryModel: Sendable {
     let sampleDialogue: String
     let summaryMessage: String
     let checks: [ArchiveCheckItem]
-    let heroes: [HeroPreviewItem]
 }
 
 @MainActor
@@ -142,23 +132,6 @@ final class PalLauncherStore {
             }
         }
 
-        let heroCount = Int(min(max(0, report.hero_summary_count), PAL_MAX_HEROES))
-        var heroItems: [HeroPreviewItem] = []
-        withUnsafeBytes(of: report.heroes) { raw in
-            let ptr = raw.bindMemory(to: PalHeroSummary.self)
-            for i in 0..<heroCount {
-                let h = ptr[i]
-                heroItems.append(HeroPreviewItem(
-                    id: Int(h.id),
-                    name: Self.stringFromTuple(h.name),
-                    lv: Int(h.lv),
-                    hpText: "\(h.cur_hp)/\(h.max_hp)",
-                    mpText: "\(h.cur_mp)/\(h.max_mp)",
-                    statsText: "ATK \(h.atk) • MAG \(h.mag) • DEF \(h.def) • SPD \(h.spd)"
-                ))
-            }
-        }
-
         validation = ValidationSummaryModel(
             isValid: report.is_valid != 0,
             validArchivesCount: Int(report.valid_archives_count),
@@ -179,15 +152,12 @@ final class PalLauncherStore {
             sampleMapTitle: Self.stringFromTuple(report.sample_map_title),
             sampleDialogue: Self.stringFromTuple(report.sample_dialogue),
             summaryMessage: Self.stringFromTuple(report.summary_message),
-            checks: checkItems,
-            heroes: heroItems
+            checks: checkItems
         )
     }
 
     func launchEngine(
         gameDir: String,
-        initialMapIndex: Int,
-        initialCharSlot: Int,
         windowScale: Int,
         vsyncEnabled: Bool,
         nearestFilter: Bool,
@@ -201,14 +171,17 @@ final class PalLauncherStore {
 
         var cfg = PalLaunchConfig()
         Self.writeCString(gameDir, into: &cfg.game_dir)
-        cfg.initial_map_index = Int32(max(0, initialMapIndex))
-        cfg.initial_char_slot = Int32(max(0, initialCharSlot))
+        cfg.initial_map_index = 0
+        cfg.initial_char_slot = 0
         cfg.window_scale = Int32(windowScale)
         cfg.vsync_enabled = vsyncEnabled ? 1 : 0
         cfg.nearest_filter = nearestFilter ? 1 : 0
         cfg.hd_mode = hdMode ? 1 : 0
         cfg.master_volume = Float(min(max(masterVolume, 0.0), 1.0))
         cfg.mute_audio = muteAudio ? 1 : 0
+#if PAL_ENABLE_TEST_MODE
+        cfg.test_cfg = TestModeDefaults.currentConfig()
+#endif
 
         var errBuf = [CChar](repeating: 0, count: 512)
         let rc = pal_sdl3_run_session(&cfg, &errBuf, Int32(errBuf.count))

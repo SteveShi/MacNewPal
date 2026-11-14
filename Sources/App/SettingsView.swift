@@ -75,8 +75,56 @@ struct SettingsView: View {
                     .disabled(gameDataPath.isEmpty)
                 }
             }
+#if PAL_ENABLE_TEST_MODE
+            TestModeSettingsSection()
+#endif
+            if let val = store.validation {
+                vfsMetricsSection(val)
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 480, height: 360)
+        .frame(width: 520, height: 560)
+    }
+
+    private func vfsMetricsSection(_ val: ValidationSummaryModel) -> some View {
+        Section("metrics.section_title") {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                metricTile("metrics.archives", value: "\(val.validArchivesCount)/\(val.totalRequiredArchives)")
+                metricTile("metrics.sprites", value: "\(val.charSpriteSlots)")
+                metricTile("metrics.maps", value: "\(val.hugeMapCount) + \(val.huge2MapCount)")
+                metricTile("metrics.sfx", value: "\(val.sndSlots)")
+                metricTile("metrics.titles", value: "\(val.mapTitleCount)")
+                metricTile("metrics.heroes", value: "\(val.heroCount) / \(val.monsterCount)")
+            }
+            .padding(.vertical, 4)
+
+            if !val.sampleMapTitle.isEmpty || !val.sampleDialogue.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !val.sampleMapTitle.isEmpty {
+                        Text("\(val.encodingName) • \(val.sampleMapTitle)")
+                            .font(.caption.weight(.medium))
+                    }
+                    if !val.sampleDialogue.isEmpty {
+                        Text(val.sampleDialogue)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+    }
+
+    private func metricTile(_ titleKey: LocalizedStringKey, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(titleKey)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.title3.bold().monospacedDigit())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(.background.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
     }
 }
