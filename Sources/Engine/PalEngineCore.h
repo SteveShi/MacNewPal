@@ -184,6 +184,28 @@ typedef struct {
     int32_t ok;
 } PalDbM4ProbeInfo;
 
+typedef struct {
+    int32_t monster_count;
+    int32_t zone_count;
+    int32_t fight_script_count;
+    int32_t battle2801_bg_id;
+    char battle2801_bgm[32];
+    int32_t battle2801_enemy_id;
+    char battle2801_enemy_name_utf8[64];
+    int32_t battle2801_enemy_hp;
+    int32_t battle2801_damage_dealt;
+    int32_t battle2801_exp_gained;
+    int32_t hero2000_post_level;
+    int32_t shop58001_item_count;
+    int32_t shop58001_bought_item_id;
+    int32_t shop58001_money_after;
+    int32_t save0_money;
+    int32_t save0_map_id;
+    char save0_title_utf8[64];
+    int32_t roundtrip_ok;
+    int32_t ok;
+} PalCombatM5ProbeInfo;
+
 /** Query available SDL3 render drivers on macOS and check Metal availability (returns 1 if Metal is present). */
 int32_t pal_sdl3_query_metal_backend(char *out_drivers, int32_t out_cap);
 
@@ -223,6 +245,9 @@ int32_t pal_talk_vm_probe_m3(const char *game_dir, PalTalkM3ProbeInfo *out_info)
 
 /** Probe ghero/glevel/gitem/gmagic databases, party equipment/stat calculation, item/magic usage, level-up, and 0x309 chest item resolution for M4 verification. */
 int32_t pal_db_menu_probe_m4(const char *game_dir, PalDbM4ProbeInfo *out_info);
+
+/** Probe M5 monster/map-zone/GFight1..4 DB loading, turn-based battle 2801 simulation, gmagic shop 58001 transaction, and Save/Load round-trip. */
+int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo *out_info);
 
 /** Non-interactive headless/hidden-window verification of Metal renderer and live VFS + M1/M2/M3 decoding. */
 int32_t pal_sdl3_self_test(const char *game_dir);
