@@ -16,7 +16,8 @@
 | **M1** | Bink 视频播放、BGM 流式解码、`.tsw` 色键修复、`.act` 虚拟机、CoreText 富文本与标题/开场流程 | ✅ 已完成 |
 | **M2** | 全量 `MSF3` 地图引擎（`huge.lmf` + `huge2.lmf`）、`maps.dat` 元数据联动、3 桶 Y 轴遮挡、8 向角色 `.act` 虚拟机、A* 寻路、死区镜头与 4 人队列跟随 | ✅ 已完成 |
 | **M3** | 全 8 卷 `talk1..8.dat` 多库加载器与 `Talk.cpp` 字节码虚拟机（`7,394` 条脚本）、剧情旗标与脚本变量、`%B` 对话分支选项、`0xD8`/`0xD9` 半身立绘、地块触发器、NPC/宝箱交互与 `0x1B` 切图传送 | ✅ 已完成 |
-| **M4+** | 背包/系统菜单、`GFight1..4.dat` 回合制战斗与存档读档 | 🚧 规划中 |
+| **M4** | 完整 `0x7F` 数据库（`ghero`/`glevel`/`gitem`/`gmagic`）、队伍属性/换装/仙术/升级运行时、`Talk`（`0x80`..`0x86` 与 `0x309` 物品脚本）联动及游戏内营地菜单（狀態/仙術/物品/系統） | ✅ 已完成 |
+| **M5+** | `GFight1..4.dat` 回合制战斗、商店交互与存档读档 | 🚧 规划中 |
 
 ---
 
@@ -41,6 +42,7 @@
      - **场景移动、死区镜头与 4 人队列跟随**：复刻 `(304, 240)` 镜头死区与地图边界钳位、斜向贴墙滑动碰撞、左键点击全地图 8 向 A* 自动寻路，以及 4 主角队列拖尾跟随缓冲。
      - **CoreText 中文富文本渲染器**（`pal_font_probe_rich_text`、`PalRichTextMetrics`）：解析 SWD2k 排版控制符（`%N` 换行、`%C0`..`%C9` 10 色调色盘、`%S`、`%D`、`%G`、`%K`）并栅格化为带投影的 UTF-8 文字纹理。
      - **`Talk.cpp` 剧情脚本虚拟机、半身立绘与触发器引擎**（`pal_talk_vm_probe_m3`、`PalTalkVM`、`PalTalkWorldState`）：全 8 卷 `talk1..8.dat` 多库加载器（`talk1`/`talk4` 各 `701` 槽、其余 `1000` 槽 —— 全库 **7,394 / 7,394** 条脚本 100% 无错解码），完整支持剧情旗标（`8192`）、脚本变量（`256`、`obj_rv`）、地图/道具/距离条件跳转、`0xD8`/`0xD9` 动态半身立绘（`all_map1.act` -> `all_map1.tsw`）、`%B` 多选项对话菜单、踩踏地块触发器、`0x26`/`0x27`/`0x64` NPC 显隐与脚本改写、`0x309` 道具奖励与 `0x1B` 切图传送。
+     - **`0x7F` 游戏数据库运行时、角色成长与营地菜单**（`pal_db_menu_probe_m4`、`PalGameDatabase`、`PalPartyMemberState`）：完整解析 `ghero.dat`（`9` 位主角）、`gitem.dat`（`252` 件物品与效果/装备脚本）、`gmagic.dat`（`66` 种仙术与 `601` 条脚本含 `5001..5319` 奖励及 `58000+` 商店清单）与 `glevel.dat`（`410` 条升级模板）。完整复现 `0x4acbf1`/`0x4ad456` 装备槽位与主角掩码限制、装备属性被动加成（`0x7F30200B`）、非战斗道具/仙术恢复（`0x7EFF1001`/`0x7EFF1015`），并与 `Talk` 脚本指令（`0x80`、`0x81`/`0x82`/`0xA7`/`0xA8`、`0x83`、`0x84`、`0x86`、`0x309`）实时联动；按 `I` / `U` / `F1` 打开「狀態 / 仙術 / 物品 / 系統」四分页营地菜单（联动 `all_sys.tsw`、`all_item.act`/`all_item.tsw` 与 CoreText）。
      - **主菜单 → 新故事开场剧情 → 场景游历循环**：启动直入主菜单竹简界面（`all_sys.act` `10000`、`Music/M001.mp3`）；点击「新的故事」播放 `532` -> `533` -> `Video/begin.bik` -> 进入 `501`（`羅剎峰`），支持自由行走、NPC 对话与触发器联动切图。
      - **`all.snd` 音效与 `MZ + 0x200` 数据库**：`RIFF` 直通及 44 字节 PCM WAV 头重构，以及内存 TLV 解析（`ghero.dat`、`gmon.dat`、`gitem.dat`、`gmagic.dat`、`GFight1.dat`、`namex.dat`、`maps.dat`、`talk1.dat`）。
 
@@ -60,8 +62,9 @@
 | `WASD` / 方向键 | 8 方向移动（支持斜向贴墙滑动） |
 | 按住 `Shift` | 奔跑模式（`action_base = 16`） |
 | 鼠标左键点击地图 / NPC | 8 方向 A* 自动寻路至目标格，或走近点击的 NPC/宝箱自动触发对话 |
-| `Space` / `Return` / `E` | 与面朝邻近 NPC/宝箱对话、推进脚本对话或确认所选分支 |
+| `Space` / `Return` / `E` | 与面朝邻近 NPC/宝箱对话、推进脚本对话或确认所选分支 / 菜单项 |
 | `Up` / `Down` / `1`..`8` | 出现 `%B` 多选分支时切换 / 直选选项 |
+| `I` / `U` / `F1` | 开关四分页队伍主菜单（`狀態`、`仙術`、`物品`、`系統`，支持换装、道具/仙术使用与系统操作） |
 | `M` | 巡礼切换精选测试地图（`501`, `1`, `2`, `3`, `502`） |
 | `[` / `]` | 在当前 `.lmf` 归档（`huge.lmf` / `huge2.lmf`）中切换上一张 / 下一张地图 |
 | `P` | 开关 4 人队列跟随 |
@@ -71,7 +74,7 @@
 | `T` | 在未运行剧情脚本时开关示例 CoreText 对话框 |
 | `B` | 重播开场动画 `Video/begin.bik` |
 | `Tab` | 隐藏 / 显示顶部调试 HUD |
-| `Esc` | 淡出返回主菜单标题界面 |
+| `Esc` | 关闭主菜单 / 对话框，或淡出返回标题界面 |
 
 ---
 
@@ -92,4 +95,4 @@ xcodebuild -project NewPal.xcodeproj -scheme NewPal -configuration Release -deri
 ./build/Build/Products/Release/NewPal.app/Contents/MacOS/NewPal --self-test /path/to/PalGame
 ```
 
-指向有效的 `PalGame` 目录时，自检将输出 `Validation: 23/23 (is_valid=1)`、`Renderer: metal`、FFmpeg Bink/BGM 探测、UI 与角色 `.act` VM 步进、`MSF3` + `maps.dat` + A* 寻路探测（`MapM2[1]`、`MapM2[2]`、`MapM2[501]`）、`TalkM3`（8 卷共 `7394/7394` 条脚本无错解码，传送 `6001`/`6007`、宝箱 `7012` 与剧情 `104`/`105` 状态推进）、CoreText 富文本渲染与实时解码诊断信息，并以 `[SelfTest] ALL CHECKS PASSED.` 与退出码 `0` 结束。
+指向有效的 `PalGame` 目录时，自检将输出 `Validation: 23/23 (is_valid=1)`、`Renderer: metal`、FFmpeg Bink/BGM 探测、UI 与角色 `.act` VM 步进、`MSF3` + `maps.dat` + A* 寻路探测（`MapM2[1]`、`MapM2[2]`、`MapM2[501]`）、`TalkM3`（8 卷共 `7394/7394` 条脚本无错解码，传送 `6001`/`6007`、宝箱 `7012` 与剧情 `104`/`105` 状态推进）、`DbM4`（`0x7F` 数据表：`9` 角色、`252` 道具、`66` 仙术、`410` 升级记录，`h2000` 穿脱装备/道具/仙术/升级推演与 `0x309` 物品脚本解析 `5150 -> 3254 皮帽`）、CoreText 富文本渲染与实时解码诊断信息，并以 `[SelfTest] ALL CHECKS PASSED.` 与退出码 `0` 结束。

@@ -168,6 +168,22 @@ typedef struct {
     int32_t ok;
 } PalTalkM3ProbeInfo;
 
+typedef struct {
+    int32_t hero_count;
+    int32_t item_count;
+    int32_t magic_count;
+    int32_t level_template_count;
+    int32_t hero2000_lv1_hp;
+    int32_t hero2000_equip_atk;
+    int32_t hero2000_equip_def;
+    int32_t item4401_healed_hp;
+    int32_t magic6901_healed_hp;
+    int32_t hero2000_lv2_hp;
+    int32_t chest7012_granted_item_id;
+    char chest7012_item_name_utf8[64];
+    int32_t ok;
+} PalDbM4ProbeInfo;
+
 /** Query available SDL3 render drivers on macOS and check Metal availability (returns 1 if Metal is present). */
 int32_t pal_sdl3_query_metal_backend(char *out_drivers, int32_t out_cap);
 
@@ -204,6 +220,9 @@ int32_t pal_map_probe_m2(const char *game_dir, int32_t map_id, PalMapM2ProbeInfo
 
 /** Probe all 8 talk1..8.dat banks and headlessly execute scripts 6001, 7012, 104, and 105 for M3 verification. */
 int32_t pal_talk_vm_probe_m3(const char *game_dir, PalTalkM3ProbeInfo *out_info);
+
+/** Probe ghero/glevel/gitem/gmagic databases, party equipment/stat calculation, item/magic usage, level-up, and 0x309 chest item resolution for M4 verification. */
+int32_t pal_db_menu_probe_m4(const char *game_dir, PalDbM4ProbeInfo *out_info);
 
 /** Non-interactive headless/hidden-window verification of Metal renderer and live VFS + M1/M2/M3 decoding. */
 int32_t pal_sdl3_self_test(const char *game_dir);

@@ -16,7 +16,8 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 | **M1** | Bink Video (`.bik`), BGM Streamer, `.tsw` Color Keying, `.act` Action VM, CoreText Rich-Text & Title/Opening Sequence | ✅ Completed |
 | **M2** | Full `MSF3` Map Loader (`huge.lmf` + `huge2.lmf`), `maps.dat` Integration, 3-Bucket Y-Sorted Occlusion, 8-Dir `all_char.act` VM, A* Pathfinding, Camera Deadzone & 4-Hero Party Follower Chain | ✅ Completed |
 | **M3** | Multi-Bank `talk1..8.dat` Loader & `Talk.cpp` Bytecode VM (`7,394` Scripts), Story Flags & Variables, `%B` Choice Menus, `0xD8`/`0xD9` Bust Portraits, Tile Triggers, NPC/Chest Interaction & `0x1B` Map Transitions | ✅ Completed |
-| **M4+** | Menus/Inventory, `GFight1..4.dat` Combat & Save/Load | 🚧 Planned |
+| **M4** | Full `0x7F` Databases (`ghero`/`glevel`/`gitem`/`gmagic`), Party Stats/Equip/Magic/Level-Up Runtime, `Talk` Opcodes (`0x80`..`0x86`, `0x309` Scripts) & Interactive Camp/System Menu (`狀態`/`仙術`/`物品`/`系統`) | ✅ Completed |
+| **M5+** | `GFight1..4.dat` Combat, Shop UI & Save/Load | 🚧 Planned |
 
 ---
 
@@ -41,6 +42,7 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
      - **Field Movement, Camera & Party Chain**: Authentic `(304, 240)` camera deadzone clamped to map dimensions, diagonal corner-sliding collision, click-to-move 8-direction A* pathfinding, and 4-hero party follower chain (`32`/`64`-step trail buffer).
      - **CoreText Rich-Text Renderer** (`pal_font_probe_rich_text`, `PalRichTextMetrics`): Parses SWD2k formatting tags (`%N`, `%C0`..`%C9` palette, `%S`, `%D`, `%G`, `%K`) into crisp Chinese glyph textures with drop shadows.
      - **`Talk.cpp` Script VM, Bust Portraits & Trigger Engine** (`pal_talk_vm_probe_m3`, `PalTalkVM`, `PalTalkWorldState`): Multi-bank `talk1..8.dat` loader (`701` slots in `talk1`/`talk4`, `1000` in others — **7,394 / 7,394** scripts cleanly decoded), story flags (`8192`) & script variables (`256`, `obj_rv`), conditional/map/item/distance branches, `0xD8`/`0xD9` animated bust portraits (`all_map1.act` -> `all_map1.tsw`), `%B` dialogue choice extraction, stepped tile triggers, persistent `0x26`/`0x27`/`0x64` NPC state updates, `0x309` rewards, and `0x1B` map transitions.
+     - **0x7F Database Runtime, Party Progression & Camp Menu** (`pal_db_menu_probe_m4`, `PalGameDatabase`, `PalPartyMemberState`): Loads `ghero.dat` (`9` heroes), `gitem.dat` (`252` items + equip/field scripts), `gmagic.dat` (`66` spells + `601` scripts including `5001..5319` rewards & `58000+` shop lists), and `glevel.dat` (`410` level-up delta templates). Drives `0x4acbf1`/`0x4ad456` slot & hero-mask checks, passive equipment bonuses (`0x7F30200B`), field healing items/spells (`0x7EFF1001`/`0x7EFF1015`), Talk opcodes (`0x80`, `0x81`/`0x82`/`0xA7`/`0xA8`, `0x83`, `0x84`, `0x86`, `0x309`), and an interactive `[I]`/`[U]`/`[F1]` Camp Menu (`狀態`, `仙術`, `物品`, `系統`) using `all_sys.tsw`, `all_item.act`/`all_item.tsw`, and CoreText.
      - **Title Screen → Opening Sequence → Field Loop**: Launches into the bamboo-scroll Title Screen (`all_sys.act` `10000`, `Music/M001.mp3`); "新的故事" executes splash maps `532` -> `533` -> `Video/begin.bik` -> opening scene `501` (`羅剎峰`) with interactive field movement, NPC interaction, and scripted triggers.
      - **`all.snd` SFX & `MZ + 0x200` Databases**: RIFF passthrough / 44-byte PCM WAV reconstruction and in-memory TLV parsing (`ghero.dat`, `gmon.dat`, `gitem.dat`, `gmagic.dat`, `GFight1.dat`, `namex.dat`, `maps.dat`, `talk1.dat`).
 
@@ -60,8 +62,9 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 | `WASD` / Arrow Keys | 8-direction movement with diagonal corner sliding |
 | `Shift` (hold) | Run (`action_base = 16`) |
 | Left-Click on map / NPC | 8-direction A* pathfinding to clicked tile or auto-walk & talk to clicked NPC |
-| `Space` / `Return` / `E` | Interact with adjacent facing NPC/chest, advance active dialogue, or confirm selected choice |
+| `Space` / `Return` / `E` | Interact with adjacent facing NPC/chest, advance active dialogue, or confirm selected choice / menu item |
 | `Up` / `Down` / `1`..`8` | Highlight / pick `%B` dialogue branch options when a prompt is open |
+| `I` / `U` / `F1` | Toggle the 4-tab Camp / System Menu (`狀態`, `仙術`, `物品`, `系統`) with equip, item/magic use, and save/title actions |
 | `M` | Cycle featured tour maps (`501`, `1`, `2`, `3`, `502`) |
 | `[` / `]` | Previous / next map in the current `.lmf` archive (`huge.lmf` / `huge2.lmf`) |
 | `P` | Toggle 4-hero party follower chain |
@@ -71,7 +74,7 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 | `T` | Toggle sample CoreText dialogue box (when no Talk script is active) |
 | `B` | Replay `Video/begin.bik` |
 | `Tab` | Toggle debug HUD |
-| `Esc` | Return to Title Screen |
+| `Esc` | Close active Camp Menu / dialogue, or return to Title Screen |
 
 ---
 
@@ -92,4 +95,4 @@ xcodebuild -project NewPal.xcodeproj -scheme NewPal -configuration Release -deri
 ./build/Build/Products/Release/NewPal.app/Contents/MacOS/NewPal --self-test /path/to/PalGame
 ```
 
-A valid `PalGame` directory reports `Validation: 23/23 (is_valid=1)`, `Renderer: metal`, verified FFmpeg Bink/BGM probes, UI and character `.act` VM stepping, `MSF3` + `maps.dat` + A* probes (`MapM2[1]`, `MapM2[2]`, `MapM2[501]`), `TalkM3` (`8` banks, `7394/7394` clean scripts, portals `6001`/`6007`, chest `7012`, cutscenes `104`/`105`), CoreText rich-text metrics, decoded map/sprite/action/audio/hero diagnostics, and `[SelfTest] ALL CHECKS PASSED.` with exit code `0`.
+A valid `PalGame` directory reports `Validation: 23/23 (is_valid=1)`, `Renderer: metal`, verified FFmpeg Bink/BGM probes, UI and character `.act` VM stepping, `MSF3` + `maps.dat` + A* probes (`MapM2[1]`, `MapM2[2]`, `MapM2[501]`), `TalkM3` (`8` banks, `7394/7394` clean scripts, portals `6001`/`6007`, chest `7012`, cutscenes `104`/`105`), `DbM4` (`0x7F` databases: `9` heroes, `252` items, `66` magics, `410` level rows, `h2000` equip/item/magic/level-up progression, and `0x309` script item lookup `5150 -> 3254 皮帽`), CoreText rich-text metrics, decoded map/sprite/action/audio/hero diagnostics, and `[SelfTest] ALL CHECKS PASSED.` with exit code `0`.
