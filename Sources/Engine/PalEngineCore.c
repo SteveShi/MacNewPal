@@ -3339,106 +3339,6 @@ static int run_fade_transition(
     return 0;
 }
 
-static int find_lmf_index_by_id(const char *game_dir, const char *lmf_name, uint32_t target_map_id) {
-    char path[1200];
-    join_path(path, sizeof(path), game_dir, lmf_name);
-    FILE *f = fopen(path, "rb");
-    if (!f) return -1;
-    uint64_t fsize = get_file_size_fp(f);
-
-    PalLmfEntry *entries = NULL;
-    int cnt = 0;
-    int found = -1;
-    if (read_lmf_directory(f, fsize, &entries, &cnt) == 0 && cnt > 0) {
-        for (int i = 0; i < cnt; i++) {
-            if (entries[i].id == target_map_id) {
-                found = i;
-                break;
-            }
-        }
-    }
-    free(entries);
-    fclose(f);
-    return found;
-}
-
-/* Returns 0 on completion or user skip, 1 if app quit / window closed */
-static int play_lmf_splash_by_id(
-    SDL_Window *window, SDL_Renderer *renderer, const char *game_dir,
-    uint32_t target_map_id, SDL_ScaleMode scale_mode, Uint32 fade_ms, Uint32 hold_ms
-) {
-    int idx = find_lmf_index_by_id(game_dir, "huge.lmf", target_map_id);
-    if (idx < 0) return 0;
-
-    PalLoadedMap splash = {0};
-    if (vfs_load_lmf_map(game_dir, "huge.lmf", idx, renderer, scale_mode, &splash) != 0 || !splash.texture) {
-        free_loaded_map(&splash);
-        return 0;
-    }
-
-    Uint64 start_ns = SDL_GetTicksNS();
-    double total_ms = (double)fade_ms * 2.0 + (double)hold_ms;
-    int app_quit = 0;
-    int skip = 0;
-
-    while (!app_quit && !skip) {
-        SDL_Event ev;
-        while (SDL_PollEvent(&ev)) {
-            if (ev.type == SDL_EVENT_QUIT ||
-                (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && ev.window.windowID == SDL_GetWindowID(window))) {
-                app_quit = 1;
-                break;
-            }
-            if (ev.type == SDL_EVENT_KEY_DOWN) {
-                SDL_Keycode k = ev.key.key;
-                if (k == SDLK_ESCAPE || k == SDLK_SPACE || k == SDLK_RETURN) {
-                    skip = 1;
-                    break;
-                }
-            } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
-                skip = 1;
-                break;
-            }
-        }
-        if (app_quit || skip) break;
-
-        double el_ms = (double)(SDL_GetTicksNS() - start_ns) / 1e6;
-        if (el_ms >= total_ms) break;
-
-        Uint8 fade_alpha = 0;
-        if (fade_ms > 0 && el_ms < (double)fade_ms) {
-            double t = el_ms / (double)fade_ms;
-            fade_alpha = (Uint8)((1.0 - t) * 255.0);
-        } else if (fade_ms > 0 && el_ms > (double)fade_ms + (double)hold_ms) {
-            double t = (el_ms - (double)fade_ms - (double)hold_ms) / (double)fade_ms;
-            if (t > 1.0) t = 1.0;
-            fade_alpha = (Uint8)(t * 255.0);
-        }
-
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-        SDL_RenderClear(renderer);
-        SDL_FRect dst = {0.0f, 0.0f, (float)splash.w_px, (float)splash.h_px};
-        SDL_RenderTexture(renderer, splash.texture, NULL, &dst);
-        if (fade_alpha > 0) {
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, fade_alpha);
-            SDL_FRect full = {0.0f, 0.0f, 640.0f, 480.0f};
-            SDL_RenderFillRect(renderer, &full);
-        }
-        SDL_RenderPresent(renderer);
-        SDL_Delay(8);
-    }
-
-    free_loaded_map(&splash);
-    if (!app_quit) {
-        SDL_SetRenderTarget(renderer, NULL);
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-        SDL_RenderClear(renderer);
-        SDL_RenderPresent(renderer);
-    }
-    return app_quit ? 1 : 0;
-}
-
 typedef struct {
     PalActVM vm;
     PalLoadedSprite sprite;
@@ -4069,6 +3969,10 @@ typedef struct {
     int16_t obj_rv[PAL_OBJ_CAP][4];
     uint8_t npc_visibility_override[PAL_OBJ_CAP]; /* 0=default, 1=shown, 2=hidden */
     uint16_t npc_talk_override[PAL_OBJ_CAP];      /* 0=default, >0=override talk_id */
+    uint16_t npc_sub_override[PAL_OBJ_CAP];       /* 0=default, >0=1+(sub_state) from OP 0x0A */
+    uint16_t npc_pos_map[PAL_OBJ_CAP];            /* >0=relocated map_id from OP 0x3E */
+    int16_t npc_pos_tx[PAL_OBJ_CAP];
+    int16_t npc_pos_ty[PAL_OBJ_CAP];
     int32_t money;
     uint16_t inventory_ids[PAL_INVENTORY_CAP];
     int32_t inventory_qty[PAL_INVENTORY_CAP];
@@ -4583,6 +4487,40 @@ static int pal_world_find_party_member(const PalTalkWorldState *ws, int32_t hero
     return -1;
 }
 
+static void pal_party_init_hero_slot(PalGameDatabase *db, PalPartyMemberState *m, int32_t hero_id) {
+    if (!db || !m) return;
+    const PalHeroRecord *hr = pal_db_find_hero(db, hero_id);
+    if (!hr) return;
+    memset(m, 0, sizeof(*m));
+    m->active = 1;
+    m->hero_id = hr->id;
+    snprintf(m->name_utf8, sizeof(m->name_utf8), "%s", hr->name_utf8);
+    m->lv = hr->lv > 0 ? hr->lv : (hr->start_lv > 0 ? hr->start_lv : 1);
+    m->exp = hr->exp;
+    m->next_exp = hr->next_exp > 0 ? hr->next_exp : 40;
+    m->base_max_hp = hr->max_hp;
+    m->base_max_mp = hr->max_mp;
+    m->cur_hp = hr->cur_hp > 0 ? hr->cur_hp : hr->max_hp;
+    m->cur_mp = hr->cur_mp >= 0 ? hr->cur_mp : hr->max_mp;
+    m->base_atk = hr->atk;
+    m->base_mag = hr->mag;
+    m->base_def = hr->def;
+    m->base_spd = hr->spd;
+    m->base_luck = hr->luck;
+    for (int r = 0; r < 6; r++) m->base_res[r] = hr->res[r];
+    for (int32_t e = 0; e < hr->init_equip_count; e++) {
+        uint16_t eq_id = hr->init_equips[e];
+        int slot = pal_item_equip_slot((int32_t)eq_id);
+        if (slot >= 0 && slot < PAL_EQUIP_SLOT_COUNT) {
+            m->equips[slot] = eq_id;
+        }
+    }
+    for (int32_t mg = 0; mg < hr->init_magic_count; mg++) {
+        pal_party_teach_magic(m, hr->init_magics[mg]);
+    }
+    pal_party_recalc_member(db, m);
+}
+
 static void pal_party_init_from_db(PalTalkWorldState *ws, PalGameDatabase *db, int preset) {
     if (!ws || !db) return;
     ws->db = db;
@@ -4590,41 +4528,13 @@ static void pal_party_init_from_db(PalTalkWorldState *ws, PalGameDatabase *db, i
     static const int32_t kChap1Heroes[4] = {2000, 2001, 2002, 2003};
     static const int32_t kDreamHeroes[4] = {2009, 2001, 2002, 2003};
     const int32_t *ids = (preset == 1) ? kDreamHeroes : kChap1Heroes;
+    int max_cnt = (preset == 1 || preset == 2) ? 1 : 4;
     ws->party_member_count = 0;
-    for (int i = 0; i < 4; i++) {
-        const PalHeroRecord *hr = pal_db_find_hero(db, ids[i]);
-        if (!hr) continue;
-        PalPartyMemberState *m = &ws->party_members[ws->party_member_count++];
-        memset(m, 0, sizeof(*m));
-        m->active = 1;
-        m->hero_id = hr->id;
-        snprintf(m->name_utf8, sizeof(m->name_utf8), "%s", hr->name_utf8);
-        m->lv = hr->lv > 0 ? hr->lv : (hr->start_lv > 0 ? hr->start_lv : 1);
-        m->exp = hr->exp;
-        m->next_exp = hr->next_exp > 0 ? hr->next_exp : 40;
-        m->base_max_hp = hr->max_hp;
-        m->base_max_mp = hr->max_mp;
-        m->cur_hp = hr->cur_hp > 0 ? hr->cur_hp : hr->max_hp;
-        m->cur_mp = hr->cur_mp >= 0 ? hr->cur_mp : hr->max_mp;
-        m->base_atk = hr->atk;
-        m->base_mag = hr->mag;
-        m->base_def = hr->def;
-        m->base_spd = hr->spd;
-        m->base_luck = hr->luck;
-        for (int r = 0; r < 6; r++) m->base_res[r] = hr->res[r];
-        for (int32_t e = 0; e < hr->init_equip_count; e++) {
-            uint16_t eq_id = hr->init_equips[e];
-            int slot = pal_item_equip_slot((int32_t)eq_id);
-            if (slot >= 0 && slot < PAL_EQUIP_SLOT_COUNT) {
-                m->equips[slot] = eq_id;
-            }
-        }
-        for (int32_t mg = 0; mg < hr->init_magic_count; mg++) {
-            pal_party_teach_magic(m, hr->init_magics[mg]);
-        }
-        pal_party_recalc_member(db, m);
+    for (int i = 0; i < max_cnt; i++) {
+        if (!pal_db_find_hero(db, ids[i])) continue;
+        pal_party_init_hero_slot(db, &ws->party_members[ws->party_member_count++], ids[i]);
     }
-    if (ws->inventory_count == 0) {
+    if (preset == 0 && ws->inventory_count == 0) {
         ws->money = 500;
         pal_world_add_item(ws, 4401u, 3); /* 止血草 */
         pal_world_add_item(ws, 4402u, 2); /* 行軍丹 */
@@ -4867,6 +4777,7 @@ typedef struct {
     int32_t pending_sfx_id;
     int32_t pending_bink_id;
     char pending_bink_rel[128];
+    int paused_for_battle;
 
     int32_t exec_steps;
     int32_t dialogues_shown;
@@ -4973,9 +4884,11 @@ static int pal_talk_vm_start(PalTalkVM *vm, const char *game_dir, int32_t talk_i
     return 0;
 }
 
+static uint32_t pal_hero_field_act_id(int32_t hero_id);
+
 static uint16_t talk_resolve_obj_id(const PalTalkVM *vm, uint16_t raw_obj) {
     if (raw_obj == 0xFFF0u) return vm->trigger_obj_id;
-    if (raw_obj == 0xFFF1u) return vm->last_ref_obj_id;
+    if (raw_obj == 0xFFF1u) return 1u; /* Party leader */
     return raw_obj;
 }
 
@@ -4989,9 +4902,19 @@ static PalFieldActor *talk_find_actor_by_obj(
             return &party[0];
         }
     }
-    if (obj_id >= 1u && obj_id <= 4u && party) {
+    if (obj_id >= 2u && obj_id <= 4u && party) {
         if (out_is_party) *out_is_party = 1;
         return &party[obj_id - 1u];
+    }
+    if (npcs) {
+        for (int i = 0; i < npc_cnt; i++) {
+            if (npcs[i].obj_id == obj_id && (obj_id != 10u || npcs[i].active)) return &npcs[i];
+        }
+    }
+    if (obj_id == 10u && party) {
+        /* Dream Li Xiaoyao (hero 2009) acts under obj_id == 10 across 100..103 & 7001 */
+        if (out_is_party) *out_is_party = 1;
+        return &party[0];
     }
     if (npcs) {
         for (int i = 0; i < npc_cnt; i++) {
@@ -5117,6 +5040,91 @@ static void pal_talk_vm_step(
         }
 
         switch (op) {
+            case 0x0Au: { /* Set actor sub_action base (e.g. chest open 0 -> 8) */
+                uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
+                uint16_t sub = rd_u16(ins + 4u);
+                int is_p = 0;
+                PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, &is_p);
+                if (!is_p && obj < PAL_OBJ_CAP) {
+                    ws->npc_sub_override[obj] = (uint16_t)(sub + 1u);
+                }
+                if (a) {
+                    int was_active = a->active;
+                    a->orig_sub_state = sub;
+                    a->action_base = (int)sub;
+                    field_actor_set_sub(a, game_dir, a->act_id, (int)sub + (a->dir & 7), 1);
+                    if (!was_active) a->active = 0;
+                }
+                vm->ip += ilen;
+                break;
+            }
+
+            case 0x0Bu: { /* Set actor facing direction (0..7) */
+                uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
+                int ndir = (int)(rd_u16(ins + 4u) & 7u);
+                int is_p = 0;
+                PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, &is_p);
+                if (a) {
+                    int was_active = a->active;
+                    a->dir = ndir;
+                    int base = is_p ? a->action_base : (int)a->orig_sub_state;
+                    field_actor_set_sub(a, game_dir, a->act_id, base + ndir, 1);
+                    if (!was_active) a->active = 0;
+                }
+                vm->ip += ilen;
+                break;
+            }
+
+            case 0x14u:
+            case 0xA9u: { /* Scripted multi-actor walk to target tile */
+                uint32_t cnt = (uint32_t)(rd_u16(ins + 2u) & 0x3FFFu);
+                uint32_t stride = (op == 0x14u) ? 6u : 12u;
+                int max_ticks = 0;
+                for (uint32_t i = 0; i < cnt && 4u + (i + 1u) * stride <= ilen; i++) {
+                    const uint8_t *e = ins + 4u + i * stride;
+                    uint16_t obj = talk_resolve_obj_id(vm, rd_u16(e + 0u));
+                    int wtx = (int)rd_u16(e + 2u) << 4;
+                    int wty = (int)rd_u16(e + 4u) << 4;
+                    int is_p = 0;
+                    PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, &is_p);
+                    if (!a) continue;
+                    int ndir = dir_from_delta(wtx - a->px, wty - a->py, a->dir);
+                    if (op == 0xA9u) {
+                        uint16_t w5 = rd_u16(e + 8u);
+                        uint16_t w6 = rd_u16(e + 10u);
+                        if (w5 == 0u && w6 < 8u) ndir = (int)w6;
+                    }
+                    a->dir = ndir;
+                    if (auto_advance_wait) {
+                        a->px = wtx;
+                        a->py = wty;
+                        a->script_moving = 0;
+                    } else {
+                        int dx = abs(wtx - a->px);
+                        int dy = abs(wty - a->py);
+                        int dist = dx > dy ? dx : dy;
+                        if (dist > 0) {
+                            a->walk_target_px = wtx;
+                            a->walk_target_py = wty;
+                            a->script_moving = 1;
+                            int base = is_p ? 8 : (int)a->orig_sub_state;
+                            field_actor_set_sub(a, game_dir, a->act_id, base + ndir, 1);
+                            int t = (dist + 3) / 4;
+                            if (t > max_ticks) max_ticks = t;
+                        } else {
+                            a->script_moving = 0;
+                        }
+                    }
+                }
+                vm->ip += ilen;
+                if (!auto_advance_wait && max_ticks > 0) {
+                    if (max_ticks > 45) max_ticks = 45;
+                    vm->wait_ticks = max_ticks;
+                    return;
+                }
+                break;
+            }
+
             case 0x0Eu: /* Wait dialogue dismiss / choice confirm */
                 vm->ip += ilen;
                 if (!auto_advance_wait) {
@@ -5230,9 +5238,59 @@ static void pal_talk_vm_step(
             case 0x27u: { /* Show NPC */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 int vis = (op == 0x27u) ? 1 : 0;
-                if (obj < PAL_OBJ_CAP) ws->npc_visibility_override[obj] = vis ? 1u : 2u;
+                int is_p = 0;
+                PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, &is_p);
+                if (!is_p || obj <= 4u) {
+                    if (!is_p && obj < PAL_OBJ_CAP) ws->npc_visibility_override[obj] = vis ? 1u : 2u;
+                    if (a) a->active = vis;
+                } else if (obj < PAL_OBJ_CAP) {
+                    ws->npc_visibility_override[obj] = vis ? 1u : 2u;
+                }
+                vm->ip += ilen;
+                break;
+            }
+
+            case 0x28u: { /* Teleport actor on current map to tile (tx, ty) */
+                uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
+                int tx = (int)rd_u16(ins + 4u);
+                int ty = (int)rd_u16(ins + 6u);
                 PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, NULL);
-                if (a) a->active = vis;
+                if (a) {
+                    a->px = tx << 4;
+                    a->py = ty << 4;
+                    a->script_moving = 0;
+                }
+                vm->ip += ilen;
+                break;
+            }
+
+            case 0x3Eu: { /* Relocate NPC on target map (or 0xFFFF current map) */
+                uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
+                uint16_t mid = rd_u16(ins + 4u);
+                int16_t tx = (int16_t)rd_u16(ins + 8u);
+                int16_t ty = (int16_t)rd_u16(ins + 10u);
+                uint16_t dir = rd_u16(ins + 16u);
+                uint16_t eff_mid = (mid == 0xFFFFu) ? (uint16_t)cur_map_id : mid;
+                if (obj < PAL_OBJ_CAP && eff_mid > 0u) {
+                    ws->npc_pos_map[obj] = eff_mid;
+                    ws->npc_pos_tx[obj] = tx;
+                    ws->npc_pos_ty[obj] = ty;
+                }
+                if ((uint32_t)eff_mid == cur_map_id) {
+                    int is_p = 0;
+                    PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, &is_p);
+                    if (a && !is_p) {
+                        a->px = (int)tx << 4;
+                        a->py = (int)ty << 4;
+                        a->script_moving = 0;
+                        if (dir != 0xFFFFu && dir < 8u) {
+                            int was_active = a->active;
+                            a->dir = (int)(dir & 7u);
+                            field_actor_set_sub(a, game_dir, a->act_id, (int)a->orig_sub_state + a->dir, 1);
+                            if (!was_active) a->active = 0;
+                        }
+                    }
+                }
                 vm->ip += ilen;
                 break;
             }
@@ -5333,16 +5391,34 @@ static void pal_talk_vm_step(
                 uint16_t aid = rd_u16(ins + 4u);
                 uint16_t sub = rd_u16(ins + 6u);
                 uint16_t dir = rd_u16(ins + 8u);
-                PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, NULL);
+                int is_p = 0;
+                PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, &is_p);
                 if (a) {
                     if (aid != 0xFFFFu) a->act_id = aid;
                     if (dir != 0xFFFFu) a->dir = (int)(dir & 7u);
                     if (sub != 0xFFFFu) {
+                        a->orig_sub_state = sub;
+                        if (is_p) a->action_base = (int)sub;
                         field_actor_set_sub(a, game_dir, a->act_id, (int)sub, 1);
                     } else if (dir != 0xFFFFu) {
-                        field_actor_set_sub(a, game_dir, a->act_id, (int)a->orig_sub_state + a->dir, 1);
+                        int base = is_p ? a->action_base : (int)a->orig_sub_state;
+                        field_actor_set_sub(a, game_dir, a->act_id, base + a->dir, 1);
                     }
                     a->active = 1;
+                }
+                vm->ip += ilen;
+                break;
+            }
+
+            case 0x89u: { /* Dream -> Real hero transition (hero 2009 -> 2000) */
+                if (ws && ws->db && ws->party_member_count > 0 && ws->party_members[0].hero_id == 2009) {
+                    pal_party_init_hero_slot(ws->db, &ws->party_members[0], 2000);
+                    ws->party_member_count = 1;
+                    if (party) {
+                        party[0].act_id = pal_hero_field_act_id(2000);
+                        party[0].action_base = 0;
+                        field_actor_set_sub(&party[0], game_dir, party[0].act_id, party[0].dir & 7, 0);
+                    }
                 }
                 vm->ip += ilen;
                 break;
@@ -5517,6 +5593,13 @@ static void pal_talk_vm_step(
                         ws->active_shop_id = (int32_t)raw_id;
                     } else if (raw_id >= 2001u && raw_id <= 2899u) {
                         ws->active_battle_id = (int32_t)raw_id;
+                        vm->ip += ilen;
+                        if (!auto_advance_wait) {
+                            vm->paused_for_battle = 1;
+                            vm->dlg_visible = 0;
+                            return;
+                        }
+                        break;
                     } else {
                         const PalScript7fRecord *sc = pal_db_find_script(ws->db, (int32_t)raw_id);
                         int granted = 0;
@@ -5674,10 +5757,69 @@ int32_t pal_talk_vm_probe_m3(const char *game_dir, PalTalkM3ProbeInfo *out_info)
                   out_info->npc_update_obj201_talk == 6296);
     }
 
+    /* 6. Regression: Opening 100 (532->533->begin.Bik->501->502), Cave Chest 7001 (OP 0x0A open lid + reveal obj 5 土怪),
+     * and Dream climax 103 (OP 0x309 battle pause + resume -> OP 0x89 hero 2009->2000 -> map 1) */
+    int ok_story_ops = 0;
+    {
+        PalGameDatabase *db_reg = (PalGameDatabase *)calloc(1, sizeof(PalGameDatabase));
+        PalTalkWorldState *ws_reg = (PalTalkWorldState *)calloc(1, sizeof(PalTalkWorldState));
+        if (db_reg && ws_reg && pal_db_load(game_dir, db_reg) == 0) {
+            pal_party_init_from_db(ws_reg, db_reg, 1);
+            int dream_solo_ok = (ws_reg->party_member_count == 1 && ws_reg->party_members[0].hero_id == 2009);
+
+            int ok_100 = 0;
+            if (pal_talk_vm_start(&vm, game_dir, 100, 0) == 0) {
+                pal_talk_vm_step(&vm, ws_reg, game_dir, 501u, NULL, NULL, 0, 1);
+                ok_100 = (vm.pending_map_id == 502 &&
+                          strstr(vm.pending_bink_rel, "begin.Bik") != NULL &&
+                          ws_reg->npc_pos_map[116] == 518u);
+            }
+
+            int ok_7001 = 0;
+            if (pal_talk_vm_start(&vm, game_dir, 7001, 7001) == 0) {
+                pal_talk_vm_step(&vm, ws_reg, game_dir, 498u, NULL, NULL, 0, 1);
+                ok_7001 = (ws_reg->npc_sub_override[7001] == 9u && /* 8 + 1 */
+                           ws_reg->npc_talk_override[7001] == 7999u &&
+                           ws_reg->npc_visibility_override[5] == 1u &&
+                           ws_reg->story_flags[1626] != 0u);
+                if (ok_7001 && pal_talk_vm_start(&vm, game_dir, (int32_t)ws_reg->npc_talk_override[7001], 7001) == 0) {
+                    pal_talk_vm_step(&vm, ws_reg, game_dir, 498u, NULL, NULL, 0, 1);
+                    if (strstr(vm.last_dialogue_utf8, "箱中空無一物") == NULL) ok_7001 = 0;
+                } else {
+                    ok_7001 = 0;
+                }
+            }
+
+            int ok_103 = 0;
+            if (pal_talk_vm_start(&vm, game_dir, 103, 0) == 0) {
+                int guard = 0;
+                while (vm.active && !vm.paused_for_battle && guard < 128) {
+                    if (vm.waiting_input) vm.waiting_input = 0;
+                    vm.wait_ticks = 0;
+                    pal_talk_vm_step(&vm, ws_reg, game_dir, 499u, NULL, NULL, 0, 0);
+                    if (vm.pending_map_id >= 0 && !vm.paused_for_battle) break;
+                    guard++;
+                }
+                int paused_ok = (vm.active && vm.paused_for_battle && ws_reg->active_battle_id == 2801);
+                if (paused_ok) {
+                    vm.paused_for_battle = 0;
+                    ws_reg->active_battle_id = 0;
+                    pal_talk_vm_step(&vm, ws_reg, game_dir, 499u, NULL, NULL, 0, 1);
+                    ok_103 = (vm.pending_map_id == 1 && ws_reg->party_members[0].hero_id == 2000 && ws_reg->money == 0);
+                }
+            }
+
+            ok_story_ops = (dream_solo_ok && ok_100 && ok_7001 && ok_103) ? 1 : 0;
+            pal_db_free(db_reg);
+        }
+        free(db_reg);
+        free(ws_reg);
+    }
+
     pal_talk_vm_free(&vm);
     free(ws);
 
-    out_info->core_scripts_ok = (ok_6001 && ok_6007 && ok_7012 && ok_104 && ok_105) ? 1 : 0;
+    out_info->core_scripts_ok = (ok_6001 && ok_6007 && ok_7012 && ok_104 && ok_105 && ok_story_ops) ? 1 : 0;
     out_info->ok = (out_info->bank_count == 8 &&
                     out_info->total_scripts >= 5600 &&
                     out_info->clean_scripts == out_info->total_scripts &&
@@ -5832,9 +5974,11 @@ static void talk_begin_npc_interaction(
     PalFieldActor *npc = &npcs[npc_idx];
     if (!npc->active || npc->talk_id == 0u) return;
 
-    int ndir = dir_from_delta(party[0].px - npc->px, party[0].py - npc->py, npc->dir);
-    npc->dir = ndir;
-    field_actor_set_sub(npc, game_dir, npc->act_id, (int)npc->orig_sub_state + ndir, 1);
+    if ((npc->npc_flags & 0x0800u) != 0u && npc->act_id != 699u) {
+        int ndir = dir_from_delta(party[0].px - npc->px, party[0].py - npc->py, npc->dir);
+        npc->dir = ndir;
+        field_actor_set_sub(npc, game_dir, npc->act_id, (int)npc->orig_sub_state + ndir, 1);
+    }
 
     int pdir = dir_from_delta(npc->px - party[0].px, npc->py - party[0].py, party[0].dir);
     party[0].dir = pdir;
@@ -6023,6 +6167,14 @@ typedef struct {
     int32_t script_vars[PAL_SCRIPT_VAR_CAP];
     uint8_t npc_visibility_override[PAL_OBJ_CAP];
     uint16_t npc_talk_override[PAL_OBJ_CAP];
+} PalNpalSaveFooterV1;
+
+typedef struct {
+    PalNpalSaveFooterV1 v1;
+    uint16_t npc_sub_override[PAL_OBJ_CAP];
+    uint16_t npc_pos_map[PAL_OBJ_CAP];
+    int16_t npc_pos_tx[PAL_OBJ_CAP];
+    int16_t npc_pos_ty[PAL_OBJ_CAP];
 } PalNpalSaveFooter;
 
 static void wr_u16_le(uint8_t *p, uint16_t v) {
@@ -6073,10 +6225,10 @@ static int pal_save_slot_read_summary(const char *game_dir, int slot, PalSaveSlo
     }
 
     size_t legacy_len = sz;
-    if (sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooter)) {
-        PalNpalSaveFooter ft;
-        memcpy(&ft, buf + sz - sizeof(PalNpalSaveFooter), sizeof(ft));
-        if (ft.magic == PAL_NPAL_SAVE_MAGIC && ft.version == 1u) {
+    if (sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV1)) {
+        PalNpalSaveFooterV1 ft;
+        memcpy(&ft, buf + PAL_LEGACY_SAVE_SIZE, sizeof(ft));
+        if (ft.magic == PAL_NPAL_SAVE_MAGIC && (ft.version == 1u || ft.version == 2u)) {
             out_sum->has_npal_ext = 1;
             out_sum->map_id = ft.map_id;
             out_sum->px = ft.px;
@@ -6084,7 +6236,7 @@ static int pal_save_slot_read_summary(const char *game_dir, int slot, PalSaveSlo
             out_sum->dir = ft.dir;
             snprintf(out_sum->title_utf8, sizeof(out_sum->title_utf8), "%s", ft.title_utf8);
             snprintf(out_sum->time_str, sizeof(out_sum->time_str), "%s", ft.time_str);
-            legacy_len = sz - sizeof(PalNpalSaveFooter);
+            legacy_len = PAL_LEGACY_SAVE_SIZE;
         }
     }
 
@@ -6172,19 +6324,23 @@ static int pal_save_game_slot(
 
     PalNpalSaveFooter ft;
     memset(&ft, 0, sizeof(ft));
-    ft.magic = PAL_NPAL_SAVE_MAGIC;
-    ft.version = 1u;
-    ft.map_id = map_id;
-    ft.px = px;
-    ft.py = py;
-    ft.dir = dir & 7;
-    ft.party_member_count = ws->party_member_count;
-    snprintf(ft.title_utf8, sizeof(ft.title_utf8), "%s", map_title_utf8 ? map_title_utf8 : "未知區域");
-    snprintf(ft.time_str, sizeof(ft.time_str), "%s", now_hm);
-    memcpy(ft.story_flags, ws->story_flags, sizeof(ft.story_flags));
-    memcpy(ft.script_vars, ws->script_vars, sizeof(ft.script_vars));
-    memcpy(ft.npc_visibility_override, ws->npc_visibility_override, sizeof(ft.npc_visibility_override));
-    memcpy(ft.npc_talk_override, ws->npc_talk_override, sizeof(ft.npc_talk_override));
+    ft.v1.magic = PAL_NPAL_SAVE_MAGIC;
+    ft.v1.version = 2u;
+    ft.v1.map_id = map_id;
+    ft.v1.px = px;
+    ft.v1.py = py;
+    ft.v1.dir = dir & 7;
+    ft.v1.party_member_count = ws->party_member_count;
+    snprintf(ft.v1.title_utf8, sizeof(ft.v1.title_utf8), "%s", map_title_utf8 ? map_title_utf8 : "未知區域");
+    snprintf(ft.v1.time_str, sizeof(ft.v1.time_str), "%s", now_hm);
+    memcpy(ft.v1.story_flags, ws->story_flags, sizeof(ft.v1.story_flags));
+    memcpy(ft.v1.script_vars, ws->script_vars, sizeof(ft.v1.script_vars));
+    memcpy(ft.v1.npc_visibility_override, ws->npc_visibility_override, sizeof(ft.v1.npc_visibility_override));
+    memcpy(ft.v1.npc_talk_override, ws->npc_talk_override, sizeof(ft.v1.npc_talk_override));
+    memcpy(ft.npc_sub_override, ws->npc_sub_override, sizeof(ft.npc_sub_override));
+    memcpy(ft.npc_pos_map, ws->npc_pos_map, sizeof(ft.npc_pos_map));
+    memcpy(ft.npc_pos_tx, ws->npc_pos_tx, sizeof(ft.npc_pos_tx));
+    memcpy(ft.npc_pos_ty, ws->npc_pos_ty, sizeof(ft.npc_pos_ty));
     memcpy(buf + PAL_LEGACY_SAVE_SIZE, &ft, sizeof(ft));
 
     FILE *f = fopen(file_path, "wb");
@@ -6222,20 +6378,28 @@ static int pal_load_game_slot(
 
     size_t legacy_len = sz;
     int has_ext = 0;
-    if (sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooter)) {
-        PalNpalSaveFooter ft;
-        memcpy(&ft, buf + sz - sizeof(PalNpalSaveFooter), sizeof(ft));
-        if (ft.magic == PAL_NPAL_SAVE_MAGIC && ft.version == 1u) {
+    if (sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV1)) {
+        PalNpalSaveFooterV1 v1;
+        memcpy(&v1, buf + PAL_LEGACY_SAVE_SIZE, sizeof(v1));
+        if (v1.magic == PAL_NPAL_SAVE_MAGIC && (v1.version == 1u || v1.version == 2u)) {
             has_ext = 1;
-            legacy_len = sz - sizeof(PalNpalSaveFooter);
-            if (out_map_id) *out_map_id = ft.map_id;
-            if (out_px) *out_px = ft.px;
-            if (out_py) *out_py = ft.py;
-            if (out_dir) *out_dir = ft.dir;
-            memcpy(ws->story_flags, ft.story_flags, sizeof(ft.story_flags));
-            memcpy(ws->script_vars, ft.script_vars, sizeof(ft.script_vars));
-            memcpy(ws->npc_visibility_override, ft.npc_visibility_override, sizeof(ft.npc_visibility_override));
-            memcpy(ws->npc_talk_override, ft.npc_talk_override, sizeof(ft.npc_talk_override));
+            legacy_len = PAL_LEGACY_SAVE_SIZE;
+            if (out_map_id) *out_map_id = v1.map_id;
+            if (out_px) *out_px = v1.px;
+            if (out_py) *out_py = v1.py;
+            if (out_dir) *out_dir = v1.dir;
+            memcpy(ws->story_flags, v1.story_flags, sizeof(ws->story_flags));
+            memcpy(ws->script_vars, v1.script_vars, sizeof(ws->script_vars));
+            memcpy(ws->npc_visibility_override, v1.npc_visibility_override, sizeof(ws->npc_visibility_override));
+            memcpy(ws->npc_talk_override, v1.npc_talk_override, sizeof(ws->npc_talk_override));
+            if (v1.version == 2u && sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooter)) {
+                PalNpalSaveFooter ft;
+                memcpy(&ft, buf + PAL_LEGACY_SAVE_SIZE, sizeof(ft));
+                memcpy(ws->npc_sub_override, ft.npc_sub_override, sizeof(ws->npc_sub_override));
+                memcpy(ws->npc_pos_map, ft.npc_pos_map, sizeof(ws->npc_pos_map));
+                memcpy(ws->npc_pos_tx, ft.npc_pos_tx, sizeof(ws->npc_pos_tx));
+                memcpy(ws->npc_pos_ty, ft.npc_pos_ty, sizeof(ws->npc_pos_ty));
+            }
         }
     }
     if (!has_ext) {
@@ -7943,6 +8107,10 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
     /* Save/Load extended NPAL round-trip via ephemeral slot 99 (removed immediately) */
     ws->story_flags[777] = 1;
     ws->script_vars[12] = 4242;
+    ws->npc_sub_override[7001] = 9u;
+    ws->npc_pos_map[116] = 502u;
+    ws->npc_pos_tx[116] = 14;
+    ws->npc_pos_ty[116] = 15;
     int save_rc = pal_save_game_slot(game_dir, 99, ws, 498u, "羅剎洞內", 320, 480, 3);
     uint32_t rt_map = 0;
     int rt_px = -1, rt_py = -1, rt_dir = -1;
@@ -7959,6 +8127,10 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
                               ws2->party_members[0].lv == ws->party_members[0].lv &&
                               ws2->story_flags[777] == 1 &&
                               ws2->script_vars[12] == 4242 &&
+                              ws2->npc_sub_override[7001] == 9u &&
+                              ws2->npc_pos_map[116] == 502u &&
+                              ws2->npc_pos_tx[116] == 14 &&
+                              ws2->npc_pos_ty[116] == 15 &&
                               (out_info->shop58001_item_count <= 0 || pal_world_has_item(ws2, shop_items[0]))) ? 1 : 0;
 
     out_info->ok = (out_info->monster_count == 160 &&
@@ -8001,6 +8173,69 @@ static void compute_field_camera(const PalLoadedMap *m, int px, int py, float *o
     }
     if (out_cx) *out_cx = (float)cx;
     if (out_cy) *out_cy = (float)cy;
+}
+
+static void step_script_moving_actor(PalFieldActor *a, const char *game_dir, int is_party, int rem_ticks) {
+    if (!a || !a->script_moving) return;
+    int dx = a->walk_target_px - a->px;
+    int dy = a->walk_target_py - a->py;
+    if (dx == 0 && dy == 0) {
+        a->script_moving = 0;
+        int stand_base = is_party ? 0 : (int)a->orig_sub_state;
+        field_actor_set_sub(a, game_dir, a->act_id, stand_base + (a->dir & 7), is_party ? 0 : 1);
+        return;
+    }
+    int step = 4;
+    if (rem_ticks > 0) {
+        int mdist = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
+        int need = (mdist + rem_ticks - 1) / rem_ticks;
+        if (need > step) step = need;
+    }
+    if (abs(dx) <= step) a->px = a->walk_target_px;
+    else a->px += (dx > 0 ? step : -step);
+    if (abs(dy) <= step) a->py = a->walk_target_py;
+    else a->py += (dy > 0 ? step : -step);
+    if (a->px == a->walk_target_px && a->py == a->walk_target_py) {
+        a->script_moving = 0;
+        int stand_base = is_party ? 0 : (int)a->orig_sub_state;
+        field_actor_set_sub(a, game_dir, a->act_id, stand_base + (a->dir & 7), is_party ? 0 : 1);
+    }
+}
+
+static void combat_finish_to_field(
+    const PalLaunchConfig *cfg, PalCombatState *combat_state, PalTalkWorldState *world_state,
+    PalTalkVM *talk_vm, PalLoadedMap *map, PalFieldActor *party, PalFieldActor *npcs, int npc_cnt,
+    PalCampMenuState *camp_menu, PalBgmPlayer *bgm, SDL_AudioStream **sfx_stream, int runtime_mute,
+    PalSceneState *scene, int *pending_fade_in_ms, char *cur_bgm_playing, size_t bgm_cap, Uint64 *last_ns
+) {
+    play_ui_sfx(cfg->game_dir, 2u, sfx_stream, cfg->master_volume, runtime_mute);
+    int won = (combat_state->phase == COMBAT_PHASE_VICTORY) ? 1 : 0;
+    if (!won && world_state) {
+        for (int p = 0; p < world_state->party_member_count && p < 4; p++) {
+            if (world_state->party_members[p].active && world_state->party_members[p].cur_hp <= 0) {
+                world_state->party_members[p].cur_hp = 1;
+            }
+        }
+    }
+    *scene = PAL_SCENE_FIELD;
+    camp_menu->dirty = 1;
+    *pending_fade_in_ms = 140;
+    pal_bgm_play_track(bgm, cfg->game_dir, map->bgm_track, cfg->master_volume, runtime_mute);
+    snprintf(cur_bgm_playing, bgm_cap, "%s", map->bgm_track);
+
+    if (talk_vm->active && talk_vm->paused_for_battle) {
+        talk_vm->paused_for_battle = 0;
+        if (world_state) world_state->story_flags[3001] = won ? 1u : 0u;
+        if (won && talk_vm->talk_id >= 5001 && talk_vm->talk_id <= 5999) {
+            PalFieldActor *m = talk_find_actor_by_obj(NULL, npcs, npc_cnt, talk_vm->trigger_obj_id, NULL);
+            if (m) m->active = 0;
+            if (world_state && talk_vm->trigger_obj_id < PAL_OBJ_CAP) {
+                world_state->npc_visibility_override[talk_vm->trigger_obj_id] = 2u;
+            }
+        }
+        pal_talk_vm_step(talk_vm, world_state, cfg->game_dir, map->map_id, party, npcs, npc_cnt, 0);
+    }
+    *last_ns = SDL_GetTicksNS();
 }
 
 static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, char *out_err, int32_t err_cap) {
@@ -8319,7 +8554,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
 
     PalSceneState scene = PAL_SCENE_TITLE;
     int selected_btn = 0;
-    int show_hud = 1;
+    int show_hud = 0;
     int show_collision_grid = 0;
     int party_follow_enabled = 1;
     int noclip_mode = 0;
@@ -8493,20 +8728,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 } else if (scene == PAL_SCENE_COMBAT) {
                     if (combat_state.phase >= COMBAT_PHASE_VICTORY) {
                         if (key == SDLK_RETURN || key == SDLK_SPACE || key == SDLK_E || key == SDLK_ESCAPE) {
-                            play_ui_sfx(cfg->game_dir, 2u, &sfx_stream, cfg->master_volume, runtime_mute);
-                            if (combat_state.phase == COMBAT_PHASE_DEFEAT && world_state) {
-                                for (int p = 0; p < world_state->party_member_count && p < 4; p++) {
-                                    if (world_state->party_members[p].active && world_state->party_members[p].cur_hp <= 0) {
-                                        world_state->party_members[p].cur_hp = 1;
-                                    }
-                                }
-                            }
-                            scene = PAL_SCENE_FIELD;
-                            camp_menu.dirty = 1;
-                            pending_fade_in_ms = 140;
-                            pal_bgm_play_track(&bgm, cfg->game_dir, map.bgm_track, cfg->master_volume, runtime_mute);
-                            snprintf(cur_bgm_playing, sizeof(cur_bgm_playing), "%s", map.bgm_track);
-                            last_ns = SDL_GetTicksNS();
+                            combat_finish_to_field(cfg, &combat_state, world_state, &talk_vm, &map, party, map_npcs,
+                                                   map_npc_actor_cnt, &camp_menu, &bgm, &sfx_stream, runtime_mute,
+                                                   &scene, &pending_fade_in_ms, cur_bgm_playing, sizeof(cur_bgm_playing), &last_ns);
                         }
                     } else if (combat_state.phase == COMBAT_PHASE_COMMAND) {
                         if (key == SDLK_UP || key == SDLK_W) {
@@ -8760,6 +8984,10 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         if (bgm.stream) SDL_ResumeAudioStreamDevice(bgm.stream);
                         pending_fade_in_ms = 140;
                         last_ns = SDL_GetTicksNS();
+                    } else if (talk_vm.active && !talk_vm.waiting_input && talk_vm.wait_ticks > 0 &&
+                               (map.map_id == 532u || map.map_id == 533u) &&
+                               (key == SDLK_SPACE || key == SDLK_RETURN || key == SDLK_ESCAPE)) {
+                        talk_vm.wait_ticks = 1;
                     } else if (talk_vm.active && talk_vm.waiting_input) {
                         if (talk_vm.choice_count > 0 &&
                             (key == SDLK_UP || key == SDLK_W || key == SDLK_LEFT || key == SDLK_A)) {
@@ -8858,20 +9086,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     }
                 } else if (scene == PAL_SCENE_COMBAT) {
                     if (combat_state.phase >= COMBAT_PHASE_VICTORY) {
-                        play_ui_sfx(cfg->game_dir, 2u, &sfx_stream, cfg->master_volume, runtime_mute);
-                        if (combat_state.phase == COMBAT_PHASE_DEFEAT && world_state) {
-                            for (int p = 0; p < world_state->party_member_count && p < 4; p++) {
-                                if (world_state->party_members[p].active && world_state->party_members[p].cur_hp <= 0) {
-                                    world_state->party_members[p].cur_hp = 1;
-                                }
-                            }
-                        }
-                        scene = PAL_SCENE_FIELD;
-                        camp_menu.dirty = 1;
-                        pending_fade_in_ms = 140;
-                        pal_bgm_play_track(&bgm, cfg->game_dir, map.bgm_track, cfg->master_volume, runtime_mute);
-                        snprintf(cur_bgm_playing, sizeof(cur_bgm_playing), "%s", map.bgm_track);
-                        last_ns = SDL_GetTicksNS();
+                        combat_finish_to_field(cfg, &combat_state, world_state, &talk_vm, &map, party, map_npcs,
+                                               map_npc_actor_cnt, &camp_menu, &bgm, &sfx_stream, runtime_mute,
+                                               &scene, &pending_fade_in_ms, cur_bgm_playing, sizeof(cur_bgm_playing), &last_ns);
                     }
                 } else if (scene == PAL_SCENE_FIELD && camp_menu.open) {
                     int handled = 0;
@@ -9041,30 +9258,32 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, runtime_mute);
             if (run_fade_transition(window, renderer, scene_rt, 0, 220, &bgm) == 1) { app_quit = 1; break; }
             pal_bgm_stop(&bgm);
-            /* Authentic talk1.dat talk_id=100 New Game sequence: map 532 -> map 533 -> begin.bik -> map 501 */
-            if (play_lmf_splash_by_id(window, renderer, cfg->game_dir, 532, scale_mode, 350, 1400) == 1) {
-                app_quit = 1;
-                break;
-            }
-            if (play_lmf_splash_by_id(window, renderer, cfg->game_dir, 533, scale_mode, 350, 1400) == 1) {
-                app_quit = 1;
-                break;
-            }
-            if (pal_bink_play_file(window, renderer, cfg->game_dir, "Video/begin.bik",
-                                   cfg->master_volume, runtime_mute) == 1) {
-                app_quit = 1;
-                break;
-            }
-            if (cfg->initial_map_index == 0) {
-                PalLoadedMap next_map = {0};
-                if (vfs_load_lmf_map_by_id(cfg->game_dir, 501u, renderer, scale_mode, &next_map) == 0) {
-                    free_loaded_map(&map);
-                    map = next_map;
-                }
-            }
+            cur_bgm_playing[0] = '\0';
+            pal_talk_vm_free(&talk_vm);
+            interact_target_npc_idx = -1;
+            show_dialogue = 0;
+            leader_hero_idx = 0;
             camp_menu.open = 0;
             camp_menu.dirty = 1;
-            need_setup_loaded_map = 1;
+            if (world_state && game_db) {
+                memset(world_state, 0, sizeof(*world_state));
+                world_state->db = game_db;
+                if (cfg->initial_map_index == 0) {
+                    /* Authentic SWD2k opening script (talk 100): 532 -> 533 -> begin.bik -> 501 -> 502 (Dream 2009) */
+                    pal_party_init_from_db(world_state, game_db, 1);
+                    if (pal_talk_vm_start(&talk_vm, cfg->game_dir, 100, 0) == 0) {
+                        pal_talk_vm_step(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, map_npc_actor_cnt, 0);
+                        /* Fast-forward initial black fade wait so map 532 loads immediately on fade-in */
+                        if (talk_vm.active && talk_vm.pending_map_id < 0 && talk_vm.wait_ticks > 0) {
+                            talk_vm.wait_ticks = 0;
+                            pal_talk_vm_step(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, map_npc_actor_cnt, 0);
+                        }
+                    }
+                } else {
+                    pal_party_init_from_db(world_state, game_db, 0);
+                    need_setup_loaded_map = 1;
+                }
+            }
             pending_fade_in_ms = 180;
             scene = PAL_SCENE_FIELD;
             SDL_ShowCursor();
@@ -9220,12 +9439,17 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             pal_act_vm_step_tick(&talk_vm.portraits[p].vm);
                         }
                     }
+                    int rem_ticks = talk_vm.wait_ticks > 0 ? talk_vm.wait_ticks : 1;
+                    for (int p = 0; p < 4; p++) step_script_moving_actor(&party[p], cfg->game_dir, 1, rem_ticks);
+                    for (int n = 0; n < map_npc_actor_cnt; n++) step_script_moving_actor(&map_npcs[n], cfg->game_dir, 0, rem_ticks);
                     if (talk_vm.wait_ticks > 0) {
                         talk_vm.wait_ticks--;
                         if (talk_vm.wait_ticks == 0 && world_state) {
                             pal_talk_vm_step(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, map_npc_actor_cnt, 0);
                         }
                     }
+                } else {
+                    party[0].active = 1;
                 }
 
                 const bool *keys = SDL_GetKeyboardState(NULL);
@@ -9316,6 +9540,20 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             pal_talk_vm_step(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, map_npc_actor_cnt, 0);
                         }
                     }
+                    if (!talk_vm.active && world_state && talk_vm.pending_map_id < 0) {
+                        for (int i = 0; i < map_npc_actor_cnt; i++) {
+                            if (map_npcs[i].active && (map_npcs[i].npc_flags & 0x2000u) != 0u && map_npcs[i].talk_id >= 5001u) {
+                                int edx = abs(map_npcs[i].px - party[0].px);
+                                int edy = abs(map_npcs[i].py - party[0].py);
+                                if (edx <= 18 && edy <= 14) {
+                                    astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
+                                    talk_begin_npc_interaction(&talk_vm, world_state, cfg->game_dir, map.map_id,
+                                                               party, map_npcs, map_npc_actor_cnt, i, &show_dialogue);
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 if (!talk_vm.active && interact_target_npc_idx >= 0 && interact_target_npc_idx < map_npc_actor_cnt) {
@@ -9337,30 +9575,32 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     }
                 }
 
-                int lbase = moved ? (running ? 16 : 8) : 0;
-                party[0].action_base = lbase;
-                uint32_t lead_act = (leader_hero_idx == 0u && world_state && world_state->party_member_count > 0)
-                                        ? pal_hero_field_act_id(world_state->party_members[0].hero_id)
-                                        : kPartyHeroActIds[leader_hero_idx % 4u];
-                field_actor_set_sub(&party[0], cfg->game_dir, lead_act, lbase + party[0].dir, moved ? 1 : 0);
+                if (!talk_vm.active) {
+                    int lbase = moved ? (running ? 16 : 8) : 0;
+                    party[0].action_base = lbase;
+                    uint32_t lead_act = (leader_hero_idx == 0u && world_state && world_state->party_member_count > 0)
+                                            ? pal_hero_field_act_id(world_state->party_members[0].hero_id)
+                                            : kPartyHeroActIds[leader_hero_idx % 4u];
+                    field_actor_set_sub(&party[0], cfg->game_dir, lead_act, lbase + party[0].dir, moved ? 1 : 0);
 
-                static const int kLagTicks[4] = {0, 8, 16, 24};
-                for (int p = 1; p < 4; p++) {
-                    if (party_follow_enabled) {
-                        int lag = kLagTicks[p];
-                        int fdx = trail_x[lag] - party[p].px;
-                        int fdy = trail_y[lag] - party[p].py;
-                        int fmoved = (fdx != 0 || fdy != 0);
-                        if (fmoved) {
-                            party[p].dir = trail_dir[lag];
-                            party[p].px = trail_x[lag];
-                            party[p].py = trail_y[lag];
+                    static const int kLagTicks[4] = {0, 8, 16, 24};
+                    for (int p = 1; p < 4; p++) {
+                        if (party_follow_enabled) {
+                            int lag = kLagTicks[p];
+                            int fdx = trail_x[lag] - party[p].px;
+                            int fdy = trail_y[lag] - party[p].py;
+                            int fmoved = (fdx != 0 || fdy != 0);
+                            if (fmoved) {
+                                party[p].dir = trail_dir[lag];
+                                party[p].px = trail_x[lag];
+                                party[p].py = trail_y[lag];
+                            }
+                            int fbase = fmoved ? (running ? 16 : 8) : 0;
+                            uint32_t pact = (leader_hero_idx == 0u && world_state && p < world_state->party_member_count)
+                                                ? pal_hero_field_act_id(world_state->party_members[p].hero_id)
+                                                : kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u];
+                            field_actor_set_sub(&party[p], cfg->game_dir, pact, fbase + party[p].dir, fmoved ? 1 : 0);
                         }
-                        int fbase = fmoved ? (running ? 16 : 8) : 0;
-                        uint32_t pact = (leader_hero_idx == 0u && world_state && p < world_state->party_member_count)
-                                            ? pal_hero_field_act_id(world_state->party_members[p].hero_id)
-                                            : kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u];
-                        field_actor_set_sub(&party[p], cfg->game_dir, pact, fbase + party[p].dir, fmoved ? 1 : 0);
                     }
                 }
 
@@ -9437,6 +9677,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     party[p].px = stx << 4;
                     party[p].py = sty << 4;
                     party[p].dir = sdir;
+                    party[p].active = 1;
+                    party[p].script_moving = 0;
+                    party[p].action_base = 0;
                     uint32_t pact = (leader_hero_idx == 0u && world_state && p < world_state->party_member_count)
                                         ? pal_hero_field_act_id(world_state->party_members[p].hero_id)
                                         : kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u];
@@ -9457,28 +9700,40 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                                               ? world_state->npc_talk_override[nd->obj_id]
                                               : nd->talk_id;
                     map_npcs[i].npc_flags = nd->flags;
-                    map_npcs[i].orig_sub_state = nd->sub_state;
+                    map_npcs[i].orig_sub_state = (world_state && nd->obj_id < PAL_OBJ_CAP && world_state->npc_sub_override[nd->obj_id] != 0u)
+                                                     ? (uint16_t)(world_state->npc_sub_override[nd->obj_id] - 1u)
+                                                     : nd->sub_state;
                     map_npcs[i].active = (nd->flags & 0x8000u) != 0 ? 1 : 0;
                     if (world_state && nd->obj_id < PAL_OBJ_CAP) {
                         if (world_state->npc_visibility_override[nd->obj_id] == 1u) map_npcs[i].active = 1;
                         else if (world_state->npc_visibility_override[nd->obj_id] == 2u) map_npcs[i].active = 0;
                     }
-                    map_npcs[i].px = (int)nd->tx << 4;
-                    map_npcs[i].py = (int)nd->ty << 4;
+                    int ntx = (int)nd->tx;
+                    int nty = (int)nd->ty;
+                    if (world_state && nd->obj_id < PAL_OBJ_CAP && world_state->npc_pos_map[nd->obj_id] == map.map_id) {
+                        ntx = (int)world_state->npc_pos_tx[nd->obj_id];
+                        nty = (int)world_state->npc_pos_ty[nd->obj_id];
+                    }
+                    map_npcs[i].px = ntx << 4;
+                    map_npcs[i].py = nty << 4;
                     map_npcs[i].dir = (int)(nd->dir & 7u);
                     if (map_npcs[i].active) {
-                        field_actor_set_sub(&map_npcs[i], cfg->game_dir, nd->act_id, (int)nd->sub_state + (int)nd->dir, 1);
+                        field_actor_set_sub(&map_npcs[i], cfg->game_dir, nd->act_id,
+                                            (int)map_npcs[i].orig_sub_state + (int)nd->dir, 1);
                     }
                 }
                 if (strcmp(cur_bgm_playing, map.bgm_track) != 0) {
                     pal_bgm_play_track(&bgm, cfg->game_dir, map.bgm_track, cfg->master_volume, runtime_mute);
                     snprintf(cur_bgm_playing, sizeof(cur_bgm_playing), "%s", map.bgm_track);
                 }
-                if (map_banner_tex) SDL_DestroyTexture(map_banner_tex);
-                char banner_msg[128];
-                snprintf(banner_msg, sizeof(banner_msg), "%%C6%s %%C3(Map #%u)", map.title_utf8, map.map_id);
-                map_banner_tex = create_richtext_texture(renderer, banner_msg, 20.0f, 360, &map_banner_w, &map_banner_h);
-                map_banner_timer = 3.0f;
+                if (map_banner_tex) { SDL_DestroyTexture(map_banner_tex); map_banner_tex = NULL; }
+                map_banner_timer = 0.0f;
+                if (map.map_id != 532u && map.map_id != 533u) {
+                    char banner_msg[128];
+                    snprintf(banner_msg, sizeof(banner_msg), "%%C6%s %%C3(Map #%u)", map.title_utf8, map.map_id);
+                    map_banner_tex = create_richtext_texture(renderer, banner_msg, 20.0f, 360, &map_banner_w, &map_banner_h);
+                    map_banner_timer = 3.0f;
+                }
                 active_trig_id = pal_map_trigger_at_px(&map, party[0].px, party[0].py, 2);
                 last_stepped_trig_id = active_trig_id;
 
@@ -9510,7 +9765,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 world_state->active_shop_id = 0;
                 astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
             }
-            if (world_state && world_state->active_battle_id > 0 && !talk_vm.active) {
+            if (world_state && world_state->active_battle_id > 0 && (!talk_vm.active || talk_vm.paused_for_battle)) {
                 int32_t bid = world_state->active_battle_id;
                 world_state->active_battle_id = 0;
                 astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
@@ -9607,8 +9862,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 world_state->party_member_count > 0 && world_state->party_member_count < 4) {
                 pmax = world_state->party_member_count;
             }
+            if (map.map_id == 532u || map.map_id == 533u) pmax = 0;
             for (int p = 0; p < pmax && item_cnt < 1024; p++) {
-                if (!party[p].vm_ok || !party[p].vm.visible) continue;
+                if (!party[p].active || !party[p].vm_ok || !party[p].vm.visible) continue;
                 PalLoadedSprite *sp = tsw_cache_get(&tsw_cache, cfg->game_dir, renderer, scale_mode, party[p].vm.fr_tsw_id);
                 if (!sp || sp->nframes <= 0) continue;
                 int fi = party[p].vm.frame_index;
