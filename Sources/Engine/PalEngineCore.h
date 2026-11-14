@@ -203,6 +203,12 @@ typedef struct {
     int32_t save0_map_id;
     char save0_title_utf8[64];
     int32_t roundtrip_ok;
+    int32_t npc_ai_moved;
+    int32_t cooldown_blocked;
+    int32_t b2001_enemy_fr;
+    int32_t b2801_enemy_fr;
+    int32_t hero2000_battle_fr;
+    int32_t magic_act_fr;
     int32_t ok;
 } PalCombatM5ProbeInfo;
 
