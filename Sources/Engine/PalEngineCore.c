@@ -1130,6 +1130,9 @@ typedef struct {
     int fg_inst_count;
     PalMapNpcDef *npcs;
     int npc_count;
+    int scale_mode;
+    int scale_count;
+    uint32_t *scale_rows;
     char title_utf8[64];
     char bgm_track[64];
     char lmf_file[16];
@@ -1158,7 +1161,22 @@ static void free_loaded_map(PalLoadedMap *m) {
     free(m->triggers);
     free(m->fg_insts);
     free(m->npcs);
+    free(m->scale_rows);
     memset(m, 0, sizeof(*m));
+}
+
+static int pal_map_scale_row(const PalLoadedMap *m, int row) {
+    if (!m || m->scale_mode != 2 || !m->scale_rows || m->scale_count <= 0) return 1024;
+    if (row < 0) row = 0;
+    if (row >= m->scale_count) row = m->scale_count - 1;
+    return (int)m->scale_rows[row];
+}
+
+static int pal_map_scale_fp(const PalLoadedMap *m, int py) {
+    if (!m || m->scale_mode != 2 || !m->scale_rows || m->scale_count <= 0) return 1024;
+    int s0 = pal_map_scale_row(m, py >> 4);
+    int s1 = pal_map_scale_row(m, (py - 16) >> 4);
+    return s1 + ((s0 - s1) * (py & 0xf)) / 16;
 }
 
 static void vfs_lookup_map_metadata(
@@ -1367,6 +1385,9 @@ static int vfs_load_lmf_map(
     uint32_t c20_off  = rd_u32(hdr + 0x20);
     uint32_t c20_len  = rd_u32(hdr + 0x24);
     uint32_t bg_chunk_off = rd_u32(hdr + 0x38);
+    uint32_t sc_off   = rd_u32(hdr + 0x48);
+    uint32_t sc_clen  = rd_u32(hdr + 0x4c);
+    uint32_t sc_ulen  = rd_u32(hdr + 0x50);
 
     if (bg_chunk_off == 0 || tile_sz == 0 || w_tiles == 0 || h_tiles == 0) {
         fclose(f);
@@ -1596,6 +1617,34 @@ static int vfs_load_lmf_map(
             }
         }
         free(ibuf);
+    }
+
+    /* 5. MSF3 Per-Map Perspective Scale Chunk (+0x48/+0x4c/+0x50, Scale.cpp) */
+    if (sc_off != 0 && sc_clen > 0 && sc_ulen >= 16 &&
+        (uint64_t)me.offset + sc_off + sc_clen <= fsize) {
+        uint8_t *scomp = (uint8_t *)malloc(sc_clen);
+        if (scomp && read_file_slice(f, (uint64_t)me.offset + sc_off, scomp, sc_clen) == 0) {
+            size_t sdec_len = 0;
+            uint8_t *sdec = lzo_alloc_decompress(scomp, sc_clen, sc_ulen, 1, &sdec_len);
+            if (sdec && sdec_len >= 16) {
+                uint32_t stype = rd_u32(sdec + 0);
+                uint32_t scnt  = rd_u32(sdec + 4);
+                if (stype == 2 && scnt > 0 && (size_t)scnt * 4 + 16 <= sdec_len) {
+                    out_map->scale_rows = (uint32_t *)malloc((size_t)scnt * sizeof(uint32_t));
+                    if (out_map->scale_rows) {
+                        for (uint32_t r = 0; r < scnt; r++) {
+                            out_map->scale_rows[r] = rd_u32(sdec + 16 + (size_t)r * 4);
+                        }
+                        out_map->scale_mode = 2;
+                        out_map->scale_count = (int)scnt;
+                    }
+                } else if (stype == 1) {
+                    out_map->scale_mode = 1;
+                }
+            }
+            free(sdec);
+        }
+        free(scomp);
     }
 
     fclose(f);
@@ -3487,6 +3536,13 @@ typedef struct {
     int vm_ok;
 } PalFieldActor;
 
+static int pal_actor_move_sub_base(const PalFieldActor *a, int is_party, int moving) {
+    if (!a) return 0;
+    if (!is_party) return (int)a->orig_sub_state;
+    if (a->action_base != 0) return a->action_base;
+    return moving ? 8 : 0;
+}
+
 static void field_actor_set_sub(PalFieldActor *a, const char *game_dir, uint32_t act_id, int sub_action, int loop) {
     if (!a) return;
     if (a->vm_ok && a->act_id == act_id && a->sub_action == sub_action) return;
@@ -5023,8 +5079,9 @@ typedef struct {
     int32_t pending_map_id;
     int32_t pending_tx;
     int32_t pending_ty;
-    int32_t pending_dir;
-    int32_t pending_fade;
+    int32_t pending_act_id;       /* OP 0x1B arg4: 0xFFFF = keep current hero act_id */
+    int32_t pending_sub_action;   /* OP 0x1B arg5: action_base (e.g. 80 = sword), 0xFFFF = keep */
+    int32_t pending_dir;          /* OP 0x1B arg6: 0..7 or 0xFFFF = keep */
     int32_t pending_bgm;
     char pending_bgm_track[48];
     int32_t pending_sfx_id;
@@ -5140,6 +5197,9 @@ static int pal_talk_vm_start(PalTalkVM *vm, const char *game_dir, int32_t talk_i
     vm->last_ref_obj_id = trigger_obj_id;
     vm->ip = 0;
     vm->pending_map_id = -1;
+    vm->pending_act_id = -1;
+    vm->pending_sub_action = -1;
+    vm->pending_dir = -1;
     vm->waiting_walk_obj = -1;
     snprintf(vm->game_dir, sizeof(vm->game_dir), "%s", game_dir);
     return 0;
@@ -5647,7 +5707,7 @@ static void pal_talk_vm_step_ex(
                             a->walk_target_px = wtx;
                             a->walk_target_py = wty;
                             a->script_moving = 1;
-                            int base = is_p ? 8 : (int)a->orig_sub_state;
+                            int base = pal_actor_move_sub_base(a, is_p, 1);
                             field_actor_set_sub(a, game_dir, a->act_id, base + ndir, 1);
                             int t = (dist + 3) / 4;
                             if (t > max_ticks) max_ticks = t;
@@ -5724,13 +5784,13 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x1Bu: /* Teleport map(id, tx, ty, fade, bgm, dir) */
+            case 0x1Bu: /* Teleport map(id, tx, ty, act_id, sub_action, dir) */
                 vm->pending_map_id = (int32_t)rd_u16(ins + 2u);
                 vm->pending_tx = (int32_t)rd_u16(ins + 4u);
                 vm->pending_ty = (int32_t)rd_u16(ins + 6u);
-                vm->pending_fade = (int32_t)rd_u16(ins + 8u);
-                vm->pending_bgm = (int32_t)rd_u16(ins + 10u);
-                vm->pending_dir = (int32_t)(rd_u16(ins + 12u) & 7u);
+                vm->pending_act_id = (int32_t)rd_u16(ins + 8u);
+                vm->pending_sub_action = (int32_t)rd_u16(ins + 10u);
+                vm->pending_dir = (int32_t)rd_u16(ins + 12u);
                 vm->ip += ilen;
                 if (!auto_advance_wait) return;
                 break;
@@ -5981,7 +6041,7 @@ static void pal_talk_vm_step_ex(
                     if (sub != 0xFFFFu) {
                         a->orig_sub_state = sub;
                         if (is_p) a->action_base = (int)sub;
-                        field_actor_set_sub(a, game_dir, a->act_id, (int)sub, 1);
+                        field_actor_set_sub(a, game_dir, a->act_id, (int)sub + (a->dir & 7), 1);
                     } else if (dir != 0xFFFFu) {
                         int base = is_p ? a->action_base : (int)a->orig_sub_state;
                         field_actor_set_sub(a, game_dir, a->act_id, base + a->dir, 1);
@@ -6264,7 +6324,7 @@ static void pal_talk_vm_step_ex(
                         a->walk_target_px = wtx;
                         a->walk_target_py = wty;
                         a->script_moving = 1;
-                        int base = is_p ? 8 : (int)a->orig_sub_state;
+                        int base = pal_actor_move_sub_base(a, is_p, 1);
                         field_actor_set_sub(a, game_dir, a->act_id, base + ndir, 1);
                     } else {
                         a->script_moving = 0;
@@ -6788,6 +6848,8 @@ static void pal_talk_vm_advance_input_ex(
     pal_talk_vm_step_ex(vm, ws, game_dir, cur_map_id, party, npcs, io_npc_cnt, npc_cap, 0);
 }
 
+static void step_script_moving_actor(PalFieldActor *a, const char *game_dir, int is_party, int rem_ticks);
+
 int32_t pal_talk_vm_probe_m3(const char *game_dir, PalTalkM3ProbeInfo *out_info) {
     if (!game_dir || !out_info) return -1;
     memset(out_info, 0, sizeof(*out_info));
@@ -7047,11 +7109,93 @@ int32_t pal_talk_vm_probe_m3(const char *game_dir, PalTalkM3ProbeInfo *out_info)
                                  equip_cnt >= 2) ? 1 : 0;
             }
 
+            int ok_sword_pose = 0;
+            {
+                pal_party_init_from_db(ws_reg, db_reg, 1);
+                PalFieldActor sw_party[4] = {0};
+                sw_party[0].active = 1;
+                if (pal_talk_vm_start(&vm, game_dir, 100, 0) == 0) {
+                    int saw_501_sword = 0, saw_501_fly = 0, saw_502_sword = 0, saw_502_fly = 0;
+                    for (int guard = 0; guard < 2000 && vm.active; guard++) {
+                        vm.wait_ticks = 0;
+                        vm.waiting_fade = 0;
+                        vm.waiting_pan = 0;
+                        vm.dlg_visible = 0;
+                        ws_reg->fade_steps = 0;
+                        ws_reg->cam_pan_steps_x = 0;
+                        ws_reg->cam_pan_steps_y = 0;
+                        if (sw_party[0].script_moving) {
+                            step_script_moving_actor(&sw_party[0], game_dir, 1, 0);
+                            if (saw_501_sword && !saw_502_sword && sw_party[0].action_base == 80 &&
+                                sw_party[0].sub_action >= 80 && sw_party[0].sub_action <= 87) {
+                                saw_501_fly = 1;
+                            } else if (saw_502_sword && sw_party[0].action_base == 80 &&
+                                       sw_party[0].sub_action >= 80 && sw_party[0].sub_action <= 87) {
+                                saw_502_fly = 1;
+                            }
+                            continue;
+                        }
+                        vm.waiting_walk_obj = -1;
+                        pal_talk_vm_step(&vm, ws_reg, game_dir, saw_502_sword ? 502u : 501u, sw_party, NULL, 0, 0);
+                        if (vm.pending_map_id == 501) {
+                            uint32_t act = (vm.pending_act_id >= 0 && vm.pending_act_id != 0xFFFF) ? (uint32_t)vm.pending_act_id : 1u;
+                            int sub = (vm.pending_sub_action >= 0 && vm.pending_sub_action != 0xFFFF) ? vm.pending_sub_action : 0;
+                            int dir = (vm.pending_dir >= 0 && vm.pending_dir != 0xFFFF) ? (vm.pending_dir & 7) : 7;
+                            sw_party[0].act_id = act;
+                            sw_party[0].px = vm.pending_tx << 4;
+                            sw_party[0].py = vm.pending_ty << 4;
+                            sw_party[0].dir = dir;
+                            sw_party[0].action_base = sub;
+                            field_actor_set_sub(&sw_party[0], game_dir, act, sub + dir, 1);
+                            saw_501_sword = (sw_party[0].act_id == 1u && sw_party[0].action_base == 80 && sw_party[0].sub_action == 87);
+                            vm.pending_map_id = -1;
+                        } else if (vm.pending_map_id == 502) {
+                            uint32_t act = (vm.pending_act_id == 0xFFFF) ? sw_party[0].act_id : (uint32_t)vm.pending_act_id;
+                            int sub = (vm.pending_sub_action == 0xFFFF) ? sw_party[0].action_base : vm.pending_sub_action;
+                            int dir = (vm.pending_dir == 0xFFFF) ? (sw_party[0].dir & 7) : (vm.pending_dir & 7);
+                            sw_party[0].act_id = act;
+                            sw_party[0].px = vm.pending_tx << 4;
+                            sw_party[0].py = vm.pending_ty << 4;
+                            sw_party[0].dir = dir;
+                            sw_party[0].action_base = sub;
+                            field_actor_set_sub(&sw_party[0], game_dir, act, sub + dir, 1);
+                            saw_502_sword = (act == 1u && sub == 80 && sw_party[0].sub_action == 81);
+                            vm.pending_map_id = -1;
+                        } else {
+                            vm.pending_map_id = -1;
+                        }
+                        if (saw_501_fly && saw_502_fly) break;
+                    }
+                    ok_sword_pose = (saw_501_sword && saw_501_fly && saw_502_sword && saw_502_fly) ? 1 : 0;
+                }
+            }
+
+            int ok_map_scale = 0;
+            {
+                PalLoadedMap ms501 = {0}, ms502 = {0}, ms2 = {0};
+                int r1 = vfs_load_lmf_map_by_id(game_dir, 501u, NULL, SDL_SCALEMODE_NEAREST, &ms501);
+                int r2 = vfs_load_lmf_map_by_id(game_dir, 502u, NULL, SDL_SCALEMODE_NEAREST, &ms502);
+                int r3 = vfs_load_lmf_map_by_id(game_dir, 2u,   NULL, SDL_SCALEMODE_NEAREST, &ms2);
+                if (r1 == 0 && r2 == 0 && r3 == 0 &&
+                    ms501.scale_mode == 2 && ms502.scale_mode == 2 && ms2.scale_mode == 2) {
+                    int s501_top = pal_map_scale_fp(&ms501, 0);
+                    int s501_bot = pal_map_scale_fp(&ms501, 400);
+                    int s502 = pal_map_scale_fp(&ms502, 448);
+                    int s2 = pal_map_scale_fp(&ms2, 400);
+                    ok_map_scale = (s501_top < s501_bot && s501_top == 112 && s502 == 624 && s2 == 816) ? 1 : 0;
+                }
+                free_loaded_map(&ms501);
+                free_loaded_map(&ms502);
+                free_loaded_map(&ms2);
+            }
+
             ok_story_ops = (dream_solo_ok && ok_100 && ok_7001 && ok_103 &&
-                            ok_7004 && ok_7f && ok_party_attach && ok_global_pop) ? 1 : 0;
+                            ok_7004 && ok_7f && ok_party_attach && ok_global_pop &&
+                            ok_sword_pose && ok_map_scale) ? 1 : 0;
             if (!ok_story_ops) {
-                fprintf(stderr, "  TalkM3 reg fail: dream=%d 100=%d 7001=%d 103=%d 7004=%d 7f=%d attach=%d pop=%d | last_item=%d rv2=%u map116=%u\n",
+                fprintf(stderr, "  TalkM3 reg fail: dream=%d 100=%d 7001=%d 103=%d 7004=%d 7f=%d attach=%d pop=%d sword=%d scale=%d | last_item=%d rv2=%u map116=%u\n",
                         dream_solo_ok, ok_100, ok_7001, ok_103, ok_7004, ok_7f, ok_party_attach, ok_global_pop,
+                        ok_sword_pose, ok_map_scale,
                         vm.last_item_given, ws_reg->obj_rv[7004][2], ws_reg->npc_pos_map[116]);
             }
             pal_db_free(db_reg);
@@ -7308,6 +7452,44 @@ static int cmp_render_item(const void *a, const void *b) {
     if (ra->sort_y != rb->sort_y) return (ra->sort_y < rb->sort_y) ? -1 : 1;
     /* Tie-break slightly: map props before actors at exact same Y? Or kind order */
     return (int)ra->kind - (int)rb->kind;
+}
+
+static void pal_push_actor_render_item(
+    PalRenderItem *items, int *io_cnt, int cap,
+    const PalLoadedMap *map, const PalFieldActor *actor,
+    const char *game_dir, SDL_Renderer *renderer, SDL_ScaleMode scale_mode,
+    PalTswCache *tsw_cache, int is_party, int is_leader
+) {
+    if (!items || !io_cnt || *io_cnt >= cap || !actor || !actor->active || !actor->vm_ok || !actor->vm.visible) return;
+    PalLoadedSprite *sp = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, actor->vm.fr_tsw_id);
+    if (!sp || sp->nframes <= 0) return;
+    int fi = actor->vm.frame_index;
+    if (fi < 0) fi = 0;
+    fi %= sp->nframes;
+
+    /* FUN_0042498f + FUN_004346d3: scale around tile center (px + 16, py + 8) when obj_id != -1 and !(flags & 8) */
+    int scale_fp = 1024;
+    if (actor->obj_id != 0xFFFFu && (actor->npc_flags & 8u) == 0u) {
+        scale_fp = pal_map_scale_fp(map, actor->py);
+        if (scale_fp <= 0) scale_fp = 1024;
+    }
+    int pv_x = actor->vm.offset_x + 16;
+    int pv_y = actor->vm.offset_y + 8;
+    int draw_w = (sp->w * scale_fp) >> 10;
+    int draw_h = (sp->h * scale_fp) >> 10;
+    if (sp->w > 0 && draw_w < 1) draw_w = 1;
+    if (sp->h > 0 && draw_h < 1) draw_h = 1;
+
+    PalRenderItem *it = &items[(*io_cnt)++];
+    it->kind = PAL_RENDER_ACTOR;
+    it->sort_y = actor->py + 15;
+    it->draw_x = (actor->px + 16) - ((pv_x * scale_fp) >> 10);
+    it->draw_y = (actor->py + 8) - ((pv_y * scale_fp) >> 10);
+    it->draw_w = draw_w;
+    it->draw_h = draw_h;
+    it->tex = sp->frames[fi];
+    it->is_leader = is_leader;
+    it->is_party = is_party;
 }
 
 static const uint32_t kM2QuickMaps[] = {501u, 1u, 2u, 3u, 502u};
@@ -9487,8 +9669,8 @@ static void step_script_moving_actor(PalFieldActor *a, const char *game_dir, int
     int dy = a->walk_target_py - a->py;
     if (dx == 0 && dy == 0) {
         a->script_moving = 0;
-        int stand_base = is_party ? 0 : (int)a->orig_sub_state;
-        field_actor_set_sub(a, game_dir, a->act_id, stand_base + (a->dir & 7), is_party ? 0 : 1);
+        int stand_base = pal_actor_move_sub_base(a, is_party, 0);
+        field_actor_set_sub(a, game_dir, a->act_id, stand_base + (a->dir & 7), (is_party && stand_base == 0) ? 0 : 1);
         return;
     }
     int step = (a->custom_speed_px > 0) ? a->custom_speed_px : 4;
@@ -9503,8 +9685,8 @@ static void step_script_moving_actor(PalFieldActor *a, const char *game_dir, int
     else a->py += (dy > 0 ? step : -step);
     if (a->px == a->walk_target_px && a->py == a->walk_target_py) {
         a->script_moving = 0;
-        int stand_base = is_party ? 0 : (int)a->orig_sub_state;
-        field_actor_set_sub(a, game_dir, a->act_id, stand_base + (a->dir & 7), is_party ? 0 : 1);
+        int stand_base = pal_actor_move_sub_base(a, is_party, 0);
+        field_actor_set_sub(a, game_dir, a->act_id, stand_base + (a->dir & 7), (is_party && stand_base == 0) ? 0 : 1);
     }
 }
 
@@ -9892,6 +10074,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     PalTalkVM talk_vm = {0};
     talk_vm.pending_map_id = -1;
     int pending_spawn_override = 0, spawn_override_tx = 0, spawn_override_ty = 0, spawn_override_dir = 1;
+    int spawn_override_act_id = -1, spawn_override_sub = -1;
     uint8_t last_stepped_trig_id = 0;
     int interact_target_npc_idx = -1;
     int dlg_text_x = 44;
@@ -10625,6 +10808,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     } else {
                         pending_spawn_override = 0;
                     }
+                    spawn_override_act_id = -1;
+                    spawn_override_sub = -1;
                     leader_hero_idx = 0;
                     need_setup_loaded_map = 1;
                     pending_fade_in_ms = 160;
@@ -10915,7 +11100,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
 
                 if (!talk_vm.active) {
                     int lbase = moved ? (running ? 16 : 8) : 0;
-                    party[0].action_base = lbase;
+                    party[0].action_base = 0;
                     uint32_t lead_act = (leader_hero_idx == 0u && world_state && world_state->party_member_count > 0)
                                             ? pal_hero_field_act_id(world_state->party_members[0].hero_id)
                                             : kPartyHeroActIds[leader_hero_idx % 4u];
@@ -10976,10 +11161,15 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     uint32_t dst_mid = (uint32_t)talk_vm.pending_map_id;
                     int dtx = talk_vm.pending_tx;
                     int dty = talk_vm.pending_ty;
+                    int dact = talk_vm.pending_act_id;
+                    int dsub = talk_vm.pending_sub_action;
                     int ddir = talk_vm.pending_dir;
-                    int skip_black_fade = (talk_vm.pending_fade == 0xFFFF ||
+                    int skip_black_fade = (dact == 0xFFFF ||
                                            (world_state && (world_state->fade_r != 0.0f || world_state->fade_steps > 0)));
                     talk_vm.pending_map_id = -1;
+                    talk_vm.pending_act_id = -1;
+                    talk_vm.pending_sub_action = -1;
+                    talk_vm.pending_dir = -1;
                     if (!skip_black_fade && pending_fade_in_ms == 0) {
                         if (run_fade_transition(window, renderer, scene_rt, 0, 140, &bgm) == 1) {
                             app_quit = 1;
@@ -10993,7 +11183,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         pending_spawn_override = 1;
                         spawn_override_tx = dtx;
                         spawn_override_ty = dty;
-                        spawn_override_dir = ddir;
+                        spawn_override_act_id = dact;
+                        spawn_override_sub = dsub;
+                        spawn_override_dir = (ddir < 0 || ddir == 0xFFFF) ? (party[0].dir & 7) : (ddir & 7);
                         need_setup_loaded_map = 1;
                         pending_fade_in_ms = skip_black_fade ? 0 : 140;
                     }
@@ -11005,11 +11197,16 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 astar_cursor = 0;
                 interact_target_npc_idx = -1;
                 int stx = 0, sty = 0, sdir = 1;
+                int ov_act = -1, ov_sub = -1;
                 if (pending_spawn_override) {
                     stx = spawn_override_tx;
                     sty = spawn_override_ty;
                     sdir = spawn_override_dir & 7;
+                    ov_act = spawn_override_act_id;
+                    ov_sub = spawn_override_sub;
                     pending_spawn_override = 0;
+                    spawn_override_act_id = -1;
+                    spawn_override_sub = -1;
                 } else {
                     pick_map_spawn_tile(&map, &stx, &sty);
                 }
@@ -11019,11 +11216,24 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     party[p].dir = sdir;
                     party[p].active = 1;
                     party[p].script_moving = 0;
-                    party[p].action_base = 0;
                     uint32_t pact = (leader_hero_idx == 0u && world_state && p < world_state->party_member_count)
                                         ? pal_hero_field_act_id(world_state->party_members[p].hero_id)
                                         : kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u];
-                    field_actor_set_sub(&party[p], cfg->game_dir, pact, sdir, 0);
+                    int pbase = 0;
+                    if (p == 0) {
+                        if (ov_act >= 0 && ov_act != 0xFFFF) {
+                            pact = (uint32_t)ov_act;
+                        } else if (ov_act == 0xFFFF && party[0].act_id != 0u) {
+                            pact = party[0].act_id;
+                        }
+                        if (ov_sub >= 0 && ov_sub != 0xFFFF) {
+                            pbase = ov_sub;
+                        } else if (ov_sub == 0xFFFF) {
+                            pbase = party[0].action_base;
+                        }
+                    }
+                    party[p].action_base = pbase;
+                    field_actor_set_sub(&party[p], cfg->game_dir, pact, pbase + sdir, (p == 0 && pbase != 0) ? 1 : 0);
                 }
                 for (int t = 0; t < 64; t++) {
                     trail_x[t] = party[0].px;
@@ -11216,41 +11426,13 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             }
             if (map.map_id == 532u || map.map_id == 533u) pmax = 0;
             for (int p = 0; p < pmax && item_cnt < 1024; p++) {
-                if (!party[p].active || !party[p].vm_ok || !party[p].vm.visible) continue;
-                PalLoadedSprite *sp = tsw_cache_get(&tsw_cache, cfg->game_dir, renderer, scale_mode, party[p].vm.fr_tsw_id);
-                if (!sp || sp->nframes <= 0) continue;
-                int fi = party[p].vm.frame_index;
-                if (fi < 0) fi = 0;
-                fi %= sp->nframes;
-                PalRenderItem *it = &items[item_cnt++];
-                it->kind = PAL_RENDER_ACTOR;
-                it->sort_y = party[p].py + 15;
-                it->draw_x = party[p].px - party[p].vm.offset_x;
-                it->draw_y = party[p].py - party[p].vm.offset_y;
-                it->draw_w = sp->w;
-                it->draw_h = sp->h;
-                it->tex = sp->frames[fi];
-                it->is_leader = (p == 0);
-                it->is_party = 1;
+                pal_push_actor_render_item(items, &item_cnt, 1024, &map, &party[p],
+                                           cfg->game_dir, renderer, scale_mode, &tsw_cache, 1, (p == 0));
             }
 
             for (int n = 0; n < map_npc_actor_cnt && item_cnt < 1024; n++) {
-                if (!map_npcs[n].active || !map_npcs[n].vm_ok || !map_npcs[n].vm.visible) continue;
-                PalLoadedSprite *sp = tsw_cache_get(&tsw_cache, cfg->game_dir, renderer, scale_mode, map_npcs[n].vm.fr_tsw_id);
-                if (!sp || sp->nframes <= 0) continue;
-                int fi = map_npcs[n].vm.frame_index;
-                if (fi < 0) fi = 0;
-                fi %= sp->nframes;
-                PalRenderItem *it = &items[item_cnt++];
-                it->kind = PAL_RENDER_ACTOR;
-                it->sort_y = map_npcs[n].py + 15;
-                it->draw_x = map_npcs[n].px - map_npcs[n].vm.offset_x;
-                it->draw_y = map_npcs[n].py - map_npcs[n].vm.offset_y;
-                it->draw_w = sp->w;
-                it->draw_h = sp->h;
-                it->tex = sp->frames[fi];
-                it->is_leader = 0;
-                it->is_party = 0;
+                pal_push_actor_render_item(items, &item_cnt, 1024, &map, &map_npcs[n],
+                                           cfg->game_dir, renderer, scale_mode, &tsw_cache, 0, 0);
             }
 
             if (item_cnt > 1) qsort(items, (size_t)item_cnt, sizeof(PalRenderItem), cmp_render_item);
