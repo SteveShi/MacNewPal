@@ -89,6 +89,8 @@ typedef struct {
     int32_t delay_rem;       /* Countdown ticks before advancing */
     int32_t visible;         /* ON=1, NO=0 */
     int32_t blend_mode;      /* 0=normal, 4=additive (MA), 8=half (AH) */
+    uint8_t alpha_scale;     /* SG 16-level per-frame alpha (255=opaque) */
+    int32_t hit_flag;        /* AT hit trigger count */
     int32_t frame_index;     /* AP frame index */
     int32_t offset_x;        /* XY / XO offsets */
     int32_t offset_y;
@@ -99,6 +101,8 @@ typedef struct {
     int32_t loop_start_frame;
     int32_t loop_end_frame;
     int32_t ap_step;         /* 1-based AP counter updated by AP opcode */
+    int32_t start_at_ap;     /* 1-based slice start AP (0 = from beginning) */
+    int32_t stop_at_ap;      /* 1-based slice end AP (0 = no limit) */
     int32_t loop_active;     /* 1 = active LP block */
     int32_t last_sfx_id;     /* CS / WV sound effect ID */
     int32_t pc;              /* Instruction pointer */
