@@ -65,7 +65,7 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 | Left-Click on map / NPC | 8-direction A* pathfinding to clicked tile or auto-walk & talk to clicked NPC |
 | `Space` / `Return` / `E` | Interact with adjacent facing NPC/chest, advance active dialogue, or confirm selected choice / menu item |
 | `Up` / `Down` / `1`..`8` | Highlight / pick `%B` dialogue branch options when a prompt is open |
-| `I` / `U` / `F1` | Toggle the 4-tab Camp / System Menu (`狀態`, `仙術`, `物品`, `系統`) with equip, item/magic use, 10-slot Save/Load, and title actions |
+| `Esc` / Right-Click / `I` / `U` / `F1` | Open or close the 4-tab Camp / System Menu (`狀態`, `仙術`, `物品`, `系統`: equip, item/magic use, 10-slot Save/Load, return to Title, or Exit Game); also closes active Shop / Combat submenus |
 | `F` | Trigger turn-based combat (`PAL_SCENE_COMBAT`, resolving current map zone encounter or formation `2801`) |
 | `O` | Open the Buy/Sell Shop overlay (`gmagic.dat` `58001` or active `0x309` shop ID; switch modes with `←`/`→`/`Tab`) |
 | `M` | Cycle featured tour maps (`501`, `1`, `2`, `3`, `502`) |
@@ -77,7 +77,6 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 | `T` | Toggle sample CoreText dialogue box (when no Talk script is active) |
 | `B` | Replay `Video/begin.bik` |
 | `Tab` | Toggle debug HUD |
-| `Esc` | Close active Camp Menu / dialogue, or return to Title Screen |
 
 ---
 

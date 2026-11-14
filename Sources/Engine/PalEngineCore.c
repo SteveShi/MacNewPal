@@ -7480,7 +7480,7 @@ static int camp_row_count(const PalTalkWorldState *ws, const PalCampMenuState *c
         case 0: return PAL_EQUIP_SLOT_COUNT;
         case 1: return ws->party_member_count > 0 ? ws->party_members[hidx].magic_count : 0;
         case 2: return ws->inventory_count;
-        case 3: return 7;
+        case 3: return 8;
         default: return 0;
     }
 }
@@ -7511,7 +7511,7 @@ static void camp_activate_row(
     uint32_t cur_map_id, const char *cur_map_title, int cur_px, int cur_py, int cur_dir,
     int *party_follow_enabled, int *runtime_mute, int *show_collision_grid,
     PalBgmPlayer *bgm, SDL_AudioStream **sfx_stream, float master_volume,
-    int *out_request_title, int *out_loaded_slot
+    int *out_request_title, int *out_loaded_slot, int *out_app_quit
 ) {
     if (!cm || !ws) return;
     camp_clamp_cursor(ws, cm);
@@ -7583,6 +7583,10 @@ static void camp_activate_row(
                 cm->open = 0;
                 if (out_request_title) *out_request_title = 1;
                 break;
+            case 7:
+                cm->open = 0;
+                if (out_app_quit) *out_app_quit = 1;
+                break;
             default: break;
         }
     }
@@ -7615,14 +7619,15 @@ static void camp_rebuild_textures(
     const PalPartyMemberState *cur_h = (ws->party_member_count > 0) ? &ws->party_members[cm->hero_idx] : NULL;
     int total = camp_row_count(ws, cm);
     static const char *kSlotNames[PAL_EQUIP_SLOT_COUNT] = {"頭戴", "披掛", "身穿", "手持", "佩帶", "足穿"};
-    static const char *kSysLabels[7] = {
+    static const char *kSysLabels[8] = {
         "儲存進度 (Save)",
         "讀取進度 (Load)",
         "切換存檔欄位",
         "隊伍跟隨開關",
         "音樂與音效靜音",
         "地圖碰撞網格顯示",
-        "返回遊戲主選單"
+        "返回遊戲主選單",
+        "離開遊戲 (Exit)"
     };
 
     if (cm->tab == 0 && cur_h) {
@@ -8460,7 +8465,10 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     } else if (key == SDLK_RETURN || key == SDLK_SPACE) {
                         activate_btn = selected_btn;
                     } else if (key == SDLK_ESCAPE) {
-                        app_quit = 1;
+                        if (selected_btn != 2) {
+                            selected_btn = 2;
+                            play_ui_sfx(cfg->game_dir, 1, &sfx_stream, cfg->master_volume, runtime_mute);
+                        }
                     }
                 } else if (scene == PAL_SCENE_LOAD_OVERLAY) {
                     if (key == SDLK_UP || key == SDLK_W) {
@@ -8637,14 +8645,16 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         }
                     }
                 } else if (scene == PAL_SCENE_FIELD) {
-                    if ((key == SDLK_I || key == SDLK_U || key == SDLK_F1) && !talk_vm.active && !shop_menu.open) {
-                        camp_menu.open = !camp_menu.open;
+                    if ((key == SDLK_ESCAPE || key == SDLK_I || key == SDLK_U || key == SDLK_F1) &&
+                        !talk_vm.active && !camp_menu.open && !shop_menu.open &&
+                        !(key == SDLK_ESCAPE && show_dialogue)) {
+                        camp_menu.open = 1;
                         camp_menu.dirty = 1;
                         astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
-                        play_ui_sfx(cfg->game_dir, camp_menu.open ? 2u : 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                        play_ui_sfx(cfg->game_dir, 2u, &sfx_stream, cfg->master_volume, runtime_mute);
                     } else if (camp_menu.open) {
                         int nparty = (world_state && world_state->party_member_count > 0) ? world_state->party_member_count : 1;
-                        if (key == SDLK_ESCAPE) {
+                        if (key == SDLK_ESCAPE || key == SDLK_I || key == SDLK_U || key == SDLK_F1) {
                             camp_menu.open = 0;
                             play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                         } else if (key == SDLK_LEFT || key == SDLK_A) {
@@ -8678,7 +8688,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                                               map.map_id, map.title_utf8, party[0].px, party[0].py, party[0].dir,
                                               &party_follow_enabled, &runtime_mute, &show_collision_grid,
                                               &bgm, &sfx_stream, cfg->master_volume,
-                                              &request_return_title, &requested_load_slot);
+                                              &request_return_title, &requested_load_slot, &app_quit);
                         }
                     } else if (shop_menu.open) {
                         if (key == SDLK_ESCAPE) {
@@ -8702,8 +8712,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             shop_activate_row(&shop_menu, world_state, cfg->game_dir, &sfx_stream, cfg->master_volume, runtime_mute);
                             camp_menu.dirty = 1;
                         }
-                    } else if (key == SDLK_ESCAPE) {
-                        request_return_title = 1;
+                    } else if (key == SDLK_ESCAPE && show_dialogue && !talk_vm.active) {
+                        show_dialogue = 0;
+                        play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                     } else if (key == SDLK_TAB) {
                         show_hud = !show_hud;
                     } else if (key == SDLK_G) {
@@ -8896,7 +8907,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                                                       map.map_id, map.title_utf8, party[0].px, party[0].py, party[0].dir,
                                                       &party_follow_enabled, &runtime_mute, &show_collision_grid,
                                                       &bgm, &sfx_stream, cfg->master_volume,
-                                                      &request_return_title, &requested_load_slot);
+                                                      &request_return_title, &requested_load_slot, &app_quit);
                                 } else {
                                     camp_menu.cursor = idx;
                                     camp_menu.dirty = 1;
@@ -8977,6 +8988,33 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             );
                             astar_cursor = 0;
                         }
+                    }
+                }
+            } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_RIGHT) {
+                if (scene == PAL_SCENE_LOAD_OVERLAY) {
+                    scene = PAL_SCENE_TITLE;
+                    play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                } else if (scene == PAL_SCENE_COMBAT) {
+                    if (combat_state.phase == COMBAT_PHASE_SUBMENU || combat_state.phase == COMBAT_PHASE_TARGET) {
+                        combat_state.phase = COMBAT_PHASE_COMMAND;
+                        combat_state.dirty = 1;
+                        play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                    }
+                } else if (scene == PAL_SCENE_FIELD) {
+                    if (shop_menu.open) {
+                        shop_menu.open = 0;
+                        play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                    } else if (camp_menu.open) {
+                        camp_menu.open = 0;
+                        play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                    } else if (show_dialogue && !talk_vm.active) {
+                        show_dialogue = 0;
+                        play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                    } else if (!talk_vm.active) {
+                        camp_menu.open = 1;
+                        camp_menu.dirty = 1;
+                        astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
+                        play_ui_sfx(cfg->game_dir, 2u, &sfx_stream, cfg->master_volume, runtime_mute);
                     }
                 }
             }
@@ -9752,13 +9790,13 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 );
                 SDL_RenderDebugTextFormat(
                     renderer, 16.0f, 30.0f,
-                    "[WASD/Click] Move  [Shift] %s  [E/Space] Talk  [I] Menu  [P] Party:%s",
+                    "[WASD/Click] Move  [Shift] %s  [E/Space] Talk  [Esc/I] Menu  [P] Party:%s",
                     run_mode_enabled ? "RUN" : "WALK",
                     party_follow_enabled ? "ON" : "OFF"
                 );
                 SDL_RenderDebugTextFormat(
                     renderer, 16.0f, 44.0f,
-                    "[M/[/]] Map [F] Fight [O] Shop [G] Grid:%s [V] Hero [C] Clip [B] Bik [Esc]",
+                    "[M/[/]] Map [F] Fight [O] Shop [G] Grid:%s [V] Hero [C] Clip [B] Bik [Tab] HUD",
                     show_collision_grid ? "ON" : "OFF"
                 );
             }
