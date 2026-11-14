@@ -1,0 +1,47 @@
+# OS & Editor
+.DS_Store
+.vscode/
+
+# Python / C build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.dylib
+*.o
+*.log
+
+# Xcode / Build outputs
+build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# Local reverse-engineering reference outputs (BYOD / Copyright protection)
+extracted/
+db_export/
+manifests/
+samples/
+
+# Proprietary PalGame archives, databases, & media assets
+*.dat
+*.DAT
+*.tsw
+*.TSW
+*.act
+*.ACT
+*.snd
+*.SND
+*.lmf
+*.LMF
+*.mp3
+*.MP3
+*.wav
+*.WAV
+*.bik
+*.BIK
+*.png
+*.PNG
+*.asi
+*.dll
+*.exe

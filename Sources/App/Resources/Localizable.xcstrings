@@ -1,0 +1,300 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "app.title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "NewPal for macOS" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "新仙剑奇侠传 macOS 洁净版启动器" } }
+      }
+    },
+    "app.subtitle": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Clean-Room BYOD Engine • SDL3 Metal Hardware Backend" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "洁净室自备正版数据引擎 • SDL3 Metal 原生硬件后端" } }
+      }
+    },
+    "menu.whats_new": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "What's New in NewPal" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "NewPal 新功能介绍" } }
+      }
+    },
+    "badge.sdl3_metal_ready": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "SDL3 Backend: Metal Active" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "SDL3 后端：Metal 已就绪" } }
+      }
+    },
+    "badge.sdl3_metal_missing": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "SDL3 Metal Backend Unavailable" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "SDL3 Metal 后端不可用" } }
+      }
+    },
+    "byod.card_title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Original Game Data Directory (BYOD)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原版游戏数据目录（自备正版资产）" } }
+      }
+    },
+    "byod.legal_notice": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No copyrighted sprites, audio, scripts, or maps are bundled. Select your own legal copy of PalGame to verify and play directly from archive containers." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本应用不含任何受版权保护的美术、音频、脚本或地图资源。请选择您合法拥有的原版《新仙剑奇侠传》游戏目录，通过内存 VFS 直接校验并挂载运行。" } }
+      }
+    },
+    "byod.no_folder_selected": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "No game directory selected yet." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "尚未选择原版游戏目录。" } }
+      }
+    },
+    "byod.choose_folder": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Select PalGame Directory…" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择原版游戏目录…" } }
+      }
+    },
+    "byod.revalidate": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Re-Validate" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重新校验" } }
+      }
+    },
+    "byod.open_panel_prompt": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Select Original PalGame Directory" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择原版《新仙剑奇侠传》目录" } }
+      }
+    },
+    "byod.status_verified": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Verified" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "校验通过" } }
+      }
+    },
+    "byod.status_incomplete": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Verification Required" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待完整校验" } }
+      }
+    },
+    "metrics.section_title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Live VFS Metadata Summary" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "内存 VFS 元数据扫描摘要" } }
+      }
+    },
+    "metrics.archives": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Verified Archives" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已验证封包" } }
+      }
+    },
+    "metrics.sprites": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Char Sprites" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "角色精灵槽" } }
+      }
+    },
+    "metrics.maps": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "MSF3 Maps" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "MSF3 地图" } }
+      }
+    },
+    "metrics.sfx": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Sound Effects" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "音效条目" } }
+      }
+    },
+    "metrics.titles": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Map Titles" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "地图标题数" } }
+      }
+    },
+    "metrics.heroes": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Heroes / Monsters" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "主角 / 怪物" } }
+      }
+    },
+    "checklist.title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Required Asset Signature Checklist" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "核心文件与二进制签名核验清单" } }
+      }
+    },
+    "launch.section_title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "SDL3 Metal Runtime Launch" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "SDL3 Metal 运行时启动" } }
+      }
+    },
+    "launch.initial_map": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Initial Map Index" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "初始地图索引" } }
+      }
+    },
+    "launch.initial_char": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Initial Sprite Slot" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "初始角色精灵槽" } }
+      }
+    },
+    "launch.button": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Launch Game Engine (SDL3 Metal)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启动游戏引擎（SDL3 Metal）" } }
+      }
+    },
+    "launch.controls_hint": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Runtime Controls: WASD / Arrows to move, [ / ] to switch maps, N / P to switch sprites, Space to test SFX, Tab for HUD, Esc to return." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "运行时快捷键：WASD/方向键移动，[ / ] 切换地图，N / P 切换角色精灵，空格试听音效，Tab 切换调试面板，Esc 返回启动器。" } }
+      }
+    },
+    "settings.tab_general": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Engine & Display" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "引擎与显示" } }
+      }
+    },
+    "settings.window_scale": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Window Scale" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "窗口分辨率倍率" } }
+      }
+    },
+    "settings.scale_1x": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "640 × 480 (1× Native)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "640 × 480（1× 原生）" } }
+      }
+    },
+    "settings.scale_2x": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "1280 × 960 (2× Retina)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "1280 × 960（2× 高清）" } }
+      }
+    },
+    "settings.scale_fullscreen": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Fullscreen Letterbox" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "全屏等比适配" } }
+      }
+    },
+    "settings.vsync": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Enable Metal VSync" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启用 Metal 垂直同步 (VSync)" } }
+      }
+    },
+    "settings.pixel_filter": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Texture Scaling Mode" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "纹理缩放过滤模式" } }
+      }
+    },
+    "settings.filter_nearest": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Crisp Pixel-Art (Nearest)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "锐利像素（最近邻采样）" } }
+      }
+    },
+    "settings.filter_linear": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Smooth Bilinear" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "平滑双线性过滤" } }
+      }
+    },
+    "settings.mute_audio": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Mute SDL3 Audio Output" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "静音 SDL3 音频输出" } }
+      }
+    },
+    "settings.master_volume": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Master Volume" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "主音量" } }
+      }
+    },
+    "settings.game_data_folder": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Game Data Location" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "游戏数据目录位置" } }
+      }
+    },
+    "settings.clear_folder": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Clear Saved Directory" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "清除已保存目录" } }
+      }
+    },
+    "whatsnew.title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "What's New in NewPal" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "NewPal 更新说明" } }
+      }
+    },
+    "whatsnew.version": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Version 1.0.0 — Clean-Room BYOD & SDL3 Metal Prototype" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "1.0.0 版 — 洁净室 BYOD 架构与 SDL3 Metal 原型" } }
+      }
+    },
+    "whatsnew.feature1.title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Copyright-Safe BYOD Validator" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "版权合规的自备正版数据校验" } }
+      }
+    },
+    "whatsnew.feature1.desc": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Verifies all 23 binary signatures (0xABCD sprites, MSF3 maps, 35-opcode action tables, 0x7F databases, Talk scripts) before launch without bundling proprietary assets." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启动前自动核验全部 23 项原版封包与数据库签名，不在应用内打包任何受版权保护素材。" } }
+      }
+    },
+    "whatsnew.feature2.title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Zero-Extraction In-Memory VFS" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "零落地内存虚拟文件系统 (VFS)" } }
+      }
+    },
+    "whatsnew.feature2.desc": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Decompresses LZO1X + ARLE frames, MSF3 tile atlases, PCM/RIFF SFX, and CP950 scripts straight from the original archives on demand." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "直接按需从原版归档流式解压 LZO1X/ARLE 精灵、MSF3 地图图块、WAV 音效与 CP950 中文数据，无需在硬盘生成解包文件。" } }
+      }
+    },
+    "whatsnew.feature3.title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Native SDL3 Metal Pipeline" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生 SDL3 Metal 渲染与音频管线" } }
+      }
+    },
+    "whatsnew.feature3.desc": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Targets Apple Metal via SDL3 3.4 with 640×480 logical presentation, configurable VSync/pixel filtering, and SDL_AudioStream playback." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "基于 SDL3 3.4 强制绑定 Apple Metal 硬件后端，支持 640×480 逻辑分辨率缩放、VSync、像素过滤与实时音频流。" } }
+      }
+    },
+    "whatsnew.done": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Done" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "完成" } }
+      }
+    },
+    "hero.preview_title": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Decoded Party Preview (ghero.dat)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "角色数据实时解码预览（ghero.dat）" } }
+      }
+    }
+  },
+  "version": "1.0"
+}

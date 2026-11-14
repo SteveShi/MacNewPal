@@ -1,0 +1,48 @@
+name: NewPal
+options:
+  bundleIdPrefix: com.steveshi
+  deploymentTarget:
+    macOS: "14.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    CODE_SIGN_IDENTITY: "-"
+    ENABLE_APP_SANDBOX: NO
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+targets:
+  NewPal:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Engine
+      - path: Sources/App
+    settings:
+      base:
+        PRODUCT_NAME: NewPal
+        PRODUCT_BUNDLE_IDENTIFIER: com.steveshi.newpal
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Engine/NewPal-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(inherited)"
+          - "/opt/homebrew/opt/sdl3/include"
+          - "$(SRCROOT)/Sources/Engine"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "/opt/homebrew/opt/sdl3/lib"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-lSDL3"
+          - "-liconv"
+          - "-Wl,-rpath,/opt/homebrew/opt/sdl3/lib"
+        OTHER_CFLAGS:
+          - "-Wall"
+          - "-Wextra"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © Steve Shi. Clean-Room Engine Only."
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.games"
