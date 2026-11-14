@@ -1105,7 +1105,7 @@ typedef struct {
     uint16_t talk_id;
     uint16_t ai_script_id;
     uint16_t ai_pc;
-    uint16_t flags;
+    uint32_t flags;
     int8_t   sight;
     uint8_t  aggro;
 } PalMapNpcDef;
@@ -1122,6 +1122,11 @@ typedef struct {
     int h_px;
     int total_maps;
     int step_speed_px;
+    int shadow_dir;
+    uint16_t env_w2;
+    int8_t amb_r;
+    int8_t amb_g;
+    int8_t amb_b;
     SDL_Texture *texture;
     uint32_t *walk_grid;
     int walkable_count;
@@ -1233,10 +1238,18 @@ static void vfs_lookup_map_metadata(
                 if (out_msf3_id && msf_id != 0xFFFFu && msf_id > 0) *out_msf3_id = msf_id;
                 slot2_bgm_idx = w2 & 0x0Fu;
                 if (out_map) {
+                    static const int8_t kAmbTbl[16] = {
+                        0, 1, 2, 3, 4, 5, 6, 7, 8, -7, -6, -5, -4, -3, -2, -1
+                    };
+                    out_map->shadow_dir = (int)(w2 & 0x0Fu);
+                    out_map->env_w2 = w2;
                     uint16_t spd = w3 & 0x0Fu;
                     if (spd == 1 || spd == 2 || spd == 4 || spd == 8 || spd == 16) {
                         out_map->step_speed_px = (int)spd;
                     }
+                    out_map->amb_r = kAmbTbl[(w3 >> 12) & 0x0Fu];
+                    out_map->amb_g = kAmbTbl[(w3 >> 8) & 0x0Fu];
+                    out_map->amb_b = kAmbTbl[(w3 >> 4) & 0x0Fu];
                 }
                 break;
             }
@@ -1329,7 +1342,7 @@ static void vfs_lookup_map_metadata(
                             nd->talk_id = rd_u16(p + pos + 14);
                             nd->ai_script_id = rd_u16(p + pos + 16);
                             nd->ai_pc = rd_u16(p + pos + 18);
-                            nd->flags = rd_u16(p + pos + 20);
+                            nd->flags = rd_u32(p + pos + 20);
                             nd->sight = (int8_t)p[pos + 24];
                             nd->aggro = p[pos + 25];
                         }
@@ -3553,7 +3566,7 @@ typedef struct {
     uint32_t act_id;
     uint16_t obj_id;
     uint16_t talk_id;
-    uint16_t npc_flags;
+    uint32_t npc_flags;
     uint16_t orig_sub_state;
     int sub_action;
     int dir;          /* 0=U, 1=D, 2=L, 3=R, 4=UL, 5=DR, 6=DL, 7=UR */
@@ -3564,7 +3577,10 @@ typedef struct {
     int walk_target_py;
     int script_moving;
     int custom_speed_px; /* 0 = default 4px/tick; >0 = OP 0x4D custom speed */
-    uint16_t fx_id;      /* OP 0x47/0x48 overlay effect */
+    uint16_t fx_id;      /* OP 0x47/0x48 overhead emote: 1 + sub_arg (0 = off) */
+    uint16_t fx_loaded_id;
+    PalActVM fx_vm;
+    int fx_vm_ok;
     uint32_t backup_act_id;
     uint16_t backup_sub;
     int backup_dir;
@@ -3585,6 +3601,31 @@ typedef struct {
     PalActVM vm;
     int vm_ok;
 } PalFieldActor;
+
+static void pal_actor_sync_and_step_fx(PalFieldActor *a, const char *game_dir, int step_tick) {
+    if (!a) return;
+    if (a->fx_id == 0u) {
+        a->fx_vm_ok = 0;
+        a->fx_loaded_id = 0u;
+        return;
+    }
+    if ((!a->fx_vm_ok || a->fx_loaded_id != a->fx_id) && game_dir) {
+        int arg = (int)(a->fx_id - 1u);
+        int32_t prefs[4] = {20 + arg, arg, 20, 0};
+        PalActVM fvm = {0};
+        if (pal_act_vm_init_with_prefs(game_dir, "all_sys.act", 9006u, prefs, 4, 0, &fvm) == 0) {
+            a->fx_vm = fvm;
+            a->fx_vm_ok = 1;
+            a->fx_loaded_id = a->fx_id;
+        } else {
+            a->fx_vm_ok = 0;
+            a->fx_loaded_id = a->fx_id;
+        }
+    }
+    if (step_tick && a->fx_vm_ok && !a->fx_vm.finished) {
+        pal_act_vm_step_tick(&a->fx_vm);
+    }
+}
 
 static int pal_actor_move_sub_base(const PalFieldActor *a, int is_party, int moving) {
     if (!a) return 0;
@@ -5528,7 +5569,7 @@ static void pal_init_npc_actor_from_def(
     if (ws && oid < PAL_OBJ_CAP && ws->npc_flags_has[oid]) {
         eff_flags = ws->npc_flags_val[oid];
     }
-    a->npc_flags = (uint16_t)(eff_flags & 0xFFFFu);
+    a->npc_flags = eff_flags;
     a->orig_sub_state = (ws && oid < PAL_OBJ_CAP && ws->npc_sub_override[oid] != 0u)
                             ? (uint16_t)(ws->npc_sub_override[oid] - 1u)
                             : nd->sub_state;
@@ -5636,8 +5677,8 @@ static void pal_talk_toggle_flag_bit(
     }
     PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, NULL);
     if (a) {
-        if (set_on) a->npc_flags |= (uint16_t)(bit & 0xFFFFu);
-        else a->npc_flags &= (uint16_t)~(bit & 0xFFFFu);
+        if (set_on) a->npc_flags |= bit;
+        else a->npc_flags &= ~bit;
     }
 }
 
@@ -6652,7 +6693,10 @@ static void pal_talk_vm_step_ex(
             case 0x47u: case 0x48u: { /* Attach/clear actor effect [obj, fx] */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 PalFieldActor *a = talk_find_actor_by_obj(party, npcs, npc_cnt, obj, NULL);
-                if (a) a->fx_id = (op == 0x47u) ? rd_u16(ins + 4u) : 0u;
+                if (a) {
+                    a->fx_id = (op == 0x47u) ? (uint16_t)(1u + rd_u16(ins + 4u)) : 0u;
+                    pal_actor_sync_and_step_fx(a, game_dir, 0);
+                }
                 vm->ip += ilen;
                 break;
             }
@@ -7522,6 +7566,17 @@ static void pick_map_spawn_tile(const PalLoadedMap *m, int *out_tx, int *out_ty)
     *out_ty = 4;
 }
 
+static int pal_hero_portrait_tsw_id(int32_t hero_id) {
+    switch (hero_id) {
+        case 2001: return 9072; /* 趙靈兒 */
+        case 2002: return 9073; /* 林月如 */
+        case 2003: return 9088; /* 阿奴 (SWD2k all_sys.tsw slot 88) */
+        case 2000:
+        case 2009:
+        default:   return 9070; /* 李逍遙 */
+    }
+}
+
 typedef enum {
     PAL_RENDER_FG_INST = 0,
     PAL_RENDER_ACTOR   = 1
@@ -7534,7 +7589,11 @@ typedef struct {
     int draw_y;
     int draw_w;
     int draw_h;
+    int foot_px;
+    int foot_py;
+    int scale_fp;
     SDL_Texture *tex;
+    const PalFieldActor *actor;
     int is_leader;
     int is_party;
 } PalRenderItem;
@@ -7580,9 +7639,422 @@ static void pal_push_actor_render_item(
     it->draw_y = (actor->py + 8) - ((pv_y * scale_fp) >> 10);
     it->draw_w = draw_w;
     it->draw_h = draw_h;
+    it->foot_px = actor->px + 16;
+    it->foot_py = actor->py + 10;
+    it->scale_fp = scale_fp;
     it->tex = sp->frames[fi];
+    it->actor = actor;
     it->is_leader = is_leader;
     it->is_party = is_party;
+}
+
+static Uint8 pal_clamp_u8_int(int v) {
+    if (v < 0) return 0u;
+    if (v > 255) return 255u;
+    return (Uint8)v;
+}
+
+static void pal_draw_actor_shadow(
+    SDL_Renderer *renderer, const PalRenderItem *it, const PalLoadedMap *map, float cam_x, float cam_y
+) {
+    if (!renderer || !it || !it->tex || it->draw_w <= 0 || it->draw_h <= 0) return;
+    static const float kShearX[8] = {0.26f, -0.22f, -0.34f, 0.34f, -0.28f, 0.28f, -0.32f, 0.32f};
+    static const float kScaleY[8] = {0.40f,  0.42f,  0.38f, 0.38f,  0.42f, 0.42f,  0.40f, 0.40f};
+    int sdir = map ? (map->shadow_dir & 7) : 0;
+    float x0 = (float)it->draw_x - cam_x;
+    float x1 = x0 + (float)it->draw_w;
+    float foot_y = (float)it->foot_py - cam_y;
+    float sh_h = (float)it->draw_h * kScaleY[sdir];
+    float shear = (float)it->draw_h * kShearX[sdir];
+    float top_y = foot_y - sh_h;
+
+    SDL_Vertex verts[4];
+    memset(verts, 0, sizeof(verts));
+    SDL_FColor sc = {0.0f, 0.0f, 0.0f, 0.40f};
+    verts[0].position.x = x0 + shear; verts[0].position.y = top_y;  verts[0].tex_coord.x = 0.0f; verts[0].tex_coord.y = 0.0f; verts[0].color = sc;
+    verts[1].position.x = x1 + shear; verts[1].position.y = top_y;  verts[1].tex_coord.x = 1.0f; verts[1].tex_coord.y = 0.0f; verts[1].color = sc;
+    verts[2].position.x = x1;         verts[2].position.y = foot_y; verts[2].tex_coord.x = 1.0f; verts[2].tex_coord.y = 1.0f; verts[2].color = sc;
+    verts[3].position.x = x0;         verts[3].position.y = foot_y; verts[3].tex_coord.x = 0.0f; verts[3].tex_coord.y = 1.0f; verts[3].color = sc;
+    static const int kIdx[6] = {0, 1, 2, 0, 2, 3};
+
+    SDL_SetTextureBlendMode(it->tex, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureColorMod(it->tex, 0, 0, 0);
+    SDL_SetTextureAlphaMod(it->tex, 108);
+    SDL_RenderGeometry(renderer, it->tex, verts, 4, kIdx, 6);
+    SDL_SetTextureAlphaMod(it->tex, 255);
+    SDL_SetTextureColorMod(it->tex, 255, 255, 255);
+}
+
+static void pal_draw_render_items_pass2(
+    SDL_Renderer *renderer, const PalRenderItem *items, int item_cnt,
+    const PalLoadedMap *map, const char *game_dir, SDL_ScaleMode scale_mode,
+    PalTswCache *tsw_cache, float cam_x, float cam_y
+) {
+    for (int i = 0; i < item_cnt; i++) {
+        const PalRenderItem *it = &items[i];
+        if (!it->tex) continue;
+        SDL_FRect dst = {
+            (float)it->draw_x - cam_x,
+            (float)it->draw_y - cam_y,
+            (float)it->draw_w,
+            (float)it->draw_h
+        };
+        if (it->kind == PAL_RENDER_ACTOR && it->actor) {
+            if ((it->actor->npc_flags & 0x0400u) == 0u) {
+                pal_draw_actor_shadow(renderer, it, map, cam_x, cam_y);
+            }
+            Uint8 mr = 255u, mg = 255u, mb = 255u;
+            if (map && (map->amb_r < 0 || map->amb_g < 0 || map->amb_b < 0)) {
+                mr = pal_clamp_u8_int(255 + (int)map->amb_r * 18);
+                mg = pal_clamp_u8_int(255 + (int)map->amb_g * 18);
+                mb = pal_clamp_u8_int(255 + (int)map->amb_b * 18);
+            }
+            uint32_t tint_bits = (it->actor->npc_flags & 0x00F00000u) >> 20;
+            if (tint_bits != 0u) {
+                if ((tint_bits & 0x8u) != 0u) {
+                    mr = pal_clamp_u8_int((int)mr - 48);
+                    mg = pal_clamp_u8_int((int)mg - 48);
+                    mb = pal_clamp_u8_int((int)mb - 32);
+                } else {
+                    if (tint_bits & 0x1u) { mg = pal_clamp_u8_int((int)mg - 40); mb = pal_clamp_u8_int((int)mb - 40); }
+                    if (tint_bits & 0x2u) { mr = pal_clamp_u8_int((int)mr - 40); mb = pal_clamp_u8_int((int)mb - 40); }
+                    if (tint_bits & 0x4u) { mr = pal_clamp_u8_int((int)mr - 40); mg = pal_clamp_u8_int((int)mg - 40); }
+                }
+            }
+            SDL_SetTextureColorMod(it->tex, mr, mg, mb);
+            SDL_RenderTexture(renderer, it->tex, NULL, &dst);
+            if (map && (map->amb_r > 0 || map->amb_g > 0 || map->amb_b > 0)) {
+                SDL_SetTextureBlendMode(it->tex, SDL_BLENDMODE_ADD);
+                SDL_SetTextureColorMod(it->tex,
+                    pal_clamp_u8_int(map->amb_r * 16),
+                    pal_clamp_u8_int(map->amb_g * 16),
+                    pal_clamp_u8_int(map->amb_b * 16));
+                SDL_RenderTexture(renderer, it->tex, NULL, &dst);
+                SDL_SetTextureBlendMode(it->tex, SDL_BLENDMODE_BLEND);
+            }
+            SDL_SetTextureColorMod(it->tex, 255, 255, 255);
+
+            if (it->actor->fx_vm_ok && it->actor->fx_vm.visible && it->actor->fx_vm.fr_tsw_id > 0 && tsw_cache) {
+                PalLoadedSprite *fxsp = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, it->actor->fx_vm.fr_tsw_id);
+                if (fxsp && fxsp->nframes > 0) {
+                    int ffi = it->actor->fx_vm.frame_index;
+                    if (ffi < 0) ffi = 0;
+                    ffi %= fxsp->nframes;
+                    int sfp = it->scale_fp > 0 ? it->scale_fp : 1024;
+                    int fw = (fxsp->w * sfp) >> 10;
+                    int fh = (fxsp->h * sfp) >> 10;
+                    if (fw < 8) fw = fxsp->w;
+                    if (fh < 8) fh = fxsp->h;
+                    SDL_FRect fx_dst = {
+                        ((float)it->foot_px - cam_x) - (float)fw * 0.5f,
+                        dst.y - (float)fh + 4.0f,
+                        (float)fw, (float)fh
+                    };
+                    if (fx_dst.y < 2.0f) fx_dst.y = 2.0f;
+                    SDL_RenderTexture(renderer, fxsp->frames[ffi], NULL, &fx_dst);
+                }
+            }
+        } else {
+            SDL_RenderTexture(renderer, it->tex, NULL, &dst);
+        }
+    }
+}
+
+#define PAL_WEATHER_MAX 96
+
+typedef struct {
+    float x, y, vx, vy, phase, size;
+    uint8_t active, kind, alpha;
+} PalWeatherParticle;
+
+typedef struct {
+    uint32_t frame_counter;
+    uint32_t rng_state;
+    PalWeatherParticle particles[PAL_WEATHER_MAX];
+    SDL_Texture *dark_spotlight_tex;
+} PalFieldEnvState;
+
+static uint32_t pal_env_rand(PalFieldEnvState *env) {
+    uint32_t x = env->rng_state ? env->rng_state : 0x5A17C93Du;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    env->rng_state = x;
+    return x;
+}
+
+static void pal_field_env_free(PalFieldEnvState *env) {
+    if (!env) return;
+    if (env->dark_spotlight_tex) {
+        SDL_DestroyTexture(env->dark_spotlight_tex);
+        env->dark_spotlight_tex = NULL;
+    }
+}
+
+static void pal_field_apply_map_env_flags(
+    PalTalkWorldState *ws, const PalLoadedMap *map, PalFieldEnvState *env, int preserve_saved
+) {
+    if (env) {
+        memset(env->particles, 0, sizeof(env->particles));
+        env->rng_state = (map ? map->map_id * 2654435761u : 1u) ^ 0xA341316Cu;
+    }
+    if (!ws || !map) return;
+    if (!preserve_saved) {
+        ws->story_flags[5] = 0u;
+        ws->story_flags[6] = 0u;
+        ws->story_flags[7] = 0u;
+        ws->story_flags[8] = 0u;
+        ws->story_flags[15] = 0u;
+        ws->story_flags[19] = 0u;
+        ws->story_flags[22] = 0u;
+    }
+    uint16_t w2 = map->env_w2;
+    if (w2 & 0x8000u) ws->story_flags[15] = 1u;
+    if (!preserve_saved) {
+        if (w2 & 0x6000u) ws->story_flags[5] = 1u;
+        if (w2 & 0x1000u) ws->story_flags[6] = 1u;
+        if (w2 & 0x0800u) ws->story_flags[7] = 1u;
+        if (w2 & 0x0400u) ws->story_flags[8] = 1u;
+        if (w2 & 0x0200u) ws->story_flags[19] = 1u;
+        if (w2 & 0x0100u) ws->story_flags[22] = 1u;
+    }
+}
+
+static void pal_field_env_tick(
+    PalFieldEnvState *env, const PalTalkWorldState *ws, const PalFieldActor *leader
+) {
+    if (!env || !ws) return;
+    env->frame_counter++;
+    int has_rain = ws->story_flags[8] != 0u;
+    int has_snow = ws->story_flags[22] != 0u;
+    int has_firefly = ws->story_flags[6] != 0u;
+    int has_sparks = (leader && leader->active && (leader->npc_flags & 0x0200u) != 0u);
+    static const int kSnowSway[8] = {0, 1, 1, 1, 0, -1, -1, -1};
+
+    int target_cnt = has_rain ? 72 : (has_snow ? 64 : (has_firefly ? 36 : 0));
+    for (int i = 0; i < PAL_WEATHER_MAX; i++) {
+        PalWeatherParticle *pt = &env->particles[i];
+        if (!pt->active) {
+            if (i < target_cnt) {
+                pt->active = 1;
+                pt->x = (float)(pal_env_rand(env) % 640u);
+                pt->y = (float)(pal_env_rand(env) % 480u);
+                pt->phase = (float)(pal_env_rand(env) % 360u) * 0.01745f;
+                if (has_rain) {
+                    pt->kind = 1;
+                    pt->vx = -3.2f - (float)(pal_env_rand(env) % 10u) * 0.12f;
+                    pt->vy = 10.5f + (float)(pal_env_rand(env) % 5u) * 0.8f;
+                    pt->size = 10.0f + (float)(pal_env_rand(env) % 6u);
+                    pt->alpha = (uint8_t)(110u + (pal_env_rand(env) % 85u));
+                } else if (has_snow) {
+                    pt->kind = 2;
+                    pt->vx = 0.0f;
+                    pt->vy = 1.4f + (float)(pal_env_rand(env) % 12u) * 0.1f;
+                    pt->size = (float)(2u + (pal_env_rand(env) % 3u));
+                    pt->alpha = (uint8_t)(175u + (pal_env_rand(env) % 75u));
+                } else {
+                    pt->kind = 3;
+                    pt->vx = ((float)(pal_env_rand(env) % 21u) - 10.0f) * 0.08f;
+                    pt->vy = -0.35f + ((float)(pal_env_rand(env) % 15u) - 7.0f) * 0.05f;
+                    pt->size = 2.0f + (float)(pal_env_rand(env) % 3u);
+                    pt->alpha = (uint8_t)(140u + (pal_env_rand(env) % 95u));
+                }
+            } else if (has_sparks && (pal_env_rand(env) % 6u) == 0u) {
+                pt->active = 1;
+                pt->kind = 4;
+                pt->x = (float)(leader->px + 10 + (int)(pal_env_rand(env) % 13u));
+                pt->y = (float)(leader->py + 10 + (int)(pal_env_rand(env) % 7u));
+                pt->vx = ((float)(pal_env_rand(env) % 9u) - 4.0f) * 0.25f;
+                pt->vy = -0.8f - (float)(pal_env_rand(env) % 4u) * 0.2f;
+                pt->size = 2.0f;
+                pt->alpha = 210u;
+                pt->phase = 10.0f; /* lifetime ticks */
+            }
+            continue;
+        }
+        if ((pt->kind == 1 && !has_rain) || (pt->kind == 2 && !has_snow) || (pt->kind == 3 && !has_firefly)) {
+            pt->active = 0;
+            continue;
+        }
+        if (pt->kind == 2) {
+            int sway_idx = ((int)(env->frame_counter / 4u) + i) & 7;
+            pt->x += (float)kSnowSway[sway_idx] * 0.85f;
+            pt->y += pt->vy;
+        } else if (pt->kind == 4) {
+            pt->x += pt->vx;
+            pt->y += pt->vy;
+            pt->phase -= 1.0f;
+            if (pt->phase <= 0.0f) { pt->active = 0; continue; }
+            pt->alpha = (uint8_t)(pt->phase * 20.0f);
+            continue;
+        } else {
+            pt->x += pt->vx + (pt->kind == 3 ? sinf(pt->phase + (float)env->frame_counter * 0.08f) * 0.45f : 0.0f);
+            pt->y += pt->vy;
+        }
+        if (pt->x < -12.0f) pt->x += 652.0f;
+        if (pt->x > 652.0f) pt->x -= 652.0f;
+        if (pt->y < -12.0f) pt->y += 492.0f;
+        if (pt->y > 492.0f) {
+            pt->y = -6.0f;
+            pt->x = (float)(pal_env_rand(env) % 640u);
+        }
+    }
+}
+
+static void pal_field_env_draw_bg(
+    SDL_Renderer *renderer, const PalFieldEnvState *env, const PalTalkWorldState *ws,
+    const PalLoadedMap *map, float cam_x, float cam_y
+) {
+    if (!renderer || !map || !map->texture) return;
+    if (!ws || !ws->story_flags[7] || !env) {
+        SDL_FRect map_dst = {-cam_x, -cam_y, (float)map->w_px, (float)map->h_px};
+        SDL_RenderTexture(renderer, map->texture, NULL, &map_dst);
+        return;
+    }
+    /* FUN_004282e5: horizontal strip water/heat shimmer */
+    const int strip_h = 8;
+    for (int sy = 0; sy < 480; sy += strip_h) {
+        float wy = (float)sy + cam_y;
+        if (wy >= (float)map->h_px || wy + (float)strip_h <= 0.0f) continue;
+        float shimmer = sinf((float)sy * 0.09f + (float)env->frame_counter * 0.22f) * 2.2f;
+        SDL_FRect src = {0.0f, wy, (float)map->w_px, (float)strip_h};
+        SDL_FRect dst = {-cam_x + shimmer, (float)sy, (float)map->w_px, (float)strip_h};
+        if (src.y < 0.0f) {
+            dst.y -= src.y;
+            src.h += src.y;
+            dst.h = src.h;
+            src.y = 0.0f;
+        }
+        if (src.y + src.h > (float)map->h_px) {
+            src.h = (float)map->h_px - src.y;
+            dst.h = src.h;
+        }
+        if (src.h > 0.0f) SDL_RenderTexture(renderer, map->texture, &src, &dst);
+    }
+}
+
+static SDL_Texture *pal_ensure_dark_spotlight_tex(SDL_Renderer *renderer, PalFieldEnvState *env) {
+    if (env->dark_spotlight_tex) return env->dark_spotlight_tex;
+    const int tw = 256, th = 256;
+    SDL_Surface *surf = SDL_CreateSurface(tw, th, SDL_PIXELFORMAT_RGBA32);
+    if (!surf) return NULL;
+    uint8_t *px = (uint8_t *)surf->pixels;
+    float cx = (float)(tw / 2), cy = (float)(th / 2);
+    float r_in = 34.0f, r_out = 120.0f;
+    for (int y = 0; y < th; y++) {
+        uint8_t *row = px + (size_t)y * (size_t)surf->pitch;
+        for (int x = 0; x < tw; x++) {
+            float dx = (float)x - cx, dy = (float)y - cy;
+            float dist = sqrtf(dx * dx + dy * dy);
+            float t = (dist <= r_in) ? 0.0f : (dist >= r_out ? 1.0f : (dist - r_in) / (r_out - r_in));
+            float smooth = t * t * (3.0f - 2.0f * t);
+            row[x * 4 + 0] = 4;
+            row[x * 4 + 1] = 6;
+            row[x * 4 + 2] = 14;
+            row[x * 4 + 3] = (uint8_t)(smooth * 228.0f);
+        }
+    }
+    env->dark_spotlight_tex = SDL_CreateTextureFromSurface(renderer, surf);
+    SDL_DestroySurface(surf);
+    if (env->dark_spotlight_tex) {
+        SDL_SetTextureBlendMode(env->dark_spotlight_tex, SDL_BLENDMODE_BLEND);
+    }
+    return env->dark_spotlight_tex;
+}
+
+static void pal_field_env_draw_pre_ui(
+    SDL_Renderer *renderer, PalFieldEnvState *env, const PalTalkWorldState *ws,
+    const PalLoadedMap *map, const PalFieldActor *leader, float cam_x, float cam_y
+) {
+    if (!renderer || !env || !ws) return;
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
+    /* Cloud shadows (story_flags[5]) */
+    if (ws->story_flags[5]) {
+        Uint8 ca = (map && (map->env_w2 & 0x2000u)) ? 72u : 46u;
+        float t = (float)env->frame_counter * 0.9f;
+        SDL_SetRenderDrawColor(renderer, 6, 10, 18, ca);
+        for (int c = 0; c < 4; c++) {
+            float cx = fmodf(t + (float)c * 240.0f, 960.0f) - 180.0f;
+            float cy = fmodf(t * 0.55f + (float)c * 170.0f, 680.0f) - 120.0f;
+            SDL_FRect cr1 = {cx, cy, 220.0f, 88.0f};
+            SDL_FRect cr2 = {cx + 40.0f, cy - 26.0f, 145.0f, 132.0f};
+            SDL_RenderFillRect(renderer, &cr1);
+            SDL_RenderFillRect(renderer, &cr2);
+        }
+    }
+
+    /* Mist overlay (story_flags[15]) */
+    if (ws->story_flags[15]) {
+        Uint8 ma = (Uint8)(28 + (int)(sinf((float)env->frame_counter * 0.05f) * 8.0f));
+        SDL_SetRenderDrawColor(renderer, 185, 200, 225, ma);
+        SDL_FRect mr = {0.0f, 0.0f, 640.0f, 480.0f};
+        SDL_RenderFillRect(renderer, &mr);
+    }
+
+    /* Rain, snow, fireflies, foot sparks */
+    for (int i = 0; i < PAL_WEATHER_MAX; i++) {
+        const PalWeatherParticle *pt = &env->particles[i];
+        if (!pt->active) continue;
+        if (pt->kind == 1) {
+            SDL_SetRenderDrawColor(renderer, 185, 215, 255, pt->alpha);
+            SDL_RenderLine(renderer, pt->x, pt->y, pt->x + pt->vx * 1.4f, pt->y + pt->size);
+        } else if (pt->kind == 2) {
+            SDL_SetRenderDrawColor(renderer, 245, 250, 255, pt->alpha);
+            SDL_FRect sr = {pt->x, pt->y, pt->size, pt->size};
+            SDL_RenderFillRect(renderer, &sr);
+        } else if (pt->kind == 3) {
+            Uint8 glow = (Uint8)(120 + (int)(sinf(pt->phase + (float)env->frame_counter * 0.14f) * 95.0f));
+            SDL_SetRenderDrawColor(renderer, 235, 245, 135, glow);
+            SDL_FRect fr = {pt->x, pt->y, pt->size, pt->size};
+            SDL_RenderFillRect(renderer, &fr);
+        } else if (pt->kind == 4) {
+            SDL_SetRenderDrawColor(renderer, 160, 225, 255, pt->alpha);
+            SDL_FRect spr = {pt->x - cam_x, pt->y - cam_y, pt->size, pt->size};
+            SDL_RenderFillRect(renderer, &spr);
+        }
+    }
+
+    /* Dark cave radial spotlight (story_flags[19] / FUN_0042926f) */
+    if (ws->story_flags[19]) {
+        float lx = leader ? ((float)(leader->px + 16) - cam_x) : 320.0f;
+        float ly = leader ? ((float)(leader->py + 4) - cam_y) : 240.0f;
+        SDL_Texture *spot = pal_ensure_dark_spotlight_tex(renderer, env);
+        if (spot) {
+            const float rad = 220.0f;
+            SDL_FRect sdst = {lx - rad, ly - rad, rad * 2.0f, rad * 2.0f};
+            SDL_RenderTexture(renderer, spot, NULL, &sdst);
+            SDL_SetRenderDrawColor(renderer, 4, 6, 14, 228);
+            if (sdst.y > 0.0f) { SDL_FRect top = {0.0f, 0.0f, 640.0f, sdst.y}; SDL_RenderFillRect(renderer, &top); }
+            if (sdst.y + sdst.h < 480.0f) { SDL_FRect bot = {0.0f, sdst.y + sdst.h, 640.0f, 480.0f - (sdst.y + sdst.h)}; SDL_RenderFillRect(renderer, &bot); }
+            float cy0 = sdst.y < 0.0f ? 0.0f : sdst.y;
+            float cy1 = (sdst.y + sdst.h) > 480.0f ? 480.0f : (sdst.y + sdst.h);
+            if (cy1 > cy0 && sdst.x > 0.0f) { SDL_FRect lft = {0.0f, cy0, sdst.x, cy1 - cy0}; SDL_RenderFillRect(renderer, &lft); }
+            if (cy1 > cy0 && sdst.x + sdst.w < 640.0f) { SDL_FRect rgt = {sdst.x + sdst.w, cy0, 640.0f - (sdst.x + sdst.w), cy1 - cy0}; SDL_RenderFillRect(renderer, &rgt); }
+        }
+    }
+
+    /* Map ambient lighting pass (amb_r/g/b) */
+    if (map && (map->amb_r != 0 || map->amb_g != 0 || map->amb_b != 0)) {
+        if (map->amb_r < 0 || map->amb_g < 0 || map->amb_b < 0) {
+            Uint8 mr = pal_clamp_u8_int(255 + (map->amb_r < 0 ? map->amb_r * 16 : 0));
+            Uint8 mg = pal_clamp_u8_int(255 + (map->amb_g < 0 ? map->amb_g * 16 : 0));
+            Uint8 mb = pal_clamp_u8_int(255 + (map->amb_b < 0 ? map->amb_b * 16 : 0));
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_MUL);
+            SDL_SetRenderDrawColor(renderer, mr, mg, mb, 255);
+            SDL_FRect fs = {0.0f, 0.0f, 640.0f, 480.0f};
+            SDL_RenderFillRect(renderer, &fs);
+        }
+        if (map->amb_r > 0 || map->amb_g > 0 || map->amb_b > 0) {
+            Uint8 ar = pal_clamp_u8_int(map->amb_r > 0 ? map->amb_r * 14 : 0);
+            Uint8 ag = pal_clamp_u8_int(map->amb_g > 0 ? map->amb_g * 14 : 0);
+            Uint8 ab = pal_clamp_u8_int(map->amb_b > 0 ? map->amb_b * 14 : 0);
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_ADD);
+            SDL_SetRenderDrawColor(renderer, ar, ag, ab, 255);
+            SDL_FRect fs = {0.0f, 0.0f, 640.0f, 480.0f};
+            SDL_RenderFillRect(renderer, &fs);
+        }
+    }
 }
 
 static const uint32_t kM2QuickMaps[] = {501u, 1u, 2u, 3u, 502u};
@@ -7765,7 +8237,7 @@ static int pal_save_slot_read_summary(const char *game_dir, int slot, PalSaveSlo
     if (sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV1)) {
         PalNpalSaveFooterV1 ft;
         memcpy(&ft, buf + PAL_LEGACY_SAVE_SIZE, sizeof(ft));
-        if (ft.magic == PAL_NPAL_SAVE_MAGIC && (ft.version == 1u || ft.version == 2u)) {
+        if (ft.magic == PAL_NPAL_SAVE_MAGIC && (ft.version >= 1u && ft.version <= 3u)) {
             out_sum->has_npal_ext = 1;
             out_sum->map_id = ft.map_id;
             out_sum->px = ft.px;
@@ -8037,17 +8509,20 @@ static int pal_load_game_slot(
 
 typedef struct {
     int cursor;
+    int hover_row;
     int dirty;
     PalSaveSlotSummary slots[PAL_SAVE_UI_SLOTS];
     SDL_Texture *header_tex; int header_w, header_h;
     SDL_Texture *row_tex[PAL_SAVE_UI_SLOTS]; int row_w[PAL_SAVE_UI_SLOTS], row_h[PAL_SAVE_UI_SLOTS];
     SDL_Texture *hint_tex; int hint_w, hint_h;
+    SDL_Texture *detail_tex; int detail_w, detail_h;
 } PalLoadOverlayState;
 
 static void load_overlay_free(PalLoadOverlayState *lo) {
     if (!lo) return;
     if (lo->header_tex) { SDL_DestroyTexture(lo->header_tex); lo->header_tex = NULL; }
     if (lo->hint_tex) { SDL_DestroyTexture(lo->hint_tex); lo->hint_tex = NULL; }
+    if (lo->detail_tex) { SDL_DestroyTexture(lo->detail_tex); lo->detail_tex = NULL; }
     for (int i = 0; i < PAL_SAVE_UI_SLOTS; i++) {
         if (lo->row_tex[i]) { SDL_DestroyTexture(lo->row_tex[i]); lo->row_tex[i] = NULL; }
     }
@@ -8055,6 +8530,7 @@ static void load_overlay_free(PalLoadOverlayState *lo) {
 
 static void load_overlay_refresh(PalLoadOverlayState *lo, const char *game_dir) {
     if (!lo) return;
+    lo->hover_row = -1;
     for (int i = 0; i < PAL_SAVE_UI_SLOTS; i++) {
         pal_save_slot_read_summary(game_dir, i, &lo->slots[i]);
     }
@@ -8066,6 +8542,8 @@ static void load_overlay_draw(
     PalTswCache *tsw_cache, PalLoadOverlayState *lo
 ) {
     if (!renderer || !lo) return;
+    if (lo->cursor < 0) lo->cursor = 0;
+    if (lo->cursor >= PAL_SAVE_UI_SLOTS) lo->cursor = PAL_SAVE_UI_SLOTS - 1;
     if (lo->dirty) {
         load_overlay_free(lo);
         lo->header_tex = create_richtext_texture(
@@ -8074,51 +8552,127 @@ static void load_overlay_draw(
         for (int i = 0; i < PAL_SAVE_UI_SLOTS; i++) {
             const PalSaveSlotSummary *s = &lo->slots[i];
             if (s->exists) {
-                snprintf(line, sizeof(line), "%s[%d] %s  %%C3Lv.%d  %%C0%s  %%C6%d文  %%C5(%s)",
+                snprintf(line, sizeof(line), "%s %s  %%C3Lv.%d  %%C6%d文  %%C5(%s)",
                          (i == lo->cursor) ? "%C6" : "%C5",
-                         i, s->title_utf8[0] ? s->title_utf8 : "未命名地點",
-                         s->lead_lv, s->time_str, s->money,
+                         s->title_utf8[0] ? s->title_utf8 : "未命名地點",
+                         s->lead_lv, s->money,
                          s->has_npal_ext ? "NPAL" : "原版");
             } else {
-                snprintf(line, sizeof(line), "%s[%d] — 空存檔欄位 —",
-                         (i == lo->cursor) ? "%C6" : "%C5", i);
+                snprintf(line, sizeof(line), "%s— 空存檔欄位 —",
+                         (i == lo->cursor) ? "%C6" : "%C5");
             }
-            lo->row_tex[i] = create_richtext_texture(renderer, line, 13.5f, 510, &lo->row_w[i], &lo->row_h[i]);
+            lo->row_tex[i] = create_richtext_texture(renderer, line, 13.0f, 326, &lo->row_w[i], &lo->row_h[i]);
         }
+        const PalSaveSlotSummary *sel = &lo->slots[lo->cursor];
+        if (sel->exists) {
+            snprintf(line, sizeof(line),
+                     "%%C6欄位 %d%%N%%C0%s%%N%%C3等級：Lv.%d%%N%%C6金錢：%d 文%%N%%C5時間：%s%%N格式：%s",
+                     lo->cursor, sel->title_utf8[0] ? sel->title_utf8 : "未知區域",
+                     sel->lead_lv, sel->money,
+                     sel->time_str[0] ? sel->time_str : "--:--",
+                     sel->has_npal_ext ? "NewPal 擴充存檔" : "原版相容存檔");
+        } else {
+            snprintf(line, sizeof(line), "%%C6欄位 %d%%N%%C5尚無紀錄。%%N%%N%%C3可於遊戲中按 Esc 打開系統選單存檔。", lo->cursor);
+        }
+        lo->detail_tex = create_richtext_texture(renderer, line, 12.5f, 124, &lo->detail_w, &lo->detail_h);
         lo->hint_tex = create_richtext_texture(
-            renderer, "%C3[↑/↓] 選擇存檔  [Enter/點擊] 讀取進入遊戲  [Esc] 返回主選單", 13.0f, 520, &lo->hint_w, &lo->hint_h);
+            renderer, "%C3[↑/↓/滾輪] 選擇存檔  [Enter/雙擊] 讀取進入  [Esc/右鍵] 返回", 13.0f, 520, &lo->hint_w, &lo->hint_h);
         lo->dirty = 0;
     }
 
     SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-    SDL_SetRenderDrawColor(renderer, 10, 14, 24, 224);
+    SDL_SetRenderDrawColor(renderer, 6, 9, 16, 175);
+    SDL_FRect dim = {0.0f, 0.0f, 640.0f, 480.0f};
+    SDL_RenderFillRect(renderer, &dim);
+
+    SDL_SetRenderDrawColor(renderer, 12, 16, 26, 232);
     SDL_FRect ov = {48.0f, 52.0f, 544.0f, 376.0f};
     SDL_RenderFillRect(renderer, &ov);
-    SDL_SetRenderDrawColor(renderer, 212, 178, 112, 235);
-    SDL_RenderRect(renderer, &ov);
 
+    PalLoadedSprite *bg_dark = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9047);
+    if (bg_dark && bg_dark->nframes > 0 && bg_dark->frames[0]) {
+        SDL_SetTextureAlphaMod(bg_dark->frames[0], 68);
+        SDL_RenderTexture(renderer, bg_dark->frames[0], NULL, &ov);
+        SDL_SetTextureAlphaMod(bg_dark->frames[0], 255);
+    }
     PalLoadedSprite *bg_slot = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9013);
     if (bg_slot && bg_slot->nframes > 0 && bg_slot->frames[0]) {
-        SDL_SetTextureAlphaMod(bg_slot->frames[0], 40);
+        SDL_SetTextureAlphaMod(bg_slot->frames[0], 34);
         SDL_RenderTexture(renderer, bg_slot->frames[0], NULL, &ov);
         SDL_SetTextureAlphaMod(bg_slot->frames[0], 255);
     }
+    SDL_SetRenderDrawColor(renderer, 212, 178, 112, 240);
+    SDL_RenderRect(renderer, &ov);
 
     if (lo->header_tex) {
         SDL_FRect hd = {66.0f, 64.0f, (float)lo->header_w, (float)lo->header_h};
         SDL_RenderTexture(renderer, lo->header_tex, NULL, &hd);
     }
+
+    PalLoadedSprite *num_bg = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9059);
     for (int i = 0; i < PAL_SAVE_UI_SLOTS; i++) {
-        SDL_FRect rb = {64.0f, 96.0f + (float)i * 29.0f, 512.0f, 26.0f};
-        SDL_SetRenderDrawColor(renderer, i == lo->cursor ? 62 : 20, i == lo->cursor ? 82 : 28, i == lo->cursor ? 108 : 42, 215);
+        SDL_FRect rb = {64.0f, 96.0f + (float)i * 29.0f, 368.0f, 26.0f};
+        int is_sel = (i == lo->cursor);
+        int is_hov = (i == lo->hover_row && !is_sel);
+        SDL_SetRenderDrawColor(renderer, is_sel ? 62 : (is_hov ? 36 : 20),
+                                         is_sel ? 84 : (is_hov ? 50 : 28),
+                                         is_sel ? 112 : (is_hov ? 70 : 42), 220);
         SDL_RenderFillRect(renderer, &rb);
-        SDL_SetRenderDrawColor(renderer, i == lo->cursor ? 245 : 90, i == lo->cursor ? 205 : 105, i == lo->cursor ? 110 : 120, 220);
+        if (bg_slot && bg_slot->nframes > 0 && bg_slot->frames[0]) {
+            SDL_SetTextureAlphaMod(bg_slot->frames[0], is_sel ? 95 : 42);
+            SDL_RenderTexture(renderer, bg_slot->frames[0], NULL, &rb);
+            SDL_SetTextureAlphaMod(bg_slot->frames[0], 255);
+        }
+        SDL_SetRenderDrawColor(renderer, is_sel ? 245 : (is_hov ? 175 : 90),
+                                         is_sel ? 205 : (is_hov ? 160 : 105),
+                                         is_sel ? 110 : (is_hov ? 120 : 120), 225);
         SDL_RenderRect(renderer, &rb);
+
+        SDL_FRect nbox = {rb.x + 4.0f, rb.y + 3.0f, 22.0f, 20.0f};
+        if (num_bg && num_bg->nframes > 0 && num_bg->frames[0]) {
+            SDL_RenderTexture(renderer, num_bg->frames[0], NULL, &nbox);
+        }
+        SDL_SetRenderDrawColor(renderer, is_sel ? 255 : 220, is_sel ? 236 : 210, is_sel ? 140 : 185, 255);
+        SDL_RenderDebugTextFormat(renderer, nbox.x + 7.0f, nbox.y + 6.0f, "%d", i);
+
         if (lo->row_tex[i]) {
-            SDL_FRect td = {74.0f, rb.y + 4.0f, (float)lo->row_w[i], (float)lo->row_h[i]};
+            SDL_FRect td = {rb.x + 32.0f, rb.y + 5.0f, (float)lo->row_w[i], (float)lo->row_h[i]};
             SDL_RenderTexture(renderer, lo->row_tex[i], NULL, &td);
         }
     }
+
+    /* Right detail card with original all_sys.tsw portrait */
+    SDL_FRect card = {442.0f, 96.0f, 134.0f, 287.0f};
+    SDL_SetRenderDrawColor(renderer, 18, 25, 38, 226);
+    SDL_RenderFillRect(renderer, &card);
+    SDL_SetRenderDrawColor(renderer, 195, 165, 105, 225);
+    SDL_RenderRect(renderer, &card);
+
+    PalLoadedSprite *port_frame = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9085);
+    if (port_frame && port_frame->nframes > 0 && port_frame->frames[0]) {
+        SDL_FRect pfd = {card.x + 7.0f, card.y + 8.0f, 120.0f, 112.0f};
+        SDL_SetTextureAlphaMod(port_frame->frames[0], 115);
+        SDL_RenderTexture(renderer, port_frame->frames[0], NULL, &pfd);
+        SDL_SetTextureAlphaMod(port_frame->frames[0], 255);
+    }
+    const PalSaveSlotSummary *sel_sum = &lo->slots[lo->cursor];
+    if (sel_sum->exists) {
+        int port_id = pal_hero_portrait_tsw_id(sel_sum->lead_hero_id);
+        PalLoadedSprite *port = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, port_id);
+        if (!port || port->nframes <= 0) port = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9079);
+        if (port && port->nframes > 0 && port->frames[0] && port->w > 0 && port->h > 0) {
+            float sc = 104.0f / (float)(port->h > port->w ? port->h : port->w);
+            if (sc > 1.0f) sc = 1.0f;
+            float pw = (float)port->w * sc, ph = (float)port->h * sc;
+            SDL_FRect pd = {card.x + (card.w - pw) * 0.5f, card.y + 12.0f + (104.0f - ph) * 0.5f, pw, ph};
+            SDL_RenderTexture(renderer, port->frames[0], NULL, &pd);
+        }
+    }
+    if (lo->detail_tex) {
+        SDL_FRect dd = {card.x + 8.0f, card.y + 128.0f, (float)lo->detail_w, (float)lo->detail_h};
+        SDL_RenderTexture(renderer, lo->detail_tex, NULL, &dd);
+    }
+
     if (lo->hint_tex) {
         SDL_FRect htd = {66.0f, 396.0f, (float)lo->hint_w, (float)lo->hint_h};
         SDL_RenderTexture(renderer, lo->hint_tex, NULL, &htd);
@@ -8185,6 +8739,7 @@ typedef struct {
     int32_t shop_id;
     int mode; /* 0=購買 Buy, 1=出售 Sell */
     int cursor;
+    int hover_row;
     int scroll;
     int dirty;
     uint16_t buy_items[64];
@@ -8215,6 +8770,7 @@ static void shop_open(PalShopMenuState *sm, const PalTalkWorldState *ws, int32_t
     shop_free_textures(sm);
     memset(sm, 0, sizeof(*sm));
     sm->open = 1;
+    sm->hover_row = -1;
     sm->shop_id = shop_id;
     sm->buy_count = pal_shop_resolve_items(ws->db, shop_id, sm->buy_items, 64);
     if (sm->buy_count == 0) {
@@ -8337,22 +8893,55 @@ static void shop_draw_overlay(
     SDL_RenderRect(renderer, &bot_b);
 
     PalLoadedSprite *shop_art = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9017);
-    if (shop_art && shop_art->nframes > 0 && shop_art->frames[0]) {
-        SDL_FRect art = {566.0f, 36.0f, 28.0f, 28.0f};
-        SDL_RenderTexture(renderer, shop_art->frames[0], NULL, &art);
+    if (shop_art && shop_art->nframes > 0) {
+        int sfi = (sm->mode == 0) ? 0 : (1 % shop_art->nframes);
+        if (shop_art->frames[sfi]) {
+            SDL_FRect art = {566.0f, 36.0f, 28.0f, 28.0f};
+            SDL_RenderTexture(renderer, shop_art->frames[sfi], NULL, &art);
+        }
+    }
+    PalLoadedSprite *shop_coin = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9045);
+    if (shop_coin && shop_coin->nframes > 0 && shop_coin->frames[0]) {
+        SDL_FRect cdst = {540.0f, 40.0f, 20.0f, 20.0f};
+        SDL_RenderTexture(renderer, shop_coin->frames[0], NULL, &cdst);
+    }
+    PalLoadedSprite *shop_lr = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9048);
+    if (shop_lr && shop_lr->nframes > 0 && shop_lr->frames[0]) {
+        SDL_FRect adst = {504.0f, 41.0f, 28.0f, 18.0f};
+        SDL_RenderTexture(renderer, shop_lr->frames[0], NULL, &adst);
+    }
+    PalLoadedSprite *shop_desc_bg = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9058);
+    if (shop_desc_bg && shop_desc_bg->nframes > 0 && shop_desc_bg->frames[0]) {
+        SDL_SetTextureAlphaMod(shop_desc_bg->frames[0], 54);
+        SDL_RenderTexture(renderer, shop_desc_bg->frames[0], NULL, &bot_b);
+        SDL_SetTextureAlphaMod(shop_desc_bg->frames[0], 255);
+    }
+    PalLoadedSprite *shop_port = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9080);
+    if (shop_port && shop_port->nframes > 0 && shop_port->frames[0]) {
+        SDL_SetTextureAlphaMod(shop_port->frames[0], 45);
+        SDL_FRect spdst = {44.0f, 368.0f, 68.0f, 74.0f};
+        SDL_RenderTexture(renderer, shop_port->frames[0], NULL, &spdst);
+        SDL_SetTextureAlphaMod(shop_port->frames[0], 255);
     }
 
     if (sm->header_tex) {
         SDL_FRect hd = {50.0f, 42.0f, (float)sm->header_w, (float)sm->header_h};
         SDL_RenderTexture(renderer, sm->header_tex, NULL, &hd);
     }
+    int total_rows = shop_row_count(ws, sm);
     for (int r = 0; r < sm->row_vis_count; r++) {
         int idx = sm->scroll + r;
         float ry = 92.0f + (float)r * 31.0f;
         SDL_FRect rb = {50.0f, ry, 540.0f, 28.0f};
-        SDL_SetRenderDrawColor(renderer, idx == sm->cursor ? 60 : 22, idx == sm->cursor ? 80 : 32, idx == sm->cursor ? 105 : 46, 220);
+        int is_sel = (idx == sm->cursor);
+        int is_hov = (r == sm->hover_row && !is_sel);
+        SDL_SetRenderDrawColor(renderer, is_sel ? 60 : (is_hov ? 36 : 22),
+                                         is_sel ? 80 : (is_hov ? 52 : 32),
+                                         is_sel ? 105 : (is_hov ? 72 : 46), 220);
         SDL_RenderFillRect(renderer, &rb);
-        SDL_SetRenderDrawColor(renderer, idx == sm->cursor ? 245 : 95, idx == sm->cursor ? 205 : 110, idx == sm->cursor ? 110 : 128, 220);
+        SDL_SetRenderDrawColor(renderer, is_sel ? 245 : (is_hov ? 185 : 95),
+                                         is_sel ? 205 : (is_hov ? 165 : 110),
+                                         is_sel ? 110 : (is_hov ? 120 : 128), 220);
         SDL_RenderRect(renderer, &rb);
         int ifi = 0;
         PalLoadedSprite *isp = camp_get_item_icon(icon_cache, tsw_cache, game_dir, renderer, scale_mode, sm->row_item_ids[r], &ifi);
@@ -8363,6 +8952,19 @@ static void shop_draw_overlay(
         if (sm->row_tex[r]) {
             SDL_FRect td = {90.0f, ry + 5.0f, (float)sm->row_w[r], (float)sm->row_h[r]};
             SDL_RenderTexture(renderer, sm->row_tex[r], NULL, &td);
+        }
+    }
+    if (total_rows > SHOP_VISIBLE_ROWS) {
+        PalLoadedSprite *arr = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9010);
+        if (arr && arr->nframes > 0) {
+            if (sm->scroll > 0 && arr->frames[0]) {
+                SDL_FRect up_r = {576.0f, 84.0f, 14.0f, 14.0f};
+                SDL_RenderTexture(renderer, arr->frames[0], NULL, &up_r);
+            }
+            if (sm->scroll + SHOP_VISIBLE_ROWS < total_rows && arr->frames[1 % arr->nframes]) {
+                SDL_FRect dn_r = {576.0f, 336.0f, 14.0f, 14.0f};
+                SDL_RenderTexture(renderer, arr->frames[1 % arr->nframes], NULL, &dn_r);
+            }
         }
     }
     if (sm->desc_tex) {
@@ -9712,6 +10314,7 @@ typedef struct {
     int tab;            /* 0=狀態, 1=仙術, 2=物品, 3=系統 */
     int hero_idx;
     int cursor;
+    int hover_row;
     int scroll;
     int save_slot_cursor; /* 0..9 for System Save/Load */
     int dirty;
@@ -10024,9 +10627,22 @@ static void camp_draw_overlay(
     SDL_RenderRect(renderer, &right_box);
     SDL_RenderRect(renderer, &desc_box);
 
-    /* Authentic all_sys.tsw tab / portrait art (id 2,3,6,8,15,18,70..73) */
+    /* Authentic all_sys.tsw textured accents for right panel & bottom description box */
+    PalLoadedSprite *panel_bg = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9060);
+    if (panel_bg && panel_bg->nframes > 0 && panel_bg->frames[0]) {
+        SDL_SetTextureAlphaMod(panel_bg->frames[0], 34);
+        SDL_RenderTexture(renderer, panel_bg->frames[0], NULL, &right_box);
+        SDL_SetTextureAlphaMod(panel_bg->frames[0], 255);
+    }
+    PalLoadedSprite *desc_bg = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9058);
+    if (desc_bg && desc_bg->nframes > 0 && desc_bg->frames[0]) {
+        SDL_SetTextureAlphaMod(desc_bg->frames[0], 48);
+        SDL_RenderTexture(renderer, desc_bg->frames[0], NULL, &desc_box);
+        SDL_SetTextureAlphaMod(desc_bg->frames[0], 255);
+    }
+
+    /* Authentic all_sys.tsw tab / portrait art (9003, 9015, 9008, 9006, 9018, 9070/9072/9073/9088) */
     static const int kTabSysTsw[4] = {9003, 9015, 9008, 9006};
-    static const char *kTabLabels[4] = {"狀態 Status", "仙術 Magic", "物品 Items", "系統 System"};
     for (int t = 0; t < 4; t++) {
         SDL_FRect tb = {CAMP_TAB_X0 + (float)t * CAMP_TAB_STEP, CAMP_TAB_Y0, CAMP_TAB_W, CAMP_TAB_H};
         SDL_SetRenderDrawColor(renderer, t == cm->tab ? 64 : 24, t == cm->tab ? 84 : 34, t == cm->tab ? 104 : 52, 240);
@@ -10041,24 +10657,26 @@ static void camp_draw_overlay(
         SDL_SetRenderDrawColor(renderer, t == cm->tab ? 255 : 210, t == cm->tab ? 235 : 210, t == cm->tab ? 150 : 210, 255);
         SDL_RenderDebugTextFormat(renderer, tb.x + 30.0f, tb.y + 11.0f, "%s",
                                   t == 0 ? "STATUS" : (t == 1 ? "MAGIC" : (t == 2 ? "ITEMS" : "SYSTEM")));
-        (void)kTabLabels;
     }
     if (cm->top_tex) {
         SDL_FRect mpos = {432.0f, 30.0f, (float)cm->top_w, (float)cm->top_h};
         SDL_RenderTexture(renderer, cm->top_tex, NULL, &mpos);
     }
 
-    /* Left Panel: Selected Hero Portrait + Party Members */
+    /* Left Panel: Selected Hero Portrait (using fixed 9070/9072/9073/9088 map) + Party Members */
     PalLoadedSprite *bg_card = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9018);
-    if (bg_card && bg_card->nframes > 0 && bg_card->frames[0]) {
-        SDL_FRect bdst = {38.0f, 76.0f, 158.0f, 138.0f};
-        SDL_SetTextureAlphaMod(bg_card->frames[0], 110);
-        SDL_RenderTexture(renderer, bg_card->frames[0], NULL, &bdst);
-        SDL_SetTextureAlphaMod(bg_card->frames[0], 255);
+    if (bg_card && bg_card->nframes > 0) {
+        int bfi = cm->hero_idx % bg_card->nframes;
+        if (bg_card->frames[bfi]) {
+            SDL_FRect bdst = {38.0f, 76.0f, 158.0f, 138.0f};
+            SDL_SetTextureAlphaMod(bg_card->frames[bfi], 125);
+            SDL_RenderTexture(renderer, bg_card->frames[bfi], NULL, &bdst);
+            SDL_SetTextureAlphaMod(bg_card->frames[bfi], 255);
+        }
     }
     if (ws->party_member_count > 0) {
         int hid = ws->party_members[cm->hero_idx].hero_id;
-        int port_sid = 9070 + ((hid >= 2000 && hid <= 2003) ? (hid - 2000) : 0);
+        int port_sid = pal_hero_portrait_tsw_id(hid);
         PalLoadedSprite *port = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, port_sid);
         if (port && port->nframes > 0 && port->frames[0] && port->w > 0 && port->h > 0) {
             float scale = 132.0f / (float)(port->h > port->w ? port->h : port->w);
@@ -10069,10 +10687,23 @@ static void camp_draw_overlay(
             SDL_RenderTexture(renderer, port->frames[0], NULL, &pdst);
         }
     }
+    PalLoadedSprite *pframe = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9074);
+    if (pframe && pframe->nframes > 0 && pframe->frames[0]) {
+        SDL_FRect fdst = {38.0f, 76.0f, 158.0f, 138.0f};
+        SDL_SetTextureAlphaMod(pframe->frames[0], 120);
+        SDL_RenderTexture(renderer, pframe->frames[0], NULL, &fdst);
+        SDL_SetTextureAlphaMod(pframe->frames[0], 255);
+    }
+    PalLoadedSprite *hero_hl = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9014);
     for (int i = 0; i < ws->party_member_count && i < 4; i++) {
         SDL_FRect hb = {CAMP_HERO_X, CAMP_HERO_Y0 + (float)i * CAMP_HERO_STEP, CAMP_HERO_W, CAMP_HERO_H};
         SDL_SetRenderDrawColor(renderer, i == cm->hero_idx ? 54 : 22, i == cm->hero_idx ? 72 : 30, i == cm->hero_idx ? 92 : 44, 230);
         SDL_RenderFillRect(renderer, &hb);
+        if (i == cm->hero_idx && hero_hl && hero_hl->nframes > 0 && hero_hl->frames[0]) {
+            SDL_SetTextureAlphaMod(hero_hl->frames[0], 70);
+            SDL_RenderTexture(renderer, hero_hl->frames[0], NULL, &hb);
+            SDL_SetTextureAlphaMod(hero_hl->frames[0], 255);
+        }
         SDL_SetRenderDrawColor(renderer, i == cm->hero_idx ? 245 : 100, i == cm->hero_idx ? 205 : 120, i == cm->hero_idx ? 105 : 135, 255);
         SDL_RenderRect(renderer, &hb);
         if (cm->party_tex[i]) {
@@ -10089,20 +10720,24 @@ static void camp_draw_overlay(
     SDL_SetRenderDrawColor(renderer, 160, 140, 95, 160);
     SDL_RenderLine(renderer, 224.0f, 108.0f, 608.0f, 108.0f);
 
+    PalLoadedSprite *magic_icon = (cm->tab == 1) ? tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9009) : NULL;
+    int total_camp_rows = camp_row_count(ws, cm);
     for (int r = 0; r < cm->row_vis_count; r++) {
         int idx = cm->scroll + r;
         float ry = CAMP_ROW_Y0 + (float)r * CAMP_ROW_STEP;
         SDL_FRect rb = {CAMP_ROW_X, ry, CAMP_ROW_W, CAMP_ROW_H};
-        if (idx == cm->cursor) {
-            SDL_SetRenderDrawColor(renderer, 58, 78, 102, 220);
+        int is_sel = (idx == cm->cursor);
+        int is_hov = (r == cm->hover_row && !is_sel);
+        if (is_sel || is_hov) {
+            SDL_SetRenderDrawColor(renderer, is_sel ? 58 : 34, is_sel ? 78 : 50, is_sel ? 102 : 70, is_sel ? 220 : 170);
             SDL_RenderFillRect(renderer, &rb);
-            SDL_SetRenderDrawColor(renderer, 232, 198, 118, 255);
+            SDL_SetRenderDrawColor(renderer, is_sel ? 232 : 175, is_sel ? 198 : 160, is_sel ? 118 : 120, 255);
             SDL_RenderRect(renderer, &rb);
-            if (menu_cursor && menu_cursor->nframes > 0) {
-                int cfi = (anim_tick / 3) % menu_cursor->nframes;
-                SDL_FRect cd = {CAMP_ROW_X - 10.0f, ry + 4.0f, (float)menu_cursor->w * 0.7f, (float)menu_cursor->h * 0.7f};
-                SDL_RenderTexture(renderer, menu_cursor->frames[cfi], NULL, &cd);
-            }
+        }
+        if (is_sel && menu_cursor && menu_cursor->nframes > 0) {
+            int cfi = (anim_tick / 3) % menu_cursor->nframes;
+            SDL_FRect cd = {CAMP_ROW_X - 10.0f, ry + 4.0f, (float)menu_cursor->w * 0.7f, (float)menu_cursor->h * 0.7f};
+            SDL_RenderTexture(renderer, menu_cursor->frames[cfi], NULL, &cd);
         }
         float tx = CAMP_ROW_X + 8.0f;
         if (cm->tab == 2 && cm->row_item_ids[r] != 0u) {
@@ -10114,10 +10749,30 @@ static void camp_draw_overlay(
                 SDL_RenderTexture(renderer, isp->frames[ff], NULL, &idst);
             }
             tx = CAMP_ROW_X + 36.0f;
+        } else if (cm->tab == 1 && magic_icon && magic_icon->nframes > 0) {
+            int mfi = idx % magic_icon->nframes;
+            if (magic_icon->frames[mfi]) {
+                SDL_FRect mdst = {CAMP_ROW_X + 6.0f, ry + 3.0f, 20.0f, 20.0f};
+                SDL_RenderTexture(renderer, magic_icon->frames[mfi], NULL, &mdst);
+                tx = CAMP_ROW_X + 32.0f;
+            }
         }
         if (cm->row_tex[r]) {
             SDL_FRect td = {tx, ry + 4.0f, (float)cm->row_w[r], (float)cm->row_h[r]};
             SDL_RenderTexture(renderer, cm->row_tex[r], NULL, &td);
+        }
+    }
+    if (total_camp_rows > CAMP_VISIBLE_ROWS) {
+        PalLoadedSprite *arr = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 9010);
+        if (arr && arr->nframes > 0) {
+            if (cm->scroll > 0 && arr->frames[0]) {
+                SDL_FRect up_r = {594.0f, 114.0f, 14.0f, 14.0f};
+                SDL_RenderTexture(renderer, arr->frames[0], NULL, &up_r);
+            }
+            if (cm->scroll + CAMP_VISIBLE_ROWS < total_camp_rows && arr->frames[1 % arr->nframes]) {
+                SDL_FRect dn_r = {594.0f, 342.0f, 14.0f, 14.0f};
+                SDL_RenderTexture(renderer, arr->frames[1 % arr->nframes], NULL, &dn_r);
+            }
         }
     }
 
@@ -11068,6 +11723,53 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         PalCombatM5ProbeInfo m5_info = {0};
         int m5_ok = (pal_combat_shop_save_probe_m5(cfg->game_dir, &m5_info) == 0 && m5_info.ok == 1);
 
+        PalTswCache self_tsw = {0};
+        PalLoadedMap env_m32 = {0}, env_m187 = {0}, env_m224 = {0}, env_m501 = {0};
+        int m32_ok = (vfs_load_lmf_map_by_id(cfg->game_dir, 32u, renderer, scale_mode, &env_m32) == 0);
+        int m187_ok = (vfs_load_lmf_map_by_id(cfg->game_dir, 187u, renderer, scale_mode, &env_m187) == 0);
+        int m224_ok = (vfs_load_lmf_map_by_id(cfg->game_dir, 224u, renderer, scale_mode, &env_m224) == 0);
+        int m501_ok = (vfs_load_lmf_map_by_id(cfg->game_dir, 501u, renderer, scale_mode, &env_m501) == 0);
+        PalTalkWorldState *ws_p1 = (PalTalkWorldState *)calloc(1, sizeof(PalTalkWorldState));
+        int env_logic_ok = 0;
+        if (ws_p1 && m32_ok && m187_ok && m224_ok && m501_ok) {
+            pal_field_apply_map_env_flags(ws_p1, &env_m32, NULL, 0);
+            int f32_mist = (ws_p1->story_flags[15] == 1u);
+            pal_field_apply_map_env_flags(ws_p1, &env_m187, NULL, 0);
+            int f187_snow = (ws_p1->story_flags[22] == 1u && ws_p1->story_flags[15] == 0u);
+            pal_field_apply_map_env_flags(ws_p1, &env_m224, NULL, 0);
+            int f224_shim = (ws_p1->story_flags[7] == 1u && ws_p1->story_flags[22] == 0u);
+            ws_p1->story_flags[8] = 1u;
+            pal_field_apply_map_env_flags(ws_p1, &env_m501, NULL, 1);
+            int preserve_ok = (ws_p1->story_flags[8] == 1u);
+            env_logic_ok = f32_mist && f187_snow && f224_shim && preserve_ok;
+        }
+        free(ws_p1);
+        free_loaded_map(&env_m32);
+        free_loaded_map(&env_m187);
+        free_loaded_map(&env_m224);
+        free_loaded_map(&env_m501);
+
+        int portrait_map_ok = (pal_hero_portrait_tsw_id(2000) == 9070 &&
+                               pal_hero_portrait_tsw_id(2001) == 9072 &&
+                               pal_hero_portrait_tsw_id(2002) == 9073 &&
+                               pal_hero_portrait_tsw_id(2003) == 9088);
+        static const int kP1UiIds[] = {
+            9002, 9003, 9006, 9008, 9009, 9010, 9013, 9014, 9015,
+            9017, 9018, 9045, 9047, 9048, 9058, 9059, 9060, 9074, 9085, 9088
+        };
+        int ui_tsw_loaded = 0;
+        for (size_t ui = 0; ui < sizeof(kP1UiIds) / sizeof(kP1UiIds[0]); ui++) {
+            PalLoadedSprite *sp = tsw_cache_get(&self_tsw, cfg->game_dir, renderer, scale_mode, kP1UiIds[ui]);
+            if (sp && sp->nframes > 0 && sp->w > 0 && sp->h > 0) ui_tsw_loaded++;
+        }
+        int ui_tsw_ok = (ui_tsw_loaded == (int)(sizeof(kP1UiIds) / sizeof(kP1UiIds[0])));
+        PalFieldActor fx_test = {0};
+        fx_test.fx_id = 1u;
+        pal_actor_sync_and_step_fx(&fx_test, cfg->game_dir, 1);
+        int emote_fx_ok = (fx_test.fx_vm_ok == 1 && fx_test.fx_vm.fr_tsw_id > 0);
+        int p1_ok = env_logic_ok && portrait_map_ok && ui_tsw_ok && emote_fx_ok;
+        free_tsw_cache(&self_tsw);
+
         printf("=== NewPal SDL3 Metal + BYOD VFS Self-Test (M0+M1+M2+M3+M4+M5) ===\n");
         printf("GameDir: %s\n", cfg->game_dir);
         printf("Validation: %d/%d (is_valid=%d)\n", report.valid_archives_count, report.total_required_archives, report.is_valid);
@@ -11146,10 +11848,12 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                m5_info.npc_ai_moved, m5_info.cooldown_blocked,
                m5_info.shop58001_item_count, m5_info.shop58001_bought_item_id, m5_info.shop58001_money_after,
                m5_info.save0_money, m5_info.save0_map_id, m5_info.save0_title_utf8, m5_info.roundtrip_ok);
+        printf("P1VisualUI: ok=%d env=%d portraits=%d tsw_ui=%d/%d emote9006=%d\n",
+               p1_ok, env_logic_ok, portrait_map_ok, ui_tsw_loaded, (int)(sizeof(kP1UiIds) / sizeof(kP1UiIds[0])), emote_fx_ok);
 
         int all_ok = backend_ok && report.is_valid && act_rc == 0 && snd_ok &&
                      bik_ok && bgm_title_ok && title_assets_ok && font_ok && rt_tex != NULL &&
-                     m2_ok && m3_ok && m4_ok && m5_ok;
+                     m2_ok && m3_ok && m4_ok && m5_ok && p1_ok;
         printf("[SelfTest] ALL CHECKS %s.\n", all_ok ? "PASSED" : "FAILED");
         return all_ok ? 0 : -1;
     }
@@ -11197,10 +11901,14 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
 
     PalTswCache tsw_cache = {0};
     PalItemIconCache item_icon_cache = {0};
+    PalFieldEnvState field_env = {0};
     PalCampMenuState camp_menu = {0};
+    camp_menu.hover_row = -1;
     camp_menu.dirty = 1;
     PalLoadOverlayState load_overlay = {0};
+    load_overlay.hover_row = -1;
     PalShopMenuState shop_menu = {0};
+    shop_menu.hover_row = -1;
     PalCombatState combat_state = {0};
     int requested_load_slot = -1;
     PalFieldActor party[4] = {{0}};
@@ -11247,8 +11955,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         }
     }
 
-    /* Populate initial map NPCs (local defs + globally relocated NPCs) */
+    /* Populate initial map NPCs (local defs + globally relocated NPCs) & apply map weather/env */
     map_npc_actor_cnt = pal_field_populate_map_npcs(&map, world_state, cfg->game_dir, map_npcs, 128);
+    pal_field_apply_map_env_flags(world_state, &map, &field_env, 0);
 
     float cam_x = 0.0f, cam_y = 0.0f;
     compute_field_camera(&map, party[0].px, party[0].py, &cam_x, &cam_y);
@@ -11263,6 +11972,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
 
     /* Inline macro-like state reset block via helper lambda pattern avoided -> simple local helper flag */
     int need_setup_loaded_map = 0;
+    int next_map_preserve_env_flags = 0;
     int pending_ending_title = 0;
 
     Uint64 last_ns = SDL_GetTicksNS();
@@ -11289,6 +11999,33 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     break;
                 }
             }
+        } else if (scene == PAL_SCENE_LOAD_OVERLAY) {
+            int hr = -1;
+            if (mouse_lx >= 64.0f && mouse_lx <= 432.0f) {
+                for (int i = 0; i < PAL_SAVE_UI_SLOTS; i++) {
+                    float ry = 96.0f + (float)i * 29.0f;
+                    if (mouse_ly >= ry && mouse_ly <= ry + 26.0f) { hr = i; break; }
+                }
+            }
+            load_overlay.hover_row = hr;
+        } else if (scene == PAL_SCENE_FIELD && camp_menu.open) {
+            int hr = -1;
+            if (mouse_lx >= CAMP_ROW_X && mouse_lx <= CAMP_ROW_X + CAMP_ROW_W) {
+                for (int r = 0; r < camp_menu.row_vis_count; r++) {
+                    float ry = CAMP_ROW_Y0 + (float)r * CAMP_ROW_STEP;
+                    if (mouse_ly >= ry && mouse_ly <= ry + CAMP_ROW_H) { hr = r; break; }
+                }
+            }
+            camp_menu.hover_row = hr;
+        } else if (scene == PAL_SCENE_FIELD && shop_menu.open) {
+            int hr = -1;
+            if (mouse_lx >= 50.0f && mouse_lx <= 590.0f) {
+                for (int r = 0; r < shop_menu.row_vis_count; r++) {
+                    float ry = 92.0f + (float)r * 31.0f;
+                    if (mouse_ly >= ry && mouse_ly <= ry + 28.0f) { hr = r; break; }
+                }
+            }
+            shop_menu.hover_row = hr;
         }
 
         int activate_btn = -1;
@@ -11679,7 +12416,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     } else {
                         for (int i = 0; i < PAL_SAVE_UI_SLOTS; i++) {
                             float ry = 96.0f + (float)i * 29.0f;
-                            if (mouse_lx >= 64.0f && mouse_lx <= 576.0f && mouse_ly >= ry && mouse_ly <= ry + 26.0f) {
+                            if (mouse_lx >= 64.0f && mouse_lx <= 432.0f && mouse_ly >= ry && mouse_ly <= ry + 26.0f) {
                                 if (load_overlay.cursor == i) {
                                     if (load_overlay.slots[i].exists) {
                                         requested_load_slot = i;
@@ -11824,7 +12561,11 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     scene = PAL_SCENE_TITLE;
                     play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                 } else if (scene == PAL_SCENE_COMBAT) {
-                    if (combat_state.phase == COMBAT_PHASE_SUBMENU || combat_state.phase == COMBAT_PHASE_TARGET) {
+                    if (combat_state.phase >= COMBAT_PHASE_VICTORY) {
+                        combat_finish_to_field(cfg, &combat_state, world_state, &talk_vm, &map, party, map_npcs,
+                                               &map_npc_actor_cnt, 128, &camp_menu, &bgm, &sfx_stream, runtime_mute,
+                                               &scene, &pending_fade_in_ms, cur_bgm_playing, sizeof(cur_bgm_playing), &last_ns);
+                    } else if (combat_state.phase == COMBAT_PHASE_SUBMENU || combat_state.phase == COMBAT_PHASE_TARGET) {
                         combat_state.phase = COMBAT_PHASE_COMMAND;
                         combat_state.dirty = 1;
                         play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
@@ -11844,6 +12585,25 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         camp_menu.dirty = 1;
                         astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
                         play_ui_sfx(cfg->game_dir, 2u, &sfx_stream, cfg->master_volume, runtime_mute);
+                    }
+                }
+            } else if (ev.type == SDL_EVENT_MOUSE_WHEEL) {
+                int wstep = (ev.wheel.y > 0.0f) ? -1 : ((ev.wheel.y < 0.0f) ? 1 : 0);
+                if (wstep != 0) {
+                    if (scene == PAL_SCENE_LOAD_OVERLAY) {
+                        load_overlay.cursor = (load_overlay.cursor + wstep + PAL_SAVE_UI_SLOTS) % PAL_SAVE_UI_SLOTS;
+                        load_overlay.dirty = 1;
+                        play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                    } else if (scene == PAL_SCENE_FIELD && camp_menu.open && world_state) {
+                        camp_menu.cursor += wstep;
+                        camp_clamp_cursor(world_state, &camp_menu);
+                        camp_menu.dirty = 1;
+                        play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
+                    } else if (scene == PAL_SCENE_FIELD && shop_menu.open && world_state) {
+                        shop_menu.cursor += wstep;
+                        shop_clamp_cursor(world_state, &shop_menu);
+                        shop_menu.dirty = 1;
+                        play_ui_sfx(cfg->game_dir, 1u, &sfx_stream, cfg->master_volume, runtime_mute);
                     }
                 }
             }
@@ -11952,6 +12712,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     spawn_override_act_id = -1;
                     spawn_override_sub = -1;
                     leader_hero_idx = 0;
+                    next_map_preserve_env_flags = 1;
                     need_setup_loaded_map = 1;
                     pending_fade_in_ms = 160;
                     scene = PAL_SCENE_FIELD;
@@ -12343,6 +13104,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     if (party[p].vm_ok && !party[p].vm.finished) {
                         pal_act_vm_step_tick(&party[p].vm);
                     }
+                    pal_actor_sync_and_step_fx(&party[p], cfg->game_dir, 1);
                 }
                 for (int n = 0; n < map_npc_actor_cnt; n++) {
                     if (!map_npcs[n].active) continue;
@@ -12352,6 +13114,10 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     if (map_npcs[n].active && map_npcs[n].vm_ok && !map_npcs[n].vm.finished) {
                         pal_act_vm_step_tick(&map_npcs[n].vm);
                     }
+                    pal_actor_sync_and_step_fx(&map_npcs[n], cfg->game_dir, 1);
+                }
+                if (!camp_menu.open && !shop_menu.open && world_state) {
+                    pal_field_env_tick(&field_env, world_state, &party[0]);
                 }
                 if (!moved && !talk_vm.active && !camp_menu.open && !shop_menu.open &&
                     world_state && talk_vm.pending_map_id < 0 && world_state->combat_cooldown_ticks == 0) {
@@ -12480,6 +13246,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     world_state->cam_cur_y = cam_y;
                 }
                 map_npc_actor_cnt = pal_field_populate_map_npcs(&map, world_state, cfg->game_dir, map_npcs, 128);
+                pal_field_apply_map_env_flags(world_state, &map, &field_env, next_map_preserve_env_flags);
+                next_map_preserve_env_flags = 0;
                 if (strcmp(cur_bgm_playing, map.bgm_track) != 0) {
                     pal_bgm_play_track(&bgm, cfg->game_dir, map.bgm_track, cfg->master_volume, runtime_mute);
                     snprintf(cur_bgm_playing, sizeof(cur_bgm_playing), "%s", map.bgm_track);
@@ -12609,9 +13377,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 }
             }
 
-            /* Pass 0: Map Background Layer */
-            SDL_FRect map_dst = {-cam_x, -cam_y, (float)map.w_px, (float)map.h_px};
-            if (map.texture) SDL_RenderTexture(renderer, map.texture, NULL, &map_dst);
+            /* Pass 0: Map Background Layer (with water/heat strip shimmer when story_flags[7]) */
+            pal_field_env_draw_bg(renderer, &field_env, world_state, &map, cam_x, cam_y);
 
             /* Pass 1: Bucket 2 (below actors: ground shadows / decals) */
             for (int k = 0; k < map.fg_inst_count; k++) {
@@ -12642,7 +13409,11 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         it->draw_y = inst->py_top;
                         it->draw_w = map.fg_defs[d].w;
                         it->draw_h = map.fg_defs[d].h;
+                        it->foot_px = 0;
+                        it->foot_py = 0;
+                        it->scale_fp = 1024;
                         it->tex = map.fg_defs[d].tex;
+                        it->actor = NULL;
                         it->is_leader = 0;
                         it->is_party = 0;
                         break;
@@ -12667,15 +13438,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             }
 
             if (item_cnt > 1) qsort(items, (size_t)item_cnt, sizeof(PalRenderItem), cmp_render_item);
-            for (int i = 0; i < item_cnt; i++) {
-                SDL_FRect dst = {
-                    (float)items[i].draw_x - cam_x,
-                    (float)items[i].draw_y - cam_y,
-                    (float)items[i].draw_w,
-                    (float)items[i].draw_h
-                };
-                if (items[i].tex) SDL_RenderTexture(renderer, items[i].tex, NULL, &dst);
-            }
+            pal_draw_render_items_pass2(renderer, items, item_cnt, &map, cfg->game_dir, scale_mode, &tsw_cache, cam_x, cam_y);
 
             /* Pass 3: Bucket 1 (above actors: overhead roofs / tree canopies) */
             for (int k = 0; k < map.fg_inst_count; k++) {
@@ -12745,6 +13508,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     SDL_RenderTexture(renderer, osp->frames[fi], NULL, &od);
                 }
             }
+
+            pal_field_env_draw_pre_ui(renderer, &field_env, world_state, &map, &party[0], cam_x, cam_y);
 
             if (world_state && (world_state->fade_r < -0.2f || world_state->fade_g < -0.2f || world_state->fade_b < -0.2f)) {
                 Uint8 mr = (Uint8)((1.0f + (world_state->fade_r < 0.0f ? (world_state->fade_r < -31.0f ? -31.0f : world_state->fade_r) / 31.0f : 0.0f)) * 255.0f);
@@ -12888,6 +13653,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     shop_free_textures(&shop_menu);
     combat_free_textures(&combat_state);
     camp_free_textures(&camp_menu);
+    pal_field_env_free(&field_env);
     if (game_db) {
         pal_db_free(game_db);
         free(game_db);
