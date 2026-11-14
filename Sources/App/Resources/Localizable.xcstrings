@@ -294,6 +294,30 @@
         "en": { "stringUnit": { "state": "translated", "value": "Decoded Party Preview (ghero.dat)" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "角色数据实时解码预览（ghero.dat）" } }
       }
+    },
+    "settings.render_quality": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Resolution Mode" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "画面清晰度" } }
+      }
+    },
+    "settings.quality_original": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Original (640×480)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原版清晰度 (640×480)" } }
+      }
+    },
+    "settings.quality_hd": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "HD Remastered (2×)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "高清重制 (2× 锐化超分)" } }
+      }
+    },
+    "settings.hd_filter_note": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "HD Remastered uses 2× edge-preserving upscaling and linear smoothing automatically." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "高清重制模式下自动启用 2× 保边超分与平滑采样。" } }
+      }
     }
   },
   "version": "1.0"

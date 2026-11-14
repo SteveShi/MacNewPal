@@ -191,6 +191,7 @@ final class PalLauncherStore {
         windowScale: Int,
         vsyncEnabled: Bool,
         nearestFilter: Bool,
+        hdMode: Bool,
         masterVolume: Double,
         muteAudio: Bool
     ) {
@@ -205,6 +206,7 @@ final class PalLauncherStore {
         cfg.window_scale = Int32(windowScale)
         cfg.vsync_enabled = vsyncEnabled ? 1 : 0
         cfg.nearest_filter = nearestFilter ? 1 : 0
+        cfg.hd_mode = hdMode ? 1 : 0
         cfg.master_volume = Float(min(max(masterVolume, 0.0), 1.0))
         cfg.mute_audio = muteAudio ? 1 : 0
 

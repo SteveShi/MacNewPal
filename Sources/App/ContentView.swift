@@ -6,6 +6,7 @@ struct ContentView: View {
     @AppStorage("windowScale") private var windowScale: Int = 2
     @AppStorage("vsyncEnabled") private var vsyncEnabled: Bool = true
     @AppStorage("nearestFilter") private var nearestFilter: Bool = true
+    @AppStorage("hdMode") private var hdMode: Bool = true
     @AppStorage("masterVolume") private var masterVolume: Double = 0.85
     @AppStorage("muteAudio") private var muteAudio: Bool = false
     @State private var initialMapIndex: Int = 0
@@ -255,6 +256,7 @@ struct ContentView: View {
                             windowScale: windowScale,
                             vsyncEnabled: vsyncEnabled,
                             nearestFilter: nearestFilter,
+                            hdMode: hdMode,
                             masterVolume: masterVolume,
                             muteAudio: muteAudio
                         )
@@ -266,6 +268,18 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .disabled(store.validation?.isValid != true || store.isRunningEngine)
+                }
+
+                HStack(spacing: 12) {
+                    Text("settings.render_quality")
+                        .font(.callout.weight(.medium))
+                    Picker("settings.render_quality", selection: $hdMode) {
+                        Text("settings.quality_original").tag(false)
+                        Text("settings.quality_hd").tag(true)
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 320)
                 }
 
                 Text("launch.controls_hint")

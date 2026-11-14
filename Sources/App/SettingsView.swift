@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage("windowScale") private var windowScale: Int = 2
     @AppStorage("vsyncEnabled") private var vsyncEnabled: Bool = true
     @AppStorage("nearestFilter") private var nearestFilter: Bool = true
+    @AppStorage("hdMode") private var hdMode: Bool = true
     @AppStorage("masterVolume") private var masterVolume: Double = 0.85
     @AppStorage("muteAudio") private var muteAudio: Bool = false
 
@@ -14,6 +15,12 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("settings.tab_general") {
+                Picker("settings.render_quality", selection: $hdMode) {
+                    Text("settings.quality_original").tag(false)
+                    Text("settings.quality_hd").tag(true)
+                }
+                .pickerStyle(.segmented)
+
                 Picker("settings.window_scale", selection: $windowScale) {
                     Text("settings.scale_1x").tag(1)
                     Text("settings.scale_2x").tag(2)
@@ -25,6 +32,12 @@ struct SettingsView: View {
                 Picker("settings.pixel_filter", selection: $nearestFilter) {
                     Text("settings.filter_nearest").tag(true)
                     Text("settings.filter_linear").tag(false)
+                }
+                .disabled(hdMode)
+                if hdMode {
+                    Text("settings.hd_filter_note")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 

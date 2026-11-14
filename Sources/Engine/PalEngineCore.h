@@ -68,6 +68,7 @@ typedef struct {
     int32_t window_scale;    /* 1 = 640x480, 2 = 1280x960, 0 = fullscreen */
     int32_t vsync_enabled;   /* 0 or 1 */
     int32_t nearest_filter;  /* 1 = nearest pixel-art, 0 = linear */
+    int32_t hd_mode;         /* 0 = Original 640x480 Classic, 1 = HD Remastered 2x */
     float master_volume;     /* 0.0f .. 1.0f */
     int32_t mute_audio;      /* 0 or 1 */
 } PalLaunchConfig;
