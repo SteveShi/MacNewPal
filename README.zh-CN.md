@@ -20,12 +20,12 @@
 2. **零落地内存 VFS 与 SDL3 Metal 运行时（`Sources/Engine/`）**：
    - C11 引擎核心（`PalEngineCore.c` / `PalEngineCore.h`）直连 `libSDL3`（通过 `SDL_CreateRenderer(window, "metal")` 强制绑定 Apple **Metal** 后端）、**FFmpeg**（`libavformat`、`libavcodec`、`libswscale`、`libswresample`、`libavutil`）、**CoreText / CoreGraphics / CoreFoundation** 与 macOS `libiconv`（`CP950 -> UTF-8` 实时转码）。
    - 无需在硬盘解包，直接按需流式读取原版容器：
-     - **Bink 视频播放器（`.bik`）**（`pal_bink_probe` 及运行时播放器）：实时解码 `Video/notice.bik` 与 `Video/begin.bik` 为 Metal 流式纹理，并经 `SDL_AudioStream` 同步回放音轨。
+     - **Bink 视频播放器（`.bik`）**（`pal_bink_probe` 及运行时播放器）：实时解码 `.bik` 动画为 Metal 流式纹理并经 `SDL_AudioStream` 同步回放音轨（新故事开场播放 `Video/begin.bik`；`Video/notice.bik` 为通关后 `talk2.dat` `talk_id=1439` 后日谈《仙剑奇侠传二》预告，保留给结局后日谈播放并在 `--self-test` 中探测校验）。
      - **BGM 背景音乐流式解码器**（`pal_bgm_probe` 及运行时播放）：流式解码 `Music/*.mp3` / `*.wav`（`M001.mp3`、`F001.mp3` 等），通过 `libswresample` 重采样为 44.1 kHz 立体声 S16 PCM。
      - **`.tsw` 精灵图集与 ARLE 色键根因修复**：支持 `0xABCD` 魔数、LZO1X + ARLE `0xFFFF`、8-bit/16-bit RGB555，将 `0x319F`（`0x8000`）与 `0x026B`（`0xC000`）双透明色键均精确还原为 `alpha = 0`，叠加发光（`MA`）使用 `SDL_BLENDMODE_ADD`，并按归档 ID 区间路由读取 `all_char` / `all_item` / `all_magic` / `all_sys` / `all_map1` / `all_map2`。
      - **`.act` 动画字节码虚拟机**（`pal_act_vm_init`、`pal_act_vm_step_tick`、`PalActVM`）：35 ms 节拍驱动全部 35 个动作操作码（`ON`/`NO`/`FR`/`DS`/`LP`/`AP`/`MA`/`AH`/`CS`）。
      - **CoreText 中文富文本渲染器**（`pal_font_probe_rich_text`、`PalRichTextMetrics`）：解析 SWD2k 排版控制符（`%N` 换行、`%C0`..`%C9` 10 色调色盘、`%S`、`%K`）并栅格化为带投影的 UTF-8 文字纹理。
-     - **开场视频 → 主菜单 → 地图/对话流程**：依次播放 `notice.bik` -> `begin.bik`，进入主菜单竹简界面（`all_sys.act` `10000` 子动作 `90..93` -> `all_sys.tsw` `54..57`、`id=36` 光标、`Music/M001.mp3`），点击新故事切换至 `huge.lmf`（`MSF3`）地图与 `talk1.dat` 对话框（`all_sys.tsw` `82`/`51`）。
+     - **主菜单 → 新故事开场剧情 → 地图/对话流程**：启动后直入交互式主菜单竹简界面（`all_sys.act` `10000` 子动作 `90..93` -> `all_sys.tsw` `54..57`、`id=36` 光标、`Music/M001.mp3`）；点击「新的故事」严格还原 `talk1.dat`（`talk_id = 100`）开场序幕，依次淡入淡出开场图 `532` -> `533` -> 播放 `Video/begin.bik` -> 切入初始场景地图 `501`（`羅剎峰`）与 `talk1.dat` 对话框（`all_sys.tsw` `82`/`51`）。
      - **`all.snd` 音效与 `MZ + 0x200` 数据库**：`RIFF` 直通及 44 字节 PCM WAV 头重构，以及内存 TLV 解析（`ghero.dat`、`gmon.dat`、`gitem.dat`、`gmagic.dat`、`GFight1.dat`、`namex.dat`、`maps.dat`、`talk1.dat`）。
 
 3. **逆向工程规范与离线验证工具链**：

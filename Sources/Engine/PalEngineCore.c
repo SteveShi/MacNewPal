@@ -2624,6 +2624,100 @@ static int run_fade_transition(SDL_Window *window, SDL_Renderer *renderer, int f
     return 0;
 }
 
+static int find_lmf_index_by_id(const char *game_dir, const char *lmf_name, uint32_t target_map_id) {
+    char path[1200];
+    join_path(path, sizeof(path), game_dir, lmf_name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    uint64_t fsize = get_file_size_fp(f);
+
+    PalLmfEntry *entries = NULL;
+    int cnt = 0;
+    int found = -1;
+    if (read_lmf_directory(f, fsize, &entries, &cnt) == 0 && cnt > 0) {
+        for (int i = 0; i < cnt; i++) {
+            if (entries[i].id == target_map_id) {
+                found = i;
+                break;
+            }
+        }
+    }
+    free(entries);
+    fclose(f);
+    return found;
+}
+
+/* Returns 0 on completion or user skip, 1 if app quit / window closed */
+static int play_lmf_splash_by_id(
+    SDL_Window *window, SDL_Renderer *renderer, const char *game_dir,
+    uint32_t target_map_id, SDL_ScaleMode scale_mode, Uint32 fade_ms, Uint32 hold_ms
+) {
+    int idx = find_lmf_index_by_id(game_dir, "huge.lmf", target_map_id);
+    if (idx < 0) return 0;
+
+    PalLoadedMap splash = {0};
+    if (vfs_load_lmf_map(game_dir, "huge.lmf", idx, renderer, scale_mode, &splash) != 0 || !splash.texture) {
+        free_loaded_map(&splash);
+        return 0;
+    }
+
+    Uint64 start_ns = SDL_GetTicksNS();
+    double total_ms = (double)fade_ms * 2.0 + (double)hold_ms;
+    int app_quit = 0;
+    int skip = 0;
+
+    while (!app_quit && !skip) {
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_EVENT_QUIT ||
+                (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && ev.window.windowID == SDL_GetWindowID(window))) {
+                app_quit = 1;
+                break;
+            }
+            if (ev.type == SDL_EVENT_KEY_DOWN) {
+                SDL_Keycode k = ev.key.key;
+                if (k == SDLK_ESCAPE || k == SDLK_SPACE || k == SDLK_RETURN) {
+                    skip = 1;
+                    break;
+                }
+            } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
+                skip = 1;
+                break;
+            }
+        }
+        if (app_quit || skip) break;
+
+        double el_ms = (double)(SDL_GetTicksNS() - start_ns) / 1e6;
+        if (el_ms >= total_ms) break;
+
+        Uint8 fade_alpha = 0;
+        if (fade_ms > 0 && el_ms < (double)fade_ms) {
+            double t = el_ms / (double)fade_ms;
+            fade_alpha = (Uint8)((1.0 - t) * 255.0);
+        } else if (fade_ms > 0 && el_ms > (double)fade_ms + (double)hold_ms) {
+            double t = (el_ms - (double)fade_ms - (double)hold_ms) / (double)fade_ms;
+            if (t > 1.0) t = 1.0;
+            fade_alpha = (Uint8)(t * 255.0);
+        }
+
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+        SDL_RenderClear(renderer);
+        SDL_FRect dst = {0.0f, 0.0f, (float)splash.w_px, (float)splash.h_px};
+        SDL_RenderTexture(renderer, splash.texture, NULL, &dst);
+        if (fade_alpha > 0) {
+            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, fade_alpha);
+            SDL_FRect full = {0.0f, 0.0f, 640.0f, 480.0f};
+            SDL_RenderFillRect(renderer, &full);
+        }
+        SDL_RenderPresent(renderer);
+        SDL_Delay(8);
+    }
+
+    free_loaded_map(&splash);
+    return app_quit ? 1 : 0;
+}
+
 typedef struct {
     PalActVM vm;
     PalLoadedSprite sprite;
@@ -2914,19 +3008,11 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     }
 
     /* =====================================================================
-     * Interactive Boot Flow: notice.bik -> begin.bik -> Title Screen
+     * Interactive Boot Flow: Title Screen directly (0x440348 -> 0x4983ac(-9))
      * ===================================================================== */
     PalBgmPlayer bgm = {0};
     SDL_AudioStream *sfx_stream = NULL;
     int app_quit = 0;
-
-    if (pal_bink_play_file(window, renderer, cfg->game_dir, "Video/notice.bik", cfg->master_volume, cfg->mute_audio) == 1) {
-        app_quit = 1;
-    }
-    if (!app_quit &&
-        pal_bink_play_file(window, renderer, cfg->game_dir, "Video/begin.bik", cfg->master_volume, cfg->mute_audio) == 1) {
-        app_quit = 1;
-    }
 
     PalDialogueList dialogues;
     extract_talk1_dialogues(cfg->game_dir, &dialogues);
@@ -3077,8 +3163,37 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
 
         if (activate_btn == 0) {
             play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
-            if (run_fade_transition(window, renderer, 0, 220, &bgm) == 1) break;
+            if (run_fade_transition(window, renderer, 0, 220, &bgm) == 1) { app_quit = 1; break; }
+            pal_bgm_stop(&bgm);
+            /* Authentic talk1.dat talk_id=100 New Game sequence: map 532 -> map 533 -> begin.bik -> map 501 */
+            if (play_lmf_splash_by_id(window, renderer, cfg->game_dir, 532, scale_mode, 350, 1400) == 1) {
+                app_quit = 1;
+                break;
+            }
+            if (play_lmf_splash_by_id(window, renderer, cfg->game_dir, 533, scale_mode, 350, 1400) == 1) {
+                app_quit = 1;
+                break;
+            }
+            if (pal_bink_play_file(window, renderer, cfg->game_dir, "Video/begin.bik",
+                                   cfg->master_volume, cfg->mute_audio) == 1) {
+                app_quit = 1;
+                break;
+            }
+            if (cfg->initial_map_index == 0) {
+                int open_idx = find_lmf_index_by_id(cfg->game_dir, "huge.lmf", 501);
+                if (open_idx >= 0) {
+                    PalLoadedMap next_map = {0};
+                    if (vfs_load_lmf_map(cfg->game_dir, "huge.lmf", open_idx, renderer, scale_mode, &next_map) == 0) {
+                        free_loaded_map(&map);
+                        map = next_map;
+                        map_idx = open_idx;
+                        player_x = (float)map.w_px * 0.5f;
+                        player_y = (float)map.h_px * 0.5f;
+                    }
+                }
+            }
             scene = PAL_SCENE_FIELD;
+            last_ns = SDL_GetTicksNS();
             pal_bgm_play_track(&bgm, cfg->game_dir, "Music/F001.mp3", cfg->master_volume, cfg->mute_audio);
         } else if (activate_btn == 1) {
             play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
