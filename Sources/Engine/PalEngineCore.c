@@ -6416,23 +6416,32 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x34u: { /* RGB tint fade [r, g, b, steps] in [-31..+31] */
-                float r = (float)(int16_t)rd_u16(ins + 2u);
-                float g = (float)(int16_t)rd_u16(ins + 4u);
-                float b = (float)(int16_t)rd_u16(ins + 6u);
-                int16_t steps = (int16_t)rd_u16(ins + 8u);
-                if (r > 31.0f) r = 31.0f; else if (r < -31.0f) r = -31.0f;
-                if (g > 31.0f) g = 31.0f; else if (g < -31.0f) g = -31.0f;
-                if (b > 31.0f) b = 31.0f; else if (b < -31.0f) b = -31.0f;
-                ws->fade_target_r = r;
-                ws->fade_target_g = g;
-                ws->fade_target_b = b;
+            case 0x34u: { /* RGB tint fade [sr, sg, sb, tr, tg, tb, steps] in [-31..+31] */
+                float sr = (float)(int16_t)rd_u16(ins + 2u);
+                float sg = (float)(int16_t)rd_u16(ins + 4u);
+                float sb = (float)(int16_t)rd_u16(ins + 6u);
+                float tr = (float)(int16_t)rd_u16(ins + 8u);
+                float tg = (float)(int16_t)rd_u16(ins + 10u);
+                float tb = (float)(int16_t)rd_u16(ins + 12u);
+                int16_t steps = (int16_t)rd_u16(ins + 14u);
+                if (sr > 31.0f) sr = 31.0f; else if (sr < -31.0f) sr = -31.0f;
+                if (sg > 31.0f) sg = 31.0f; else if (sg < -31.0f) sg = -31.0f;
+                if (sb > 31.0f) sb = 31.0f; else if (sb < -31.0f) sb = -31.0f;
+                if (tr > 31.0f) tr = 31.0f; else if (tr < -31.0f) tr = -31.0f;
+                if (tg > 31.0f) tg = 31.0f; else if (tg < -31.0f) tg = -31.0f;
+                if (tb > 31.0f) tb = 31.0f; else if (tb < -31.0f) tb = -31.0f;
+                ws->fade_target_r = tr;
+                ws->fade_target_g = tg;
+                ws->fade_target_b = tb;
                 if (auto_advance_wait || steps <= 0) {
-                    ws->fade_r = r;
-                    ws->fade_g = g;
-                    ws->fade_b = b;
+                    ws->fade_r = tr;
+                    ws->fade_g = tg;
+                    ws->fade_b = tb;
                     ws->fade_steps = 0;
                 } else {
+                    ws->fade_r = sr;
+                    ws->fade_g = sg;
+                    ws->fade_b = sb;
                     ws->fade_steps = (int32_t)steps;
                 }
                 vm->ip += ilen;
@@ -6893,10 +6902,27 @@ int32_t pal_talk_vm_probe_m3(const char *game_dir, PalTalkM3ProbeInfo *out_info)
 
             int ok_100 = 0;
             if (pal_talk_vm_start(&vm, game_dir, 100, 0) == 0) {
-                pal_talk_vm_step(&vm, ws_reg, game_dir, 501u, NULL, NULL, 0, 1);
-                ok_100 = (vm.pending_map_id == 502 &&
-                          strstr(vm.pending_bink_rel, "begin.Bik") != NULL &&
-                          ws_reg->npc_pos_map[116] == 518u);
+                /* Verify real-time boot sequence lands directly on map 532 (then fades in via OP 0x34 [30->0, 45]) */
+                for (int bs = 0; bs < 16 && vm.active && vm.pending_map_id < 0; bs++) {
+                    vm.wait_ticks = 0; vm.waiting_fade = 0; ws_reg->fade_steps = 0;
+                    pal_talk_vm_step(&vm, ws_reg, game_dir, 1u, NULL, NULL, 0, 0);
+                }
+                int boot532_ok = (vm.pending_map_id == 532);
+                if (boot532_ok) {
+                    vm.pending_map_id = -1;
+                    pal_talk_vm_step(&vm, ws_reg, game_dir, 532u, NULL, NULL, 0, 0);
+                    boot532_ok = (vm.waiting_fade == 1 && ws_reg->fade_r == 30.0f &&
+                                  ws_reg->fade_target_r == 0.0f && ws_reg->fade_steps == 45);
+                }
+                ws_reg->fade_r = ws_reg->fade_g = ws_reg->fade_b = 0.0f;
+                ws_reg->fade_target_r = ws_reg->fade_target_g = ws_reg->fade_target_b = 0.0f;
+                ws_reg->fade_steps = 0;
+                if (boot532_ok && pal_talk_vm_start(&vm, game_dir, 100, 0) == 0) {
+                    pal_talk_vm_step(&vm, ws_reg, game_dir, 501u, NULL, NULL, 0, 1);
+                    ok_100 = (vm.pending_map_id == 502 &&
+                              strstr(vm.pending_bink_rel, "begin.Bik") != NULL &&
+                              ws_reg->npc_pos_map[116] == 518u);
+                }
             }
 
             int ok_7001 = 0;
@@ -10542,21 +10568,20 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     /* Authentic SWD2k opening script (talk 100): 532 -> 533 -> begin.bik -> 501 -> 502 (Dream 2009) */
                     pal_party_init_from_db(world_state, game_db, 1);
                     if (pal_talk_vm_start(&talk_vm, cfg->game_dir, 100, 0) == 0) {
-                        pal_talk_vm_step_ex(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, &map_npc_actor_cnt, 128, 0);
-                        /* Fast-forward initial black fade wait so map 532 loads immediately on fade-in */
-                        if (talk_vm.active && talk_vm.pending_map_id < 0 && (talk_vm.wait_ticks > 0 || talk_vm.waiting_fade)) {
+                        for (int boot_step = 0; boot_step < 16 && talk_vm.active && talk_vm.pending_map_id < 0; boot_step++) {
                             talk_vm.wait_ticks = 0;
                             talk_vm.waiting_fade = 0;
                             world_state->fade_steps = 0;
                             pal_talk_vm_step_ex(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, &map_npc_actor_cnt, 128, 0);
                         }
                     }
+                    pending_fade_in_ms = 0;
                 } else {
                     pal_party_init_from_db(world_state, game_db, 0);
                     need_setup_loaded_map = 1;
+                    pending_fade_in_ms = 180;
                 }
             }
-            pending_fade_in_ms = 180;
             scene = PAL_SCENE_FIELD;
             SDL_ShowCursor();
             last_ns = SDL_GetTicksNS();
@@ -10952,8 +10977,10 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     int dtx = talk_vm.pending_tx;
                     int dty = talk_vm.pending_ty;
                     int ddir = talk_vm.pending_dir;
+                    int skip_black_fade = (talk_vm.pending_fade == 0xFFFF ||
+                                           (world_state && (world_state->fade_r != 0.0f || world_state->fade_steps > 0)));
                     talk_vm.pending_map_id = -1;
-                    if (pending_fade_in_ms == 0) {
+                    if (!skip_black_fade && pending_fade_in_ms == 0) {
                         if (run_fade_transition(window, renderer, scene_rt, 0, 140, &bgm) == 1) {
                             app_quit = 1;
                             break;
@@ -10968,7 +10995,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         spawn_override_ty = dty;
                         spawn_override_dir = ddir;
                         need_setup_loaded_map = 1;
-                        pending_fade_in_ms = 140;
+                        pending_fade_in_ms = skip_black_fade ? 0 : 140;
                     }
                     last_ns = SDL_GetTicksNS();
                 }
