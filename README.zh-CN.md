@@ -15,7 +15,8 @@
 | **M0** | 原生 SwiftUI BYOD 启动器、23 项 VFS 签名校验器、SDL3 Metal 窗口与 LZO1X/ARLE 解码底座 | ✅ 已完成 |
 | **M1** | Bink 视频播放、BGM 流式解码、`.tsw` 色键修复、`.act` 虚拟机、CoreText 富文本与标题/开场流程 | ✅ 已完成 |
 | **M2** | 全量 `MSF3` 地图引擎（`huge.lmf` + `huge2.lmf`）、`maps.dat` 元数据联动、3 桶 Y 轴遮挡、8 向角色 `.act` 虚拟机、A* 寻路、死区镜头与 4 人队列跟随 | ✅ 已完成 |
-| **M3+** | `Talk.cpp` 剧情脚本虚拟机与地图触发器、NPC 交互、背包/系统菜单、`GFight1.dat` 回合制战斗与存档系统 | 🚧 规划中 |
+| **M3** | 全 8 卷 `talk1..8.dat` 多库加载器与 `Talk.cpp` 字节码虚拟机（`7,394` 条脚本）、剧情旗标与脚本变量、`%B` 对话分支选项、`0xD8`/`0xD9` 半身立绘、地块触发器、NPC/宝箱交互与 `0x1B` 切图传送 | ✅ 已完成 |
+| **M4+** | 背包/系统菜单、`GFight1..4.dat` 回合制战斗与存档读档 | 🚧 规划中 |
 
 ---
 
@@ -38,8 +39,9 @@
      - **`MSF3` 全量地图引擎与 3 桶 Y 轴遮挡合成器**（`pal_map_probe_m2`、`vfs_load_lmf_map_by_id`）：跨 `huge.lmf`（320 张地图）与 `huge2.lmf`（149 张地图）加载 16×16 拼图底层、LZO1X 行走/触发网格（`walk_grid & 0x60000000` 碰撞、`& 0xFF` 触发器 ID）、触发器表、前景 ARLE 物件与 3 桶分层渲染（低于角色层、与角色按 `sort_y` 动态排序层、高于角色遮挡层）。
      - **`maps.dat` 全局元数据联动**：对接 `slot 19`（`CP950 -> UTF-8` 淡入地名横幅）、`slot 1`（按 `hdr[0x10c]` / `slot 2` 二级指针查表切换地图 BGM）、`slot 2`（`map_id` 映射 `msf3_id` 及移动步速）与 `slot 0`（26 字节 NPC 放置表，按 `flags & 0x8000` 激活）。
      - **场景移动、死区镜头与 4 人队列跟随**：复刻 `(304, 240)` 镜头死区与地图边界钳位、斜向贴墙滑动碰撞、左键点击全地图 8 向 A* 自动寻路，以及 4 主角队列拖尾跟随缓冲。
-     - **CoreText 中文富文本渲染器**（`pal_font_probe_rich_text`、`PalRichTextMetrics`）：解析 SWD2k 排版控制符（`%N` 换行、`%C0`..`%C9` 10 色调色盘、`%S`、`%K`）并栅格化为带投影的 UTF-8 文字纹理。
-     - **主菜单 → 新故事开场剧情 → 场景游历循环**：启动直入主菜单竹简界面（`all_sys.act` `10000`、`Music/M001.mp3`）；点击「新的故事」播放 `532` -> `533` -> `Video/begin.bik` -> 进入 `501`（`羅剎峰`），支持自由行走与切图探索。
+     - **CoreText 中文富文本渲染器**（`pal_font_probe_rich_text`、`PalRichTextMetrics`）：解析 SWD2k 排版控制符（`%N` 换行、`%C0`..`%C9` 10 色调色盘、`%S`、`%D`、`%G`、`%K`）并栅格化为带投影的 UTF-8 文字纹理。
+     - **`Talk.cpp` 剧情脚本虚拟机、半身立绘与触发器引擎**（`pal_talk_vm_probe_m3`、`PalTalkVM`、`PalTalkWorldState`）：全 8 卷 `talk1..8.dat` 多库加载器（`talk1`/`talk4` 各 `701` 槽、其余 `1000` 槽 —— 全库 **7,394 / 7,394** 条脚本 100% 无错解码），完整支持剧情旗标（`8192`）、脚本变量（`256`、`obj_rv`）、地图/道具/距离条件跳转、`0xD8`/`0xD9` 动态半身立绘（`all_map1.act` -> `all_map1.tsw`）、`%B` 多选项对话菜单、踩踏地块触发器、`0x26`/`0x27`/`0x64` NPC 显隐与脚本改写、`0x309` 道具奖励与 `0x1B` 切图传送。
+     - **主菜单 → 新故事开场剧情 → 场景游历循环**：启动直入主菜单竹简界面（`all_sys.act` `10000`、`Music/M001.mp3`）；点击「新的故事」播放 `532` -> `533` -> `Video/begin.bik` -> 进入 `501`（`羅剎峰`），支持自由行走、NPC 对话与触发器联动切图。
      - **`all.snd` 音效与 `MZ + 0x200` 数据库**：`RIFF` 直通及 44 字节 PCM WAV 头重构，以及内存 TLV 解析（`ghero.dat`、`gmon.dat`、`gitem.dat`、`gmagic.dat`、`GFight1.dat`、`namex.dat`、`maps.dat`、`talk1.dat`）。
 
 3. **逆向工程规范与离线验证工具链**：
@@ -57,14 +59,16 @@
 | --- | --- |
 | `WASD` / 方向键 | 8 方向移动（支持斜向贴墙滑动） |
 | 按住 `Shift` | 奔跑模式（`action_base = 16`） |
-| 鼠标左键点击地图 | 8 方向 A* 自动寻路前往目标格子 |
+| 鼠标左键点击地图 / NPC | 8 方向 A* 自动寻路至目标格，或走近点击的 NPC/宝箱自动触发对话 |
+| `Space` / `Return` / `E` | 与面朝邻近 NPC/宝箱对话、推进脚本对话或确认所选分支 |
+| `Up` / `Down` / `1`..`8` | 出现 `%B` 多选分支时切换 / 直选选项 |
 | `M` | 巡礼切换精选测试地图（`501`, `1`, `2`, `3`, `502`） |
 | `[` / `]` | 在当前 `.lmf` 归档（`huge.lmf` / `huge2.lmf`）中切换上一张 / 下一张地图 |
 | `P` | 开关 4 人队列跟随 |
 | `V` | 轮换领队主角（`001李逍遙` / `002趙靈兒` / `003林月如` / `004阿奴`） |
 | `G` | 开关碰撞网格、触发器与脚底判定框调试叠加层 |
 | `C` | 开关穿墙（NoClip）模式 |
-| `T` / `Space` / `Return` | 开关 CoreText 对话框 / 翻页下一句台词 |
+| `T` | 在未运行剧情脚本时开关示例 CoreText 对话框 |
 | `B` | 重播开场动画 `Video/begin.bik` |
 | `Tab` | 隐藏 / 显示顶部调试 HUD |
 | `Esc` | 淡出返回主菜单标题界面 |
@@ -88,4 +92,4 @@ xcodebuild -project NewPal.xcodeproj -scheme NewPal -configuration Release -deri
 ./build/Build/Products/Release/NewPal.app/Contents/MacOS/NewPal --self-test /path/to/PalGame
 ```
 
-指向有效的 `PalGame` 目录时，自检将输出 `Validation: 23/23 (is_valid=1)`、`Renderer: metal`、FFmpeg Bink/BGM 探测、UI 与角色 `.act` VM 步进、`MSF3` + `maps.dat` + A* 寻路探测（`MapM2[1]`、`MapM2[2]`、`MapM2[501]`）、CoreText 富文本渲染与实时解码的主角/地图/精灵/音效诊断信息，并以 `[SelfTest] ALL CHECKS PASSED.` 与退出码 `0` 结束。
+指向有效的 `PalGame` 目录时，自检将输出 `Validation: 23/23 (is_valid=1)`、`Renderer: metal`、FFmpeg Bink/BGM 探测、UI 与角色 `.act` VM 步进、`MSF3` + `maps.dat` + A* 寻路探测（`MapM2[1]`、`MapM2[2]`、`MapM2[501]`）、`TalkM3`（8 卷共 `7394/7394` 条脚本无错解码，传送 `6001`/`6007`、宝箱 `7012` 与剧情 `104`/`105` 状态推进）、CoreText 富文本渲染与实时解码诊断信息，并以 `[SelfTest] ALL CHECKS PASSED.` 与退出码 `0` 结束。

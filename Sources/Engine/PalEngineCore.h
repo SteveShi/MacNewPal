@@ -146,6 +146,28 @@ typedef struct {
     char bgm_track[64];
 } PalMapM2ProbeInfo;
 
+typedef struct {
+    int32_t bank_count;
+    int32_t total_scripts;
+    int32_t clean_scripts;
+    int32_t core_scripts_ok;
+    int32_t tp_map_id;
+    int32_t tp_tx;
+    int32_t tp_ty;
+    int32_t tp_dir;
+    int32_t chest_hidden;
+    int32_t chest_item_id;
+    int32_t cutscene_flag1001;
+    int32_t cutscene_portrait_count;
+    int32_t cutscene_dialogue_count;
+    int32_t cutscene_npc_updates;
+    int32_t npc_update_obj7_talk;
+    int32_t npc_update_obj201_talk;
+    char chest_text_utf8[128];
+    char cutscene_sample_utf8[128];
+    int32_t ok;
+} PalTalkM3ProbeInfo;
+
 /** Query available SDL3 render drivers on macOS and check Metal availability (returns 1 if Metal is present). */
 int32_t pal_sdl3_query_metal_backend(char *out_drivers, int32_t out_cap);
 
@@ -180,7 +202,10 @@ int32_t pal_sdl3_run_session(const PalLaunchConfig *cfg, char *out_err, int32_t 
 /** Probe MSF3 walkability/triggers/occlusion, maps.dat metadata, and A* pathfinding for `map_id`. */
 int32_t pal_map_probe_m2(const char *game_dir, int32_t map_id, PalMapM2ProbeInfo *out_info);
 
-/** Non-interactive headless/hidden-window verification of Metal renderer and live VFS + M1/M2 decoding. */
+/** Probe all 8 talk1..8.dat banks and headlessly execute scripts 6001, 7012, 104, and 105 for M3 verification. */
+int32_t pal_talk_vm_probe_m3(const char *game_dir, PalTalkM3ProbeInfo *out_info);
+
+/** Non-interactive headless/hidden-window verification of Metal renderer and live VFS + M1/M2/M3 decoding. */
 int32_t pal_sdl3_self_test(const char *game_dir);
 
 #ifdef __cplusplus
