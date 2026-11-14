@@ -1,8 +1,19 @@
 #include "PalEngineCore.h"
 
 #include <SDL3/SDL.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <CoreText/CoreText.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/opt.h>
+#include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
 #include <errno.h>
 #include <iconv.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -300,11 +311,9 @@ static inline void rgb555_write_rgba(uint8_t *dst, uint16_t c, uint8_t a) {
 }
 
 static inline void rgb555_write_keyed(uint8_t *dst, uint16_t c) {
-    if (c == PAL_TSW_KEY_TRANSPARENT) {
+    /* Verified in Palgame.exe (0x401d84, 0x438acc, 0x465e43): both 0x319F and 0x026B are transparent chromakeys. */
+    if (c == PAL_TSW_KEY_TRANSPARENT || c == PAL_TSW_KEY_SHADOW) {
         dst[0] = dst[1] = dst[2] = dst[3] = 0;
-    } else if (c == PAL_TSW_KEY_SHADOW) {
-        dst[0] = dst[1] = dst[2] = 0;
-        dst[3] = 128;
     } else {
         rgb555_write_rgba(dst, c, 255);
     }
@@ -319,15 +328,17 @@ static void decode_arle_to_rgba(
 ) {
     size_t total_px = (size_t)w * (size_t)h;
     memset(rgba_out, 0, total_px * 4);
+    (void)mask;
+    (void)mask_len;
 
     size_t bp = 8;
-    size_t px_idx = 0;
-
-    while (bp + 2 <= data_len && px_idx < total_px) {
+    for (uint16_t row = 0; row < h && bp + 2 <= data_len; row++) {
         uint16_t row_marker = rd_u16(data + bp);
         if (row_marker == 0) break;
         bp += 2;
-        while (bp + 2 <= data_len && px_idx < total_px) {
+        size_t col = 0;
+        size_t row_base = (size_t)row * (size_t)w;
+        while (bp + 2 <= data_len) {
             uint16_t token = rd_u16(data + bp);
             bp += 2;
             if (token == 0) break;
@@ -335,39 +346,30 @@ static void decode_arle_to_rgba(
             uint16_t tag = token & 0xC000u;
             uint16_t count = token & 0x3FFFu;
             if (tag == 0) {
-                for (uint16_t i = 0; i < count && px_idx < total_px; i++) {
+                for (uint16_t i = 0; i < count; i++) {
+                    size_t dst_idx = row_base + col;
                     if (bpp == 16) {
                         if (bp + 2 <= data_len) {
-                            rgb555_write_keyed(rgba_out + px_idx * 4, rd_u16(data + bp));
+                            uint16_t px = rd_u16(data + bp);
                             bp += 2;
+                            if (col < w && dst_idx < total_px) {
+                                rgb555_write_keyed(rgba_out + dst_idx * 4, px);
+                            }
                         }
                     } else {
                         if (bp < data_len) {
                             uint8_t pidx = data[bp++];
                             uint16_t c = palette ? palette[pidx] : 0;
-                            rgb555_write_keyed(rgba_out + px_idx * 4, c);
+                            if (col < w && dst_idx < total_px) {
+                                rgb555_write_keyed(rgba_out + dst_idx * 4, c);
+                            }
                         }
                     }
-                    px_idx++;
-                }
-            } else if (tag == 0xC000u) {
-                for (uint16_t i = 0; i < count && px_idx < total_px; i++) {
-                    uint8_t *d = rgba_out + px_idx * 4;
-                    d[0] = d[1] = d[2] = 0;
-                    d[3] = 128;
-                    px_idx++;
+                    col++;
                 }
             } else {
-                px_idx += count;
-                if (px_idx > total_px) px_idx = total_px;
-            }
-        }
-    }
-
-    if (mask && mask_len >= total_px) {
-        for (size_t i = 0; i < total_px; i++) {
-            if (mask[i] == 1 && rgba_out[i * 4 + 3] < 200) {
-                rgba_out[i * 4 + 3] = 200;
+                /* Both 0x8000 (0x319F) and 0xC000 (0x026B) are transparent skip runs (0x438acc). */
+                col += count;
             }
         }
     }
@@ -1233,8 +1235,8 @@ static void free_loaded_map(PalLoadedMap *m) {
     memset(m, 0, sizeof(*m));
 }
 
-static int vfs_load_tsw_slot(
-    const char *game_dir, const char *tsw_name, int target_idx,
+static int load_tsw_from_toc_index(
+    const char *game_dir, const char *tsw_name, int query_val, int match_by_id,
     SDL_Renderer *renderer, SDL_ScaleMode scale_mode, PalLoadedSprite *out_sp
 ) {
     memset(out_sp, 0, sizeof(*out_sp));
@@ -1251,8 +1253,24 @@ static int vfs_load_tsw_slot(
         fclose(f);
         return -1;
     }
-    if (target_idx < 0) target_idx = (target_idx % cnt + cnt) % cnt;
-    if (target_idx >= cnt) target_idx %= cnt;
+    int target_idx = -1;
+    if (match_by_id) {
+        for (int i = 0; i < cnt; i++) {
+            if (entries[i].id == (uint32_t)query_val) {
+                target_idx = i;
+                break;
+            }
+        }
+        if (target_idx < 0) {
+            free(entries);
+            fclose(f);
+            return -1;
+        }
+    } else {
+        target_idx = query_val;
+        if (target_idx < 0) target_idx = (target_idx % cnt + cnt) % cnt;
+        if (target_idx >= cnt) target_idx %= cnt;
+    }
 
     PalTocEntry se = entries[target_idx];
     free(entries);
@@ -1359,6 +1377,20 @@ static int vfs_load_tsw_slot(
     return loaded > 0 ? 0 : -1;
 }
 
+static int vfs_load_tsw_slot(
+    const char *game_dir, const char *tsw_name, int target_idx,
+    SDL_Renderer *renderer, SDL_ScaleMode scale_mode, PalLoadedSprite *out_sp
+) {
+    return load_tsw_from_toc_index(game_dir, tsw_name, target_idx, 0, renderer, scale_mode, out_sp);
+}
+
+static int vfs_load_tsw_by_id(
+    const char *game_dir, const char *tsw_name, uint32_t slot_id,
+    SDL_Renderer *renderer, SDL_ScaleMode scale_mode, PalLoadedSprite *out_sp
+) {
+    return load_tsw_from_toc_index(game_dir, tsw_name, (int)slot_id, 1, renderer, scale_mode, out_sp);
+}
+
 static void free_loaded_sprite(PalLoadedSprite *s) {
     if (s->frames) {
         for (int i = 0; i < s->nframes; i++) {
@@ -1369,8 +1401,8 @@ static void free_loaded_sprite(PalLoadedSprite *s) {
     memset(s, 0, sizeof(*s));
 }
 
-static int vfs_load_snd_wav_bytes(
-    const char *game_dir, int target_idx,
+static int load_snd_from_toc(
+    const char *game_dir, int query_val, int match_by_id,
     SDL_AudioSpec *out_spec, uint8_t **out_pcm, Uint32 *out_pcm_len, uint32_t *out_sid
 ) {
     *out_pcm = NULL;
@@ -1390,8 +1422,24 @@ static int vfs_load_snd_wav_bytes(
         fclose(f);
         return -1;
     }
-    if (target_idx < 0) target_idx = 0;
-    if (target_idx >= cnt) target_idx %= cnt;
+    int target_idx = -1;
+    if (match_by_id) {
+        for (int i = 0; i < cnt; i++) {
+            if (entries[i].id == (uint32_t)query_val) {
+                target_idx = i;
+                break;
+            }
+        }
+        if (target_idx < 0) {
+            free(entries);
+            fclose(f);
+            return -1;
+        }
+    } else {
+        target_idx = query_val;
+        if (target_idx < 0) target_idx = 0;
+        if (target_idx >= cnt) target_idx %= cnt;
+    }
 
     PalTocEntry se = entries[target_idx];
     free(entries);
@@ -1436,9 +1484,1239 @@ static int vfs_load_snd_wav_bytes(
     return ok ? 0 : -1;
 }
 
+static int vfs_load_snd_wav_bytes(
+    const char *game_dir, int target_idx,
+    SDL_AudioSpec *out_spec, uint8_t **out_pcm, Uint32 *out_pcm_len, uint32_t *out_sid
+) {
+    return load_snd_from_toc(game_dir, target_idx, 0, out_spec, out_pcm, out_pcm_len, out_sid);
+}
+
+static int vfs_load_snd_by_id(
+    const char *game_dir, uint32_t slot_id,
+    SDL_AudioSpec *out_spec, uint8_t **out_pcm, Uint32 *out_pcm_len, uint32_t *out_sid
+) {
+    return load_snd_from_toc(game_dir, (int)slot_id, 1, out_spec, out_pcm, out_pcm_len, out_sid);
+}
+
 /* =========================================================================
- * SDL3 Metal Interactive Runtime & Self-Test
+ * M1 Case-Insensitive Path Resolver (for Video/, Music/, Save/)
  * ========================================================================= */
+
+#include <dirent.h>
+#include <strings.h>
+
+static int resolve_rel_path_ci(const char *base_dir, const char *rel_path, char *out_path, size_t out_cap) {
+    char direct[1200];
+    join_path(direct, sizeof(direct), base_dir, rel_path);
+    FILE *probe = fopen(direct, "rb");
+    if (probe) {
+        fclose(probe);
+        snprintf(out_path, out_cap, "%s", direct);
+        return 0;
+    }
+
+    char cur[1200];
+    snprintf(cur, sizeof(cur), "%s", base_dir);
+    char copy[512];
+    snprintf(copy, sizeof(copy), "%s", rel_path);
+
+    char *saveptr = NULL;
+    char *tok = strtok_r(copy, "/\\", &saveptr);
+    while (tok) {
+        DIR *d = opendir(cur);
+        if (!d) return -1;
+        struct dirent *de;
+        char matched[256] = {0};
+        while ((de = readdir(d)) != NULL) {
+            if (strcasecmp(de->d_name, tok) == 0) {
+                snprintf(matched, sizeof(matched), "%s", de->d_name);
+                break;
+            }
+        }
+        closedir(d);
+        if (matched[0] == '\0') return -1;
+        char next[1200];
+        join_path(next, sizeof(next), cur, matched);
+        snprintf(cur, sizeof(cur), "%s", next);
+        tok = strtok_r(NULL, "/\\", &saveptr);
+    }
+
+    snprintf(out_path, out_cap, "%s", cur);
+    FILE *f = fopen(out_path, "rb");
+    if (!f) return -1;
+    fclose(f);
+    return 0;
+}
+
+/* =========================================================================
+ * M1 Module 1: 35-Opcode .act Bytecode VM (myact.cpp / 0x45bae2)
+ * ========================================================================= */
+
+static int resolve_tsw_from_fr(int32_t fr_id, const char **out_tsw_file, uint32_t *out_slot_id) {
+    if (fr_id <= 0) return -1;
+    if (fr_id < 3000) {
+        *out_tsw_file = "all_char.tsw";
+        *out_slot_id = (uint32_t)fr_id;
+    } else if (fr_id < 6000) {
+        *out_tsw_file = "all_item.tsw";
+        *out_slot_id = (uint32_t)(fr_id - 3000);
+    } else if (fr_id < 9000) {
+        *out_tsw_file = "all_magic.tsw";
+        *out_slot_id = (uint32_t)(fr_id - 6000);
+    } else if (fr_id < 13000) {
+        *out_tsw_file = "all_sys.tsw";
+        *out_slot_id = (uint32_t)(fr_id - 9000);
+    } else if (fr_id < 15000) {
+        *out_tsw_file = "all_map1.tsw";
+        *out_slot_id = (uint32_t)(fr_id - 13000);
+    } else {
+        *out_tsw_file = "all_map2.tsw";
+        *out_slot_id = (uint32_t)(fr_id - 15000);
+    }
+    return *out_slot_id > 0 ? 0 : -1;
+}
+
+static int apply_act_opcode(PalActVM *vm, const PalActInsn *in) {
+    switch (in->op) {
+        case 0x544Eu: /* NT: set track / sub-layer / count */
+            vm->nt_value = in->args[0];
+            return 0;
+        case 0x5246u: /* FR: set .tsw sprite ID (e.g. 9054..9057 -> all_sys 54..57) */
+            vm->fr_tsw_id = in->args[0];
+            return 0;
+        case 0x5344u: /* DS: set base duration ticks (35ms/tick) */
+            vm->duration_ticks = in->args[0] > 0 ? in->args[0] : 1;
+            return 0;
+        case 0x4E4Fu: /* ON: visible on (clear hidden bit 0 at 0x45bae2:357) */
+            vm->visible = 1;
+            return 0;
+        case 0x5649u: /* IV: visible off / hidden */
+            vm->visible = 0;
+            return 0;
+        case 0x414Du: /* MA: additive glow blend (flag |= 4) */
+        case 0x414Eu: /* AN: additive blend */
+            vm->blend_mode = 4;
+            return 0;
+        case 0x4148u: /* AH: half-alpha blend (flag |= 8) */
+            vm->blend_mode = 8;
+            return 0;
+        case 0x434Cu: /* CL: clear color tint / blend */
+            vm->blend_mode = 0;
+            return 0;
+        case 0x5041u: /* AP: set frame index and increment internal AP step */
+            vm->frame_index = in->args[0];
+            return 0;
+        case 0x4544u: /* DE: commit current frame for duration_ticks */
+            vm->delay_rem = vm->duration_ticks > 0 ? (vm->duration_ticks - 1) : 0;
+            return 1; /* end of tick */
+        case 0x5859u: /* XY: set (x, y) anchor/offset */
+            vm->offset_x = in->args[0];
+            vm->offset_y = in->args[1];
+            return 0;
+        case 0x5748u: /* HW: set hitbox width/height */
+            vm->hitbox_w = in->args[0];
+            vm->hitbox_h = in->args[1];
+            return 0;
+        case 0x4F58u: /* OX */
+            vm->offset_x = in->args[0];
+            return 0;
+        case 0x4F59u: /* OY */
+            vm->offset_y = in->args[0];
+            return 0;
+        case 0x524Fu: /* OR: orientation */
+            vm->orientation = in->args[0];
+            return 0;
+        case 0x5343u: /* CS: trigger sound ID in all.snd */
+            vm->last_sfx_id = in->args[0];
+            return 0;
+        case 0x4C50u: /* LP: loop [start_frame, end_frame, repeat_count] */
+            vm->loop_start_frame = in->args[0];
+            vm->loop_end_frame = in->args[1];
+            vm->loop_remaining = in->args[2];
+            return 0;
+        case 0x4F56u: /* VO: end sequence */
+        case 0x4F32u: /* 2O: end sequence */
+            if (vm->loop_remaining == -1) {
+                vm->pc = 0;
+                vm->delay_rem = 0;
+            } else if (vm->loop_remaining > 1) {
+                vm->loop_remaining--;
+                vm->pc = 0;
+                vm->delay_rem = 0;
+            } else {
+                vm->finished = 1;
+            }
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+int32_t pal_act_vm_step_tick(PalActVM *vm) {
+    if (!vm || vm->insn_count <= 0) return -1;
+    if (vm->finished) return 0;
+
+    if (vm->delay_rem > 0) {
+        vm->delay_rem--;
+        return 1;
+    }
+
+    int guard = 0;
+    while (guard++ < PAL_ACT_MAX_INSNS) {
+        if (vm->pc < 0 || vm->pc >= vm->insn_count) {
+            vm->finished = 1;
+            return 1;
+        }
+        const PalActInsn *in = &vm->insns[vm->pc];
+        vm->pc++;
+        if (apply_act_opcode(vm, in) != 0) {
+            return 1;
+        }
+    }
+    return 1;
+}
+
+int32_t pal_act_vm_init(
+    const char *game_dir, const char *act_file,
+    uint32_t act_slot_id, int32_t sub_action_idx,
+    PalActVM *out_vm
+) {
+    if (!game_dir || !act_file || !out_vm) return -1;
+    memset(out_vm, 0, sizeof(*out_vm));
+    out_vm->act_slot_id = act_slot_id;
+    out_vm->sub_action_idx = sub_action_idx;
+    out_vm->duration_ticks = 1;
+    out_vm->loop_remaining = 0;
+
+    char path[1200];
+    join_path(path, sizeof(path), game_dir, act_file);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    uint64_t fsize = get_file_size_fp(f);
+
+    PalTocEntry *entries = NULL;
+    int cnt = 0;
+    if (read_archive_toc(f, fsize, &entries, &cnt) != 0 || cnt == 0) {
+        free(entries);
+        fclose(f);
+        return -1;
+    }
+
+    int found = -1;
+    for (int i = 0; i < cnt; i++) {
+        if (entries[i].id == act_slot_id) {
+            found = i;
+            break;
+        }
+    }
+    if (found < 0) {
+        free(entries);
+        fclose(f);
+        return -1;
+    }
+    PalTocEntry sel = entries[found];
+    free(entries);
+
+    if (sel.size_raw < 6 || (uint64_t)sel.offset + sel.size_raw > fsize) {
+        fclose(f);
+        return -1;
+    }
+    uint8_t *buf = (uint8_t *)malloc(sel.size_raw);
+    if (!buf || read_file_slice(f, sel.offset, buf, sel.size_raw) != 0) {
+        free(buf);
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    uint16_t sub_cnt = rd_u16(buf);
+    uint32_t max_cnt = (sel.size_raw - 2) / 4;
+    if (sub_cnt > max_cnt) sub_cnt = (uint16_t)max_cnt;
+    out_vm->total_sub_actions = sub_cnt;
+
+    if (sub_action_idx < 0 || sub_action_idx >= (int32_t)sub_cnt) {
+        free(buf);
+        return -1;
+    }
+
+    uint32_t hdr_end = 2 + (uint32_t)sub_cnt * 4;
+    uint32_t off = rd_u32(buf + 2 + (size_t)sub_action_idx * 4);
+    if (off < hdr_end || off + 2 > sel.size_raw) {
+        free(buf);
+        return -1;
+    }
+    uint32_t end = sel.size_raw;
+    for (uint16_t b = 0; b < sub_cnt; b++) {
+        uint32_t o2 = rd_u32(buf + 2 + (size_t)b * 4);
+        if (o2 > off && o2 < end) end = o2;
+    }
+
+    size_t pos = off + 2; /* skip 2-byte sub-action header */
+    while (pos + 2 <= end && out_vm->insn_count < PAL_ACT_MAX_INSNS) {
+        uint16_t code = rd_u16(buf + pos);
+        pos += 2;
+        if (code == 0) continue;
+        int nargs = lookup_act_nargs(code);
+        if (nargs < 0 || pos + (size_t)nargs * 2 > end) break;
+        PalActInsn *in = &out_vm->insns[out_vm->insn_count++];
+        in->op = code;
+        in->nargs = nargs;
+        for (int a = 0; a < nargs && a < 7; a++) {
+            in->args[a] = rd_i16(buf + pos + (size_t)a * 2);
+        }
+        pos += (size_t)nargs * 2;
+    }
+    free(buf);
+
+    if (out_vm->insn_count == 0) return -1;
+    pal_act_vm_step_tick(out_vm);
+    return 0;
+}
+
+/* =========================================================================
+ * M1 Module 2: CoreText Chinese Rich-Text Renderer (GrpFont.cpp / %C %N %S %K)
+ * ========================================================================= */
+
+/* Authentic 10-entry palette from Palgame.exe DAT_004edd0c (Win32 COLORREF 0x00BBGGRR) */
+static const uint32_t kPalFontColorRef[10] = {
+    0x00FFE581u, /* %C0 sky cyan */
+    0x00B9DAFFu, /* %C1 warm peach */
+    0x00A3FEFCu, /* %C2 pale yellow */
+    0x00ACCFE9u, /* %C3 parchment tan */
+    0x002C577Bu, /* %C4 deep bronze */
+    0x00FFE6E6u, /* %C5 crisp white (dialogue default body) */
+    0x000080FFu, /* %C6 golden orange (speaker name highlight) */
+    0x00FFC8EDu, /* %C7 soft lavender */
+    0x0085CFB5u, /* %C8 jade green */
+    0x00800000u  /* %C9 navy accent */
+};
+
+static CTFontRef create_pal_ct_font(float pt_size) {
+    const char *families[] = {"PingFang TC", "Heiti TC", "PingFang SC", "STHeiti"};
+    for (size_t i = 0; i < sizeof(families) / sizeof(families[0]); i++) {
+        CFStringRef name = CFStringCreateWithCString(kCFAllocatorDefault, families[i], kCFStringEncodingUTF8);
+        CTFontRef font = name ? CTFontCreateWithName(name, (CGFloat)pt_size, NULL) : NULL;
+        if (name) CFRelease(name);
+        if (font) return font;
+    }
+    return CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, (CGFloat)pt_size, NULL);
+}
+
+static CGColorRef create_cg_colorref(uint32_t colorref, CGFloat alpha) {
+    CGFloat r = (CGFloat)(colorref & 0xFFu) / 255.0;
+    CGFloat g = (CGFloat)((colorref >> 8) & 0xFFu) / 255.0;
+    CGFloat b = (CGFloat)((colorref >> 16) & 0xFFu) / 255.0;
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGFloat comps[4] = {r, g, b, alpha};
+    CGColorRef col = CGColorCreate(cs, comps);
+    if (cs) CGColorSpaceRelease(cs);
+    return col;
+}
+
+static void append_attributed_chunk(
+    CFMutableAttributedStringRef astr,
+    CFMutableAttributedStringRef shadow_astr,
+    const char *utf8, size_t len,
+    CTFontRef font, CGColorRef fg_color, CGColorRef shadow_color
+) {
+    if (!utf8 || len == 0) return;
+    CFStringRef seg = CFStringCreateWithBytes(kCFAllocatorDefault, (const UInt8 *)utf8, (CFIndex)len, kCFStringEncodingUTF8, false);
+    if (!seg) return;
+
+    CFIndex start = CFAttributedStringGetLength(astr);
+    CFAttributedStringReplaceString(astr, CFRangeMake(start, 0), seg);
+    CFIndex end = CFAttributedStringGetLength(astr);
+    CFRange r = CFRangeMake(start, end - start);
+    if (font) CFAttributedStringSetAttribute(astr, r, kCTFontAttributeName, font);
+    if (fg_color) CFAttributedStringSetAttribute(astr, r, kCTForegroundColorAttributeName, fg_color);
+
+    if (shadow_astr) {
+        CFAttributedStringReplaceString(shadow_astr, CFRangeMake(start, 0), seg);
+        if (font) CFAttributedStringSetAttribute(shadow_astr, r, kCTFontAttributeName, font);
+        if (shadow_color) CFAttributedStringSetAttribute(shadow_astr, r, kCTForegroundColorAttributeName, shadow_color);
+    }
+    CFRelease(seg);
+}
+
+static uint8_t *rasterize_rich_text_rgba(
+    const char *utf8_rich_text,
+    float base_font_size,
+    int32_t max_width,
+    PalRichTextMetrics *out_metrics
+) {
+    if (out_metrics) memset(out_metrics, 0, sizeof(*out_metrics));
+    if (!utf8_rich_text || utf8_rich_text[0] == '\0') return NULL;
+    if (base_font_size <= 0.0f) base_font_size = 18.0f;
+    if (max_width <= 0) max_width = 560;
+
+    CFMutableAttributedStringRef astr = CFAttributedStringCreateMutable(kCFAllocatorDefault, 0);
+    CFMutableAttributedStringRef shadow_astr = CFAttributedStringCreateMutable(kCFAllocatorDefault, 0);
+    if (!astr || !shadow_astr) {
+        if (astr) CFRelease(astr);
+        if (shadow_astr) CFRelease(shadow_astr);
+        return NULL;
+    }
+
+    CTFontRef fonts[3] = {
+        create_pal_ct_font(base_font_size * 0.88f), /* %S0 compact */
+        create_pal_ct_font(base_font_size),         /* %S1 standard */
+        create_pal_ct_font(base_font_size * 1.18f)  /* %S2 emphasis */
+    };
+    CGColorRef colors[10];
+    for (int i = 0; i < 10; i++) {
+        colors[i] = create_cg_colorref(kPalFontColorRef[i], 1.0);
+    }
+    CGColorRef shadow_col = create_cg_colorref(0x00100808u, 0.92);
+
+    int cur_color = 5; /* %C5 default ice-white */
+    int cur_size = 1;
+    int line_count = 1;
+
+    char run_buf[1024];
+    size_t run_len = 0;
+
+    const char *p = utf8_rich_text;
+    while (*p != '\0') {
+        if (*p == '%' && p[1] != '\0') {
+            char tag = p[1];
+            if (tag == 'N' || tag == 'n') {
+                run_buf[run_len++] = '\n';
+                line_count++;
+                p += 2;
+            } else if ((tag == 'C' || tag == 'c') && p[2] >= '0' && p[2] <= '9') {
+                if (run_len > 0) {
+                    append_attributed_chunk(astr, shadow_astr, run_buf, run_len, fonts[cur_size], colors[cur_color], shadow_col);
+                    run_len = 0;
+                }
+                cur_color = p[2] - '0';
+                p += 3;
+            } else if ((tag == 'S' || tag == 's') && p[2] >= '0' && p[2] <= '9') {
+                if (run_len > 0) {
+                    append_attributed_chunk(astr, shadow_astr, run_buf, run_len, fonts[cur_size], colors[cur_color], shadow_col);
+                    run_len = 0;
+                }
+                int sv = p[2] - '0';
+                cur_size = (sv == 0) ? 0 : (sv >= 2 ? 2 : 1);
+                p += 3;
+            } else if ((tag == 'D' || tag == 'd') && p[2] >= '0' && p[2] <= '9') {
+                p += 3;
+            } else if (tag == 'K' || tag == 'k' || tag == 'L' || tag == 'l' || tag == 'P' || tag == 'p' || tag == 'B' || tag == 'b' || tag == 'A' || tag == 'a' || tag == 'Q' || tag == 'q') {
+                p += 2;
+            } else if (tag == '%') {
+                run_buf[run_len++] = '%';
+                p += 2;
+            } else {
+                run_buf[run_len++] = *p++;
+            }
+        } else {
+            if (*p == '\n') line_count++;
+            run_buf[run_len++] = *p++;
+        }
+
+        if (run_len >= sizeof(run_buf) - 8) {
+            append_attributed_chunk(astr, shadow_astr, run_buf, run_len, fonts[cur_size], colors[cur_color], shadow_col);
+            run_len = 0;
+        }
+    }
+    if (run_len > 0) {
+        append_attributed_chunk(astr, shadow_astr, run_buf, run_len, fonts[cur_size], colors[cur_color], shadow_col);
+    }
+
+    if (CFAttributedStringGetLength(astr) == 0) {
+        append_attributed_chunk(astr, shadow_astr, " ", 1, fonts[1], colors[5], shadow_col);
+    }
+
+    CTFramesetterRef fs_fg = CTFramesetterCreateWithAttributedString(astr);
+    CTFramesetterRef fs_sh = CTFramesetterCreateWithAttributedString(shadow_astr);
+
+    CGSize sz = CTFramesetterSuggestFrameSizeWithConstraints(
+        fs_fg, CFRangeMake(0, 0), NULL, CGSizeMake((CGFloat)max_width, 2000.0), NULL
+    );
+
+    int w = (int)ceil(sz.width) + 6;
+    int h = (int)ceil(sz.height) + 6;
+    if (w < 4) w = 4;
+    if (h < 4) h = 4;
+    if (w > 1280) w = 1280;
+    if (h > 960) h = 960;
+
+    uint8_t *rgba = (uint8_t *)calloc((size_t)w * (size_t)h, 4);
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = (rgba && cs)
+        ? CGBitmapContextCreate(rgba, (size_t)w, (size_t)h, 8, (size_t)w * 4, cs,
+                                kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big)
+        : NULL;
+
+    if (ctx) {
+        CGContextSetAllowsAntialiasing(ctx, true);
+        CGContextSetShouldAntialias(ctx, true);
+        CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
+
+        /* Shadow pass shifted (+1.5, -1.5) in CG coordinates = (+1.5 right, +1.5 down on screen) */
+        CGMutablePathRef path_sh = CGPathCreateMutable();
+        CGPathAddRect(path_sh, NULL, CGRectMake(2.5, 1.5, (CGFloat)(w - 4), (CGFloat)(h - 4)));
+        CTFrameRef frame_sh = CTFramesetterCreateFrame(fs_sh, CFRangeMake(0, 0), path_sh, NULL);
+        if (frame_sh) {
+            CTFrameDraw(frame_sh, ctx);
+            CFRelease(frame_sh);
+        }
+        CGPathRelease(path_sh);
+
+        /* Foreground rich-text pass */
+        CGMutablePathRef path_fg = CGPathCreateMutable();
+        CGPathAddRect(path_fg, NULL, CGRectMake(1.0, 3.0, (CGFloat)(w - 4), (CGFloat)(h - 4)));
+        CTFrameRef frame_fg = CTFramesetterCreateFrame(fs_fg, CFRangeMake(0, 0), path_fg, NULL);
+        if (frame_fg) {
+            CTFrameDraw(frame_fg, ctx);
+            CFRelease(frame_fg);
+        }
+        CGPathRelease(path_fg);
+
+        CGContextRelease(ctx);
+    }
+
+    int32_t non_trans = 0;
+    if (rgba) {
+        size_t total = (size_t)w * (size_t)h;
+        for (size_t i = 0; i < total; i++) {
+            uint8_t a = rgba[i * 4 + 3];
+            if (a > 0) {
+                non_trans++;
+                if (a < 255) {
+                    /* Un-premultiply RGBA for crisp SDL_BLENDMODE_BLEND compositing */
+                    int r = ((int)rgba[i * 4 + 0] * 255) / (int)a;
+                    int g = ((int)rgba[i * 4 + 1] * 255) / (int)a;
+                    int b = ((int)rgba[i * 4 + 2] * 255) / (int)a;
+                    rgba[i * 4 + 0] = (uint8_t)(r > 255 ? 255 : r);
+                    rgba[i * 4 + 1] = (uint8_t)(g > 255 ? 255 : g);
+                    rgba[i * 4 + 2] = (uint8_t)(b > 255 ? 255 : b);
+                }
+            }
+        }
+    }
+
+    if (out_metrics) {
+        out_metrics->width = w;
+        out_metrics->height = h;
+        out_metrics->line_count = line_count;
+        out_metrics->non_transparent_pixels = non_trans;
+    }
+
+    if (cs) CGColorSpaceRelease(cs);
+    if (fs_fg) CFRelease(fs_fg);
+    if (fs_sh) CFRelease(fs_sh);
+    if (shadow_col) CGColorRelease(shadow_col);
+    for (int i = 0; i < 10; i++) {
+        if (colors[i]) CGColorRelease(colors[i]);
+    }
+    for (int i = 0; i < 3; i++) {
+        if (fonts[i]) CFRelease(fonts[i]);
+    }
+    CFRelease(astr);
+    CFRelease(shadow_astr);
+    return rgba;
+}
+
+int32_t pal_font_probe_rich_text(
+    const char *utf8_rich_text, float font_size, int32_t max_width,
+    PalRichTextMetrics *out_metrics
+) {
+    uint8_t *rgba = rasterize_rich_text_rgba(utf8_rich_text, font_size, max_width, out_metrics);
+    if (!rgba) return -1;
+    int ok = (out_metrics && out_metrics->width > 0 && out_metrics->height > 0 && out_metrics->non_transparent_pixels > 0);
+    free(rgba);
+    return ok ? 0 : -1;
+}
+
+static SDL_Texture *create_richtext_texture(
+    SDL_Renderer *renderer, const char *utf8_rich_text, float font_size, int32_t max_width,
+    int *out_w, int *out_h
+) {
+    PalRichTextMetrics m;
+    uint8_t *rgba = rasterize_rich_text_rgba(utf8_rich_text, font_size, max_width, &m);
+    if (!rgba) return NULL;
+    SDL_Texture *tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, m.width, m.height);
+    if (tex) {
+        SDL_UpdateTexture(tex, NULL, rgba, m.width * 4);
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+        SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_LINEAR);
+    }
+    free(rgba);
+    if (out_w) *out_w = m.width;
+    if (out_h) *out_h = m.height;
+    return tex;
+}
+
+/* =========================================================================
+ * M1 Module 3: FFmpeg MP3/WAV BGM Streamer (SGSound.cpp / 0x4983ac)
+ * ========================================================================= */
+
+static int ffmpeg_decode_audio_to_s16(
+    const char *file_path,
+    uint8_t **out_pcm,
+    size_t *out_bytes,
+    double *out_duration_sec,
+    char *out_codec,
+    size_t codec_cap
+) {
+    *out_pcm = NULL;
+    *out_bytes = 0;
+    if (out_duration_sec) *out_duration_sec = 0.0;
+    if (out_codec && codec_cap > 0) out_codec[0] = '\0';
+
+    av_log_set_level(AV_LOG_ERROR);
+
+    AVFormatContext *fmt = NULL;
+    if (avformat_open_input(&fmt, file_path, NULL, NULL) < 0) return -1;
+    if (avformat_find_stream_info(fmt, NULL) < 0) {
+        avformat_close_input(&fmt);
+        return -1;
+    }
+
+    int aidx = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (aidx < 0) {
+        avformat_close_input(&fmt);
+        return -1;
+    }
+
+    AVStream *st = fmt->streams[aidx];
+    const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
+    if (!codec) {
+        avformat_close_input(&fmt);
+        return -1;
+    }
+    if (out_codec && codec_cap > 0) {
+        snprintf(out_codec, codec_cap, "%s", codec->name ? codec->name : "audio");
+    }
+
+    AVCodecContext *dec = avcodec_alloc_context3(codec);
+    if (!dec || avcodec_parameters_to_context(dec, st->codecpar) < 0 || avcodec_open2(dec, codec, NULL) < 0) {
+        if (dec) avcodec_free_context(&dec);
+        avformat_close_input(&fmt);
+        return -1;
+    }
+
+    SwrContext *swr = NULL;
+    AVChannelLayout out_layout = AV_CHANNEL_LAYOUT_STEREO;
+    if (swr_alloc_set_opts2(
+            &swr, &out_layout, AV_SAMPLE_FMT_S16, 44100,
+            &dec->ch_layout, dec->sample_fmt, dec->sample_rate, 0, NULL) < 0 ||
+        !swr || swr_init(swr) < 0) {
+        if (swr) swr_free(&swr);
+        avcodec_free_context(&dec);
+        avformat_close_input(&fmt);
+        return -1;
+    }
+
+    AVPacket *pkt = av_packet_alloc();
+    AVFrame *frm = av_frame_alloc();
+    size_t cap = 44100 * 4 * 4;
+    size_t used = 0;
+    uint8_t *pcm = (uint8_t *)malloc(cap);
+
+    if (pkt && frm && pcm) {
+        while (av_read_frame(fmt, pkt) >= 0) {
+            if (pkt->stream_index == aidx) {
+                if (avcodec_send_packet(dec, pkt) >= 0) {
+                    while (avcodec_receive_frame(dec, frm) >= 0) {
+                        int max_out = swr_get_out_samples(swr, frm->nb_samples);
+                        if (max_out > 0) {
+                            size_t need = (size_t)max_out * 4;
+                            if (used + need > cap) {
+                                size_t ncap = cap * 2;
+                                while (ncap < used + need) ncap *= 2;
+                                uint8_t *g = (uint8_t *)realloc(pcm, ncap);
+                                if (!g) break;
+                                pcm = g;
+                                cap = ncap;
+                            }
+                            uint8_t *dst_ptr = pcm + used;
+                            int conv = swr_convert(swr, &dst_ptr, max_out, (const uint8_t **)frm->extended_data, frm->nb_samples);
+                            if (conv > 0) used += (size_t)conv * 4;
+                        }
+                        av_frame_unref(frm);
+                    }
+                }
+            }
+            av_packet_unref(pkt);
+        }
+        /* Flush delayed samples */
+        int rem = swr_get_out_samples(swr, 0);
+        if (rem > 0) {
+            size_t need = (size_t)rem * 4;
+            if (used + need <= cap) {
+                uint8_t *dst_ptr = pcm + used;
+                int conv = swr_convert(swr, &dst_ptr, rem, NULL, 0);
+                if (conv > 0) used += (size_t)conv * 4;
+            }
+        }
+    }
+
+    av_frame_free(&frm);
+    av_packet_free(&pkt);
+    swr_free(&swr);
+    avcodec_free_context(&dec);
+    avformat_close_input(&fmt);
+
+    if (!pcm || used == 0) {
+        free(pcm);
+        return -1;
+    }
+
+    *out_pcm = pcm;
+    *out_bytes = used;
+    if (out_duration_sec) *out_duration_sec = (double)used / (44100.0 * 4.0);
+    return 0;
+}
+
+int32_t pal_bgm_probe(const char *game_dir, const char *rel_path, PalBgmProbeInfo *out_info) {
+    if (!game_dir || !rel_path || !out_info) return -1;
+    memset(out_info, 0, sizeof(*out_info));
+
+    char path[1200];
+    if (resolve_rel_path_ci(game_dir, rel_path, path, sizeof(path)) != 0) return -1;
+
+    uint8_t *pcm = NULL;
+    size_t pcm_len = 0;
+    double dur = 0.0;
+    if (ffmpeg_decode_audio_to_s16(path, &pcm, &pcm_len, &dur, out_info->codec_name, sizeof(out_info->codec_name)) != 0) {
+        return -1;
+    }
+    free(pcm);
+
+    out_info->sample_rate = 44100;
+    out_info->channels = 2;
+    out_info->pcm_bytes = (int32_t)(pcm_len > (size_t)INT32_MAX ? INT32_MAX : pcm_len);
+    out_info->duration_sec = dur;
+    return 0;
+}
+
+typedef struct {
+    uint8_t *pcm;
+    size_t pcm_len;
+    size_t cursor;
+    SDL_AudioStream *stream;
+    int playing;
+    float volume;
+    int muted;
+    char current_track[64];
+} PalBgmPlayer;
+
+static void pal_bgm_stop(PalBgmPlayer *bgm) {
+    if (bgm->stream) {
+        SDL_ClearAudioStream(bgm->stream);
+        SDL_DestroyAudioStream(bgm->stream);
+        bgm->stream = NULL;
+    }
+    free(bgm->pcm);
+    bgm->pcm = NULL;
+    bgm->pcm_len = 0;
+    bgm->cursor = 0;
+    bgm->playing = 0;
+    bgm->current_track[0] = '\0';
+}
+
+static void pal_bgm_update(PalBgmPlayer *bgm) {
+    if (!bgm->playing || !bgm->stream || !bgm->pcm || bgm->pcm_len == 0) return;
+    int queued = SDL_GetAudioStreamQueued(bgm->stream);
+    const int target_bytes = 44100 * 4 / 2; /* ~0.5s buffer ahead */
+    while (queued < target_bytes) {
+        size_t chunk = bgm->pcm_len - bgm->cursor;
+        if (chunk > 32768) chunk = 32768;
+        if (chunk > 0) {
+            SDL_PutAudioStreamData(bgm->stream, bgm->pcm + bgm->cursor, (int)chunk);
+            bgm->cursor = (bgm->cursor + chunk) % bgm->pcm_len;
+            queued += (int)chunk;
+        } else {
+            break;
+        }
+    }
+}
+
+static int pal_bgm_play_track(PalBgmPlayer *bgm, const char *game_dir, const char *rel_path, float volume, int muted) {
+    if (bgm->playing && strcasecmp(bgm->current_track, rel_path) == 0) return 0;
+    pal_bgm_stop(bgm);
+
+    char full_path[1200];
+    if (resolve_rel_path_ci(game_dir, rel_path, full_path, sizeof(full_path)) != 0) return -1;
+
+    uint8_t *pcm = NULL;
+    size_t len = 0;
+    if (ffmpeg_decode_audio_to_s16(full_path, &pcm, &len, NULL, NULL, 0) != 0) return -1;
+
+    SDL_AudioSpec spec = {SDL_AUDIO_S16, 2, 44100};
+    SDL_AudioStream *st = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+    if (!st) {
+        free(pcm);
+        return -1;
+    }
+
+    bgm->pcm = pcm;
+    bgm->pcm_len = len;
+    bgm->cursor = 0;
+    bgm->stream = st;
+    bgm->volume = volume;
+    bgm->muted = muted;
+    bgm->playing = 1;
+    snprintf(bgm->current_track, sizeof(bgm->current_track), "%s", rel_path);
+
+    SDL_SetAudioStreamGain(st, muted ? 0.0f : volume * 0.75f);
+    SDL_ResumeAudioStreamDevice(st);
+    pal_bgm_update(bgm);
+    return 0;
+}
+
+/* =========================================================================
+ * M1 Module 4: FFmpeg Bink (.bik) Video Decoder & Player (BinkPlayer.cpp)
+ * ========================================================================= */
+
+int32_t pal_bink_probe(const char *game_dir, const char *rel_path, PalBinkProbeInfo *out_info) {
+    if (!game_dir || !rel_path || !out_info) return -1;
+    memset(out_info, 0, sizeof(*out_info));
+
+    char full_path[1200];
+    if (resolve_rel_path_ci(game_dir, rel_path, full_path, sizeof(full_path)) != 0) return -1;
+
+    av_log_set_level(AV_LOG_ERROR);
+
+    AVFormatContext *fmt = NULL;
+    if (avformat_open_input(&fmt, full_path, NULL, NULL) < 0) return -1;
+    if (avformat_find_stream_info(fmt, NULL) < 0) {
+        avformat_close_input(&fmt);
+        return -1;
+    }
+
+    int vidx = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    int aidx = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (vidx < 0) {
+        avformat_close_input(&fmt);
+        return -1;
+    }
+
+    AVStream *vst = fmt->streams[vidx];
+    const AVCodec *vcodec = avcodec_find_decoder(vst->codecpar->codec_id);
+    AVCodecContext *vdec = vcodec ? avcodec_alloc_context3(vcodec) : NULL;
+    if (!vdec || avcodec_parameters_to_context(vdec, vst->codecpar) < 0 || avcodec_open2(vdec, vcodec, NULL) < 0) {
+        if (vdec) avcodec_free_context(&vdec);
+        avformat_close_input(&fmt);
+        return -1;
+    }
+
+    out_info->width = vdec->width;
+    out_info->height = vdec->height;
+    out_info->has_audio = (aidx >= 0) ? 1 : 0;
+    snprintf(out_info->codec_name, sizeof(out_info->codec_name), "%s", vcodec->name ? vcodec->name : "bink");
+
+    double fps = av_q2d(vst->avg_frame_rate);
+    if (fps <= 0.1) fps = av_q2d(vst->r_frame_rate);
+    if (fps <= 0.1) fps = 15.0;
+    out_info->fps = fps;
+    out_info->frame_count = vst->nb_frames > 0 ? (int32_t)vst->nb_frames
+        : (fmt->duration > 0 ? (int32_t)((double)fmt->duration / AV_TIME_BASE * fps) : 0);
+
+    AVPacket *pkt = av_packet_alloc();
+    AVFrame *frm = av_frame_alloc();
+    int got_frame = 0;
+
+    if (pkt && frm) {
+        while (!got_frame && av_read_frame(fmt, pkt) >= 0) {
+            if (pkt->stream_index == vidx && avcodec_send_packet(vdec, pkt) >= 0) {
+                if (avcodec_receive_frame(vdec, frm) >= 0) {
+                    struct SwsContext *sws = sws_getContext(
+                        vdec->width, vdec->height, (enum AVPixelFormat)frm->format,
+                        vdec->width, vdec->height, AV_PIX_FMT_RGBA,
+                        SWS_BILINEAR, NULL, NULL, NULL
+                    );
+                    if (sws) {
+                        uint8_t *rgba = (uint8_t *)malloc((size_t)vdec->width * (size_t)vdec->height * 4);
+                        if (rgba) {
+                            uint8_t *dst[4] = {rgba, NULL, NULL, NULL};
+                            int linesize[4] = {vdec->width * 4, 0, 0, 0};
+                            sws_scale(sws, (const uint8_t *const *)frm->data, frm->linesize, 0, vdec->height, dst, linesize);
+                            out_info->first_frame_rgba_bytes = vdec->width * vdec->height * 4;
+                            got_frame = 1;
+                            free(rgba);
+                        }
+                        sws_freeContext(sws);
+                    }
+                    av_frame_unref(frm);
+                }
+            }
+            av_packet_unref(pkt);
+        }
+    }
+
+    av_frame_free(&frm);
+    av_packet_free(&pkt);
+    avcodec_free_context(&vdec);
+    avformat_close_input(&fmt);
+    return got_frame ? 0 : -1;
+}
+
+/* Returns 0 on normal completion or skip, 1 if app quit/window closed, -1 on open failure */
+static int pal_bink_play_file(
+    SDL_Window *window, SDL_Renderer *renderer,
+    const char *game_dir, const char *rel_path,
+    float master_volume, int mute_audio
+) {
+    char full_path[1200];
+    if (resolve_rel_path_ci(game_dir, rel_path, full_path, sizeof(full_path)) != 0) return -1;
+
+    av_log_set_level(AV_LOG_ERROR);
+
+    AVFormatContext *fmt = NULL;
+    if (avformat_open_input(&fmt, full_path, NULL, NULL) < 0) return -1;
+    if (avformat_find_stream_info(fmt, NULL) < 0) {
+        avformat_close_input(&fmt);
+        return -1;
+    }
+
+    int vidx = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    int aidx = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (vidx < 0) {
+        avformat_close_input(&fmt);
+        return -1;
+    }
+
+    AVStream *vst = fmt->streams[vidx];
+    const AVCodec *vc = avcodec_find_decoder(vst->codecpar->codec_id);
+    AVCodecContext *vdec = vc ? avcodec_alloc_context3(vc) : NULL;
+    if (!vdec || avcodec_parameters_to_context(vdec, vst->codecpar) < 0 || avcodec_open2(vdec, vc, NULL) < 0) {
+        if (vdec) avcodec_free_context(&vdec);
+        avformat_close_input(&fmt);
+        return -1;
+    }
+
+    AVCodecContext *adec = NULL;
+    SwrContext *swr = NULL;
+    SDL_AudioStream *astream = NULL;
+    if (aidx >= 0) {
+        AVStream *ast = fmt->streams[aidx];
+        const AVCodec *ac = avcodec_find_decoder(ast->codecpar->codec_id);
+        if (ac) {
+            adec = avcodec_alloc_context3(ac);
+            if (adec && avcodec_parameters_to_context(adec, ast->codecpar) >= 0 && avcodec_open2(adec, ac, NULL) >= 0) {
+                AVChannelLayout out_ch = AV_CHANNEL_LAYOUT_STEREO;
+                if (swr_alloc_set_opts2(&swr, &out_ch, AV_SAMPLE_FMT_S16, 44100,
+                                        &adec->ch_layout, adec->sample_fmt, adec->sample_rate, 0, NULL) >= 0 &&
+                    swr && swr_init(swr) >= 0) {
+                    SDL_AudioSpec aspec = {SDL_AUDIO_S16, 2, 44100};
+                    astream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &aspec, NULL, NULL);
+                    if (astream) {
+                        SDL_SetAudioStreamGain(astream, mute_audio ? 0.0f : master_volume);
+                        SDL_ResumeAudioStreamDevice(astream);
+                    }
+                }
+            } else if (adec) {
+                avcodec_free_context(&adec);
+            }
+        }
+    }
+
+    int vw = vdec->width;
+    int vh = vdec->height;
+    SDL_Texture *tex = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, vw, vh);
+    if (tex) SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_LINEAR);
+    uint8_t *rgba = (uint8_t *)malloc((size_t)vw * (size_t)vh * 4);
+    struct SwsContext *sws = NULL;
+
+    AVPacket *pkt = av_packet_alloc();
+    AVFrame *frm = av_frame_alloc();
+    double fps = av_q2d(vst->avg_frame_rate);
+    if (fps <= 0.1) fps = av_q2d(vst->r_frame_rate);
+    if (fps <= 0.1) fps = 15.0;
+    double tb = av_q2d(vst->time_base);
+
+    Uint64 start_ns = SDL_GetTicksNS();
+    int64_t frame_num = 0;
+    int skip = 0;
+    int app_quit = 0;
+
+    Uint8 *aud_tmp = NULL;
+    int aud_tmp_cap = 0;
+
+    while (!skip && !app_quit && pkt && frm && tex && rgba && av_read_frame(fmt, pkt) >= 0) {
+        if (pkt->stream_index == aidx && adec && swr && astream) {
+            if (avcodec_send_packet(adec, pkt) >= 0) {
+                while (avcodec_receive_frame(adec, frm) >= 0) {
+                    int max_out = swr_get_out_samples(swr, frm->nb_samples);
+                    if (max_out > 0) {
+                        int need = max_out * 4;
+                        if (need > aud_tmp_cap) {
+                            Uint8 *g = (Uint8 *)realloc(aud_tmp, (size_t)need);
+                            if (g) { aud_tmp = g; aud_tmp_cap = need; }
+                        }
+                        if (aud_tmp && need <= aud_tmp_cap) {
+                            uint8_t *dst_p = aud_tmp;
+                            int conv = swr_convert(swr, &dst_p, max_out, (const uint8_t **)frm->extended_data, frm->nb_samples);
+                            if (conv > 0 && !mute_audio) {
+                                SDL_PutAudioStreamData(astream, aud_tmp, conv * 4);
+                            }
+                        }
+                    }
+                    av_frame_unref(frm);
+                }
+            }
+        } else if (pkt->stream_index == vidx) {
+            if (avcodec_send_packet(vdec, pkt) >= 0) {
+                while (!skip && !app_quit && avcodec_receive_frame(vdec, frm) >= 0) {
+                    if (!sws) {
+                        sws = sws_getContext(vw, vh, (enum AVPixelFormat)frm->format,
+                                             vw, vh, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
+                    }
+                    if (sws) {
+                        uint8_t *dst[4] = {rgba, NULL, NULL, NULL};
+                        int ls[4] = {vw * 4, 0, 0, 0};
+                        sws_scale(sws, (const uint8_t *const *)frm->data, frm->linesize, 0, vh, dst, ls);
+                        SDL_UpdateTexture(tex, NULL, rgba, vw * 4);
+                    }
+
+                    double target_sec = (frm->pts != AV_NOPTS_VALUE && tb > 0.0)
+                        ? (double)frm->pts * tb
+                        : (double)frame_num / fps;
+                    frame_num++;
+
+                    for (;;) {
+                        SDL_Event ev;
+                        while (SDL_PollEvent(&ev)) {
+                            if (ev.type == SDL_EVENT_QUIT ||
+                                (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && ev.window.windowID == SDL_GetWindowID(window))) {
+                                app_quit = 1;
+                                break;
+                            }
+                            if (ev.type == SDL_EVENT_KEY_DOWN) {
+                                SDL_Keycode k = ev.key.key;
+                                if (k == SDLK_ESCAPE || k == SDLK_SPACE || k == SDLK_RETURN) {
+                                    skip = 1;
+                                    break;
+                                }
+                            } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                                skip = 1;
+                                break;
+                            }
+                        }
+                        if (skip || app_quit) break;
+
+                        double elapsed_sec = (double)(SDL_GetTicksNS() - start_ns) / 1e9;
+                        if (elapsed_sec >= target_sec) break;
+                        SDL_Delay(4);
+                    }
+
+                    if (!skip && !app_quit) {
+                        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                        SDL_RenderClear(renderer);
+                        /* Preserve aspect ratio inside 640x480 logical viewport */
+                        float dst_h = 480.0f;
+                        float dst_w = (float)vw * (480.0f / (float)(vh > 0 ? vh : 480));
+                        if (dst_w > 640.0f) {
+                            dst_w = 640.0f;
+                            dst_h = (float)vh * (640.0f / (float)(vw > 0 ? vw : 640));
+                        }
+                        SDL_FRect dst_rect = {(640.0f - dst_w) * 0.5f, (480.0f - dst_h) * 0.5f, dst_w, dst_h};
+                        SDL_RenderTexture(renderer, tex, NULL, &dst_rect);
+                        SDL_RenderPresent(renderer);
+                    }
+                    av_frame_unref(frm);
+                }
+            }
+        }
+        av_packet_unref(pkt);
+    }
+
+    free(aud_tmp);
+    free(rgba);
+    if (tex) SDL_DestroyTexture(tex);
+    if (sws) sws_freeContext(sws);
+    if (astream) {
+        SDL_ClearAudioStream(astream);
+        SDL_DestroyAudioStream(astream);
+    }
+    if (swr) swr_free(&swr);
+    if (adec) avcodec_free_context(&adec);
+    av_frame_free(&frm);
+    av_packet_free(&pkt);
+    avcodec_free_context(&vdec);
+    avformat_close_input(&fmt);
+    return app_quit ? 1 : 0;
+}
+
+/* =========================================================================
+ * M1 Module 5: Talk1 Script Extractor & UI Transition Helper
+ * ========================================================================= */
+
+typedef struct {
+    char lines[32][256];
+    int count;
+} PalDialogueList;
+
+static void extract_talk1_dialogues(const char *game_dir, PalDialogueList *out_list) {
+    memset(out_list, 0, sizeof(*out_list));
+    char path[1200];
+    join_path(path, sizeof(path), game_dir, "talk1.dat");
+    size_t len = 0;
+    uint8_t *buf = read_entire_file(path, &len);
+    if (!buf) return;
+
+    const size_t n_slots = 701;
+    if (len < PAL_MZ_HEADER_SIZE + n_slots * 4 || buf[0] != 'M' || buf[1] != 'Z') {
+        free(buf);
+        return;
+    }
+    const uint8_t *p = buf + PAL_MZ_HEADER_SIZE;
+    size_t plen = len - PAL_MZ_HEADER_SIZE;
+    size_t data_start = n_slots * 4;
+
+    for (size_t i = 0; i < n_slots && out_list->count < 32; i++) {
+        uint32_t off = rd_u32(p + i * 4);
+        if (off == 0xFFFFFFFFu || off < data_start || off + 16 > plen) continue;
+        /* Scan inside script segment for opcode 0x0004 (dialogue box) followed by ASCII '%C' */
+        uint32_t end = (uint32_t)plen;
+        for (size_t j = 0; j < n_slots; j++) {
+            uint32_t o2 = rd_u32(p + j * 4);
+            if (o2 > off && o2 < end) end = o2;
+        }
+        for (size_t k = off; k + 18 < end && out_list->count < 32; k++) {
+            uint16_t w = rd_u16(p + k);
+            if ((w == 0x0004u || w == 0x0005u) && k + 14 < end && p[k + 14] == '%' && p[k + 15] == 'C') {
+                size_t q = k + 14;
+                while (q + 1 < end && !(p[q] == '%' && p[q + 1] == 'Q')) q++;
+                if (q + 1 < end && q > k + 16) {
+                    char utf8[256];
+                    cp950_to_utf8(p + k + 14, q - (k + 14), utf8, sizeof(utf8));
+                    if (strlen(utf8) > 8) {
+                        snprintf(out_list->lines[out_list->count++], 256, "%s", utf8);
+                    }
+                    k = q + 2;
+                }
+            }
+        }
+    }
+    free(buf);
+
+    if (out_list->count == 0) {
+        snprintf(out_list->lines[0], 256, "%%C6李逍遙：%%N%%C5新仙劍奇俠傳 SDL3 Metal 原生引擎已啟動。");
+        out_list->count = 1;
+    }
+}
+
+static int run_fade_transition(SDL_Window *window, SDL_Renderer *renderer, int fade_in, Uint32 duration_ms, PalBgmPlayer *bgm) {
+    Uint64 start = SDL_GetTicksNS();
+    for (;;) {
+        pal_bgm_update(bgm);
+        SDL_Event ev;
+        while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_EVENT_QUIT ||
+                (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && ev.window.windowID == SDL_GetWindowID(window))) {
+                return 1;
+            }
+        }
+        double el_ms = (double)(SDL_GetTicksNS() - start) / 1e6;
+        double t = duration_ms > 0 ? el_ms / (double)duration_ms : 1.0;
+        if (t >= 1.0) break;
+        Uint8 alpha = fade_in ? (Uint8)((1.0 - t) * 255.0) : (Uint8)(t * 255.0);
+        SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, alpha);
+        SDL_FRect full = {0.0f, 0.0f, 640.0f, 480.0f};
+        SDL_RenderFillRect(renderer, &full);
+        SDL_RenderPresent(renderer);
+        SDL_Delay(8);
+    }
+    return 0;
+}
+
+typedef struct {
+    PalActVM vm;
+    PalLoadedSprite sprite;
+    uint32_t loaded_fr_id;
+    float base_x;
+    float base_y;
+} PalActSpriteNode;
+
+static void free_act_sprite_node(PalActSpriteNode *n) {
+    free_loaded_sprite(&n->sprite);
+    memset(n, 0, sizeof(*n));
+}
+
+static void sync_act_sprite_texture(
+    const char *game_dir, SDL_Renderer *renderer, SDL_ScaleMode scale_mode, PalActSpriteNode *node
+) {
+    if (node->vm.fr_tsw_id <= 0 || (uint32_t)node->vm.fr_tsw_id == node->loaded_fr_id) return;
+    const char *arch = NULL;
+    uint32_t tid = 0;
+    if (resolve_tsw_from_fr(node->vm.fr_tsw_id, &arch, &tid) != 0) return;
+    PalLoadedSprite sp = {0};
+    if (vfs_load_tsw_by_id(game_dir, arch, tid, renderer, scale_mode, &sp) == 0) {
+        free_loaded_sprite(&node->sprite);
+        node->sprite = sp;
+        node->loaded_fr_id = (uint32_t)node->vm.fr_tsw_id;
+    }
+}
+
+static void draw_act_sprite_node(SDL_Renderer *renderer, const PalActSpriteNode *node, int override_frame) {
+    if (!node->vm.visible || node->sprite.nframes <= 0) return;
+    int fi = override_frame >= 0 ? override_frame : node->vm.frame_index;
+    if (fi < 0) fi = 0;
+    fi %= node->sprite.nframes;
+    SDL_Texture *tex = node->sprite.frames[fi];
+    if (!tex) return;
+    SDL_SetTextureBlendMode(tex, node->vm.blend_mode == 4 ? SDL_BLENDMODE_ADD : SDL_BLENDMODE_BLEND);
+    SDL_FRect dst = {
+        node->base_x + (float)node->vm.offset_x,
+        node->base_y + (float)node->vm.offset_y,
+        (float)node->sprite.w,
+        (float)node->sprite.h
+    };
+    SDL_RenderTexture(renderer, tex, NULL, &dst);
+}
+
+static void play_ui_sfx(const char *game_dir, uint32_t snd_id, SDL_AudioStream **sfx_stream, float vol, int muted) {
+    if (muted) return;
+    SDL_AudioSpec spec = {0};
+    uint8_t *pcm = NULL;
+    Uint32 len = 0;
+    uint32_t sid = 0;
+    if (vfs_load_snd_by_id(game_dir, snd_id, &spec, &pcm, &len, &sid) != 0) return;
+    if (*sfx_stream) SDL_DestroyAudioStream(*sfx_stream);
+    *sfx_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+    if (*sfx_stream) {
+        SDL_SetAudioStreamGain(*sfx_stream, vol);
+        SDL_ResumeAudioStreamDevice(*sfx_stream);
+        SDL_PutAudioStreamData(*sfx_stream, pcm, (int)len);
+    }
+    SDL_free(pcm);
+}
+
+static int count_existing_saves(const char *game_dir, char *out_summary, size_t cap) {
+    int found = 0;
+    char list[256] = {0};
+    size_t used = 0;
+    for (int i = 0; i < 20; i++) {
+        char rel[64], full[1200];
+        snprintf(rel, sizeof(rel), "Save/%d.sav", i);
+        if (resolve_rel_path_ci(game_dir, rel, full, sizeof(full)) == 0) {
+            found++;
+            if (used + 16 < sizeof(list)) {
+                used += (size_t)snprintf(list + used, sizeof(list) - used, "%sSave/%d.sav", found > 1 ? "  " : "", i);
+            }
+        }
+    }
+    if (found == 0) {
+        snprintf(out_summary, cap, "%%C6舊的回憶 (Save/0..19.sav)%%N%%C5目前尚未偵測到存檔紀錄。%%N%%C0按 Esc 或點擊畫面返回主選單。");
+    } else {
+        snprintf(out_summary, cap, "%%C6舊的回憶 — 偵測到 %d 筆存檔%%N%%C5%s%%N%%C0(存檔讀取將於 M7 完整接線，按 Esc 或點擊返回)", found, list);
+    }
+    return found;
+}
+
+/* =========================================================================
+ * SDL3 Metal Interactive Runtime & Self-Test (Boot -> Title -> Field/Talk)
+ * ========================================================================= */
+
+typedef enum {
+    PAL_SCENE_TITLE = 0,
+    PAL_SCENE_LOAD_OVERLAY = 1,
+    PAL_SCENE_FIELD = 2
+} PalSceneState;
 
 static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, char *out_err, int32_t err_cap) {
     if (!cfg || cfg->game_dir[0] == '\0') {
@@ -1463,7 +2741,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     if (is_self_test) wflags |= SDL_WINDOW_HIDDEN;
     else if (cfg->window_scale == 0) wflags |= SDL_WINDOW_FULLSCREEN;
 
-    SDL_Window *window = SDL_CreateWindow("NewPal — SDL3 Metal Engine", win_w, win_h, wflags);
+    SDL_Window *window = SDL_CreateWindow("NewPal — 新仙劍奇俠傳 (SDL3 Metal)", win_w, win_h, wflags);
     if (!window) {
         if (out_err) snprintf(out_err, (size_t)err_cap, "SDL_CreateWindow failed: %s", SDL_GetError());
         SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS);
@@ -1481,39 +2759,50 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     const char *active_backend = SDL_GetRendererName(renderer);
     SDL_SetRenderLogicalPresentation(renderer, 640, 480, SDL_LOGICAL_PRESENTATION_LETTERBOX);
     SDL_SetRenderVSync(renderer, cfg->vsync_enabled ? 1 : 0);
-
     SDL_ScaleMode scale_mode = cfg->nearest_filter ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR;
 
+    /* Load Core Field + Title Assets in-memory */
     int map_idx = cfg->initial_map_index;
     int sprite_idx = cfg->initial_char_slot;
-    int snd_idx = 0;
 
     PalLoadedMap map = {0};
-    PalLoadedSprite sprite = {0};
+    PalLoadedSprite hero_sprite = {0};
     if (vfs_load_lmf_map(cfg->game_dir, "huge.lmf", map_idx, renderer, scale_mode, &map) != 0 ||
-        vfs_load_tsw_slot(cfg->game_dir, "all_char.tsw", sprite_idx, renderer, scale_mode, &sprite) != 0) {
+        vfs_load_tsw_slot(cfg->game_dir, "all_char.tsw", sprite_idx, renderer, scale_mode, &hero_sprite) != 0) {
         if (out_err) snprintf(out_err, (size_t)err_cap, "Failed to decode initial MSF3 map or TSW sprite.");
         free_loaded_map(&map);
-        free_loaded_sprite(&sprite);
+        free_loaded_sprite(&hero_sprite);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS);
         return -1;
     }
 
-    SDL_AudioSpec wav_spec = {0};
-    uint8_t *wav_buf = NULL;
-    Uint32 wav_len = 0;
-    uint32_t wav_sid = 0;
-    int snd_ok = (vfs_load_snd_wav_bytes(cfg->game_dir, snd_idx, &wav_spec, &wav_buf, &wav_len, &wav_sid) == 0);
-    SDL_AudioStream *audio_stream = NULL;
-    if (snd_ok) {
-        audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &wav_spec, NULL, NULL);
-        if (audio_stream) {
-            SDL_SetAudioStreamGain(audio_stream, cfg->mute_audio ? 0.0f : cfg->master_volume);
-            SDL_ResumeAudioStreamDevice(audio_stream);
+    /* Title Screen .act VM Nodes (GeMainMenu 0x4831f2: all_sys.act id=10000 sub 0x5a..0x5d) */
+    PalActSpriteNode title_bg = {.base_x = 0.0f, .base_y = 0.0f};
+    PalActSpriteNode title_btns[3] = {
+        {.base_x = 270.0f, .base_y = 282.0f}, /* 0x10e, 0x11a: 新的故事 (9055) */
+        {.base_x = 270.0f, .base_y = 330.0f}, /* 0x10e, 0x14a: 舊的回憶 (9056) */
+        {.base_x = 270.0f, .base_y = 378.0f}  /* 0x10e, 0x17a: 離開遊戲 (9057) */
+    };
+    int act_bg_ok = (pal_act_vm_init(cfg->game_dir, "all_sys.act", 10000, 0x5a, &title_bg.vm) == 0);
+    int act_btn_ok = 1;
+    for (int i = 0; i < 3; i++) {
+        if (pal_act_vm_init(cfg->game_dir, "all_sys.act", 10000, 0x5b + i, &title_btns[i].vm) != 0) {
+            act_btn_ok = 0;
+        } else {
+            sync_act_sprite_texture(cfg->game_dir, renderer, scale_mode, &title_btns[i]);
         }
     }
+    sync_act_sprite_texture(cfg->game_dir, renderer, scale_mode, &title_bg);
+
+    /* Animated cursors & Dialogue box UI from all_sys.tsw */
+    PalLoadedSprite menu_cursor = {0};
+    PalLoadedSprite dlg_box = {0};
+    PalLoadedSprite dlg_cursor = {0};
+    vfs_load_tsw_by_id(cfg->game_dir, "all_sys.tsw", 36, renderer, scale_mode, &menu_cursor);
+    vfs_load_tsw_by_id(cfg->game_dir, "all_sys.tsw", 82, renderer, scale_mode, &dlg_box);
+    vfs_load_tsw_by_id(cfg->game_dir, "all_sys.tsw", 51, renderer, scale_mode, &dlg_cursor);
 
     if (is_self_test) {
         PalActInfo act_info;
@@ -1521,120 +2810,284 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         join_path(act_path, sizeof(act_path), cfg->game_dir, "all_char.act");
         int act_rc = vfs_inspect_act_slot(act_path, 0, &act_info);
 
-        for (int f = 0; f < 3; f++) {
-            SDL_SetRenderDrawColor(renderer, 16, 20, 28, 255);
-            SDL_RenderClear(renderer);
-            SDL_FRect dst = {0.0f, 0.0f, (float)map.w_px, (float)map.h_px};
-            SDL_RenderTexture(renderer, map.texture, NULL, &dst);
-            if (sprite.nframes > 0) {
-                SDL_FRect sdst = {300.0f, 200.0f, (float)sprite.w, (float)sprite.h};
-                SDL_RenderTexture(renderer, sprite.frames[f % sprite.nframes], NULL, &sdst);
-            }
-            SDL_RenderDebugTextFormat(renderer, 10.0f, 10.0f, "Renderer: %s | Map %u (%dx%d)", active_backend, map.map_id, map.w_px, map.h_px);
-            SDL_RenderPresent(renderer);
+        SDL_AudioSpec wav_spec = {0};
+        uint8_t *wav_buf = NULL;
+        Uint32 wav_len = 0;
+        uint32_t wav_sid = 0;
+        int snd_ok = (vfs_load_snd_wav_bytes(cfg->game_dir, 0, &wav_spec, &wav_buf, &wav_len, &wav_sid) == 0);
+        if (wav_buf) SDL_free(wav_buf);
+
+        PalBinkProbeInfo bik_notice = {0}, bik_begin = {0};
+        int bik_ok = (pal_bink_probe(cfg->game_dir, "Video/begin.bik", &bik_begin) == 0);
+        int notice_ok = (pal_bink_probe(cfg->game_dir, "Video/notice.bik", &bik_notice) == 0);
+
+        PalBgmProbeInfo bgm_m001 = {0}, bgm_f001 = {0};
+        int bgm_title_ok = (pal_bgm_probe(cfg->game_dir, "Music/M001.mp3", &bgm_m001) == 0);
+        int bgm_field_ok = (pal_bgm_probe(cfg->game_dir, "Music/F001.mp3", &bgm_f001) == 0);
+
+        const char *sample_rich = "%C6李逍遙：%N%C5這可不是普通客棧！%S0(M1 CoreText)";
+        PalRichTextMetrics rt_metrics = {0};
+        int font_ok = (pal_font_probe_rich_text(sample_rich, 18.0f, 520, &rt_metrics) == 0);
+        int txt_w = 0, txt_h = 0;
+        SDL_Texture *rt_tex = create_richtext_texture(renderer, sample_rich, 18.0f, 520, &txt_w, &txt_h);
+
+        /* Step button 0 VM through a full 15-frame cycle to confirm all 35-opcode transitions */
+        int stepped_frames = 0;
+        for (int tick = 0; tick < 60; tick++) {
+            int prev_fr = title_btns[0].vm.frame_index;
+            pal_act_vm_step_tick(&title_btns[0].vm);
+            if (title_btns[0].vm.frame_index != prev_fr) stepped_frames++;
         }
 
+        /* Render both Title composition & Field composition onto Metal swapchain */
+        for (int f = 0; f < 3; f++) {
+            SDL_SetRenderDrawColor(renderer, 8, 10, 14, 255);
+            SDL_RenderClear(renderer);
+            if (f == 0) {
+                draw_act_sprite_node(renderer, &title_bg, 0);
+                draw_act_sprite_node(renderer, &title_btns[0], 0);
+            } else {
+                SDL_FRect dst = {0.0f, 0.0f, (float)map.w_px, (float)map.h_px};
+                SDL_RenderTexture(renderer, map.texture, NULL, &dst);
+                if (dlg_box.nframes > 0) {
+                    SDL_FRect dbox = {0.0f, 336.0f, (float)dlg_box.w, (float)dlg_box.h};
+                    SDL_RenderTexture(renderer, dlg_box.frames[0], NULL, &dbox);
+                }
+                if (rt_tex) {
+                    SDL_FRect tdst = {44.0f, 356.0f, (float)txt_w, (float)txt_h};
+                    SDL_RenderTexture(renderer, rt_tex, NULL, &tdst);
+                }
+            }
+            SDL_RenderPresent(renderer);
+        }
+        if (rt_tex) SDL_DestroyTexture(rt_tex);
+
         int backend_ok = (active_backend && strcmp(active_backend, "metal") == 0);
-        printf("=== NewPal SDL3 Metal + BYOD VFS Self-Test ===\n");
+        int title_assets_ok = (act_bg_ok && act_btn_ok && title_bg.sprite.nframes > 0 &&
+                               title_btns[0].sprite.nframes == 15 && menu_cursor.nframes > 0 && dlg_box.nframes > 0);
+
+        printf("=== NewPal SDL3 Metal + BYOD VFS Self-Test (M0+M1) ===\n");
         printf("GameDir: %s\n", cfg->game_dir);
         printf("Validation: %d/%d (is_valid=%d)\n", report.valid_archives_count, report.total_required_archives, report.is_valid);
         printf("Renderer: %s (expected: metal)\n", active_backend ? active_backend : "null");
+        printf("Bink Video: Video/begin.bik rc=%d %dx%d fps=%.2f frames=%d codec=%s first_rgba=%d | notice.bik rc=%d\n",
+               bik_ok ? 0 : -1, bik_begin.width, bik_begin.height, bik_begin.fps, bik_begin.frame_count,
+               bik_begin.codec_name, bik_begin.first_frame_rgba_bytes, notice_ok ? 0 : -1);
+        printf("BGM Stream: Music/M001.mp3 rc=%d %dHz ch=%d pcm=%d dur=%.2fs codec=%s | F001.mp3 rc=%d\n",
+               bgm_title_ok ? 0 : -1, bgm_m001.sample_rate, bgm_m001.channels, bgm_m001.pcm_bytes,
+               bgm_m001.duration_sec, bgm_m001.codec_name, bgm_field_ok ? 0 : -1);
+        printf("ACT VM[10000]: bg_FR=%d (%dx%d) btn0_FR=%d btn1_FR=%d btn2_FR=%d stepped=%d | cursor=%u dlg_box=%u\n",
+               title_bg.vm.fr_tsw_id, title_bg.sprite.w, title_bg.sprite.h,
+               title_btns[0].vm.fr_tsw_id, title_btns[1].vm.fr_tsw_id, title_btns[2].vm.fr_tsw_id,
+               stepped_frames, menu_cursor.slot_id, dlg_box.slot_id);
+        printf("CoreText RichText: rc=%d tex=%dx%d lines=%d opaque_px=%d\n",
+               font_ok ? 0 : -1, rt_metrics.width, rt_metrics.height, rt_metrics.line_count, rt_metrics.non_transparent_pixels);
         printf("MSF3 Map[0]: id=%u size=%dx%d px (%dx%d tiles @ %dpx), huge.lmf=%d\n",
                map.map_id, map.w_px, map.h_px, map.w_tiles, map.h_tiles, map.tile_sz, map.total_maps);
         printf("TSW Sprite[0]: slot_id=%u frames=%d size=%dx%d\n",
-               sprite.slot_id, sprite.nframes, sprite.w, sprite.h);
-        printf("ACT Slot[0]: rc=%d sub_actions=%d insns=%d clean=%d linked_tsw=%d delay=%d\n",
-               act_rc, act_info.sub_actions, act_info.decoded_insns, act_info.clean_streams,
-               act_info.linked_tsw_id, act_info.frame_delay);
+               hero_sprite.slot_id, hero_sprite.nframes, hero_sprite.w, hero_sprite.h);
+        printf("ACT Slot[0]: rc=%d sub_actions=%d insns=%d clean=%d\n",
+               act_rc, act_info.sub_actions, act_info.decoded_insns, act_info.clean_streams);
         printf("SND Slot[0]: rc=%d slot_id=%u rate=%d ch=%d bytes=%u\n",
                snd_ok ? 0 : -1, wav_sid, wav_spec.freq, wav_spec.channels, wav_len);
-        printf("DB Counts: heroes=%d monsters=%d item_recs=%d magic_recs=%d map_titles=%d namex=%d\n",
-               report.hero_count, report.monster_count, report.item_count, report.magic_count,
-               report.map_title_count, report.namex_count);
         if (report.hero_summary_count > 0) {
-            printf("Hero[0]: id=%d name=%s HP=%d/%d MP=%d/%d ATK=%d MAG=%d DEF=%d SPD=%d LUCK=%d\n",
+            printf("Hero[0]: id=%d name=%s HP=%d/%d MP=%d/%d\n",
                    report.heroes[0].id, report.heroes[0].name,
                    report.heroes[0].cur_hp, report.heroes[0].max_hp,
-                   report.heroes[0].cur_mp, report.heroes[0].max_mp,
-                   report.heroes[0].atk, report.heroes[0].mag, report.heroes[0].def,
-                   report.heroes[0].spd, report.heroes[0].luck);
+                   report.heroes[0].cur_mp, report.heroes[0].max_mp);
         }
-        printf("First Map Title: %s\n", report.sample_map_title);
 
-        if (wav_buf) SDL_free(wav_buf);
-        if (audio_stream) SDL_DestroyAudioStream(audio_stream);
+        free_act_sprite_node(&title_bg);
+        for (int i = 0; i < 3; i++) free_act_sprite_node(&title_btns[i]);
+        free_loaded_sprite(&menu_cursor);
+        free_loaded_sprite(&dlg_box);
+        free_loaded_sprite(&dlg_cursor);
         free_loaded_map(&map);
-        free_loaded_sprite(&sprite);
+        free_loaded_sprite(&hero_sprite);
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
         SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS);
 
-        return (backend_ok && report.is_valid && act_rc == 0 && snd_ok) ? 0 : -1;
+        int all_ok = backend_ok && report.is_valid && act_rc == 0 && snd_ok &&
+                     bik_ok && bgm_title_ok && title_assets_ok && font_ok && rt_tex != NULL;
+        return all_ok ? 0 : -1;
     }
 
-    /* Interactive SDL3 Metal Runtime Loop */
+    /* =====================================================================
+     * Interactive Boot Flow: notice.bik -> begin.bik -> Title Screen
+     * ===================================================================== */
+    PalBgmPlayer bgm = {0};
+    SDL_AudioStream *sfx_stream = NULL;
+    int app_quit = 0;
+
+    if (pal_bink_play_file(window, renderer, cfg->game_dir, "Video/notice.bik", cfg->master_volume, cfg->mute_audio) == 1) {
+        app_quit = 1;
+    }
+    if (!app_quit &&
+        pal_bink_play_file(window, renderer, cfg->game_dir, "Video/begin.bik", cfg->master_volume, cfg->mute_audio) == 1) {
+        app_quit = 1;
+    }
+
+    PalDialogueList dialogues;
+    extract_talk1_dialogues(cfg->game_dir, &dialogues);
+
+    int ver_w = 0, ver_h = 0, save_w = 0, save_h = 0, cur_dlg_w = 0, cur_dlg_h = 0;
+    SDL_Texture *ver_tex = create_richtext_texture(renderer, "%C3VER 100C  %C0SDL3 Metal", 13.0f, 300, &ver_w, &ver_h);
+
+    char save_msg[256] = {0};
+    count_existing_saves(cfg->game_dir, save_msg, sizeof(save_msg));
+    SDL_Texture *save_tex = create_richtext_texture(renderer, save_msg, 17.0f, 460, &save_w, &save_h);
+
+    int dlg_idx = 0;
+    int show_dialogue = 1;
+    SDL_Texture *dlg_text_tex = create_richtext_texture(renderer, dialogues.lines[0], 18.0f, 520, &cur_dlg_w, &cur_dlg_h);
+
+    PalSceneState scene = PAL_SCENE_TITLE;
+    int selected_btn = 0;
+    int show_hud = 1;
     float player_x = (float)map.w_px * 0.5f;
     float player_y = (float)map.h_px * 0.5f;
-    int show_hud = 1;
-    int running = 1;
-    Uint64 last_ns = SDL_GetTicksNS();
-    float anim_acc = 0.0f;
-    int frame_idx = 0;
+    int walk_frame = 0;
+    float walk_acc = 0.0f;
+    float mouse_lx = 320.0f, mouse_ly = 298.0f;
 
-    while (running) {
+    if (!app_quit) {
+        pal_bgm_play_track(&bgm, cfg->game_dir, "Music/M001.mp3", cfg->master_volume, cfg->mute_audio);
+        SDL_HideCursor();
+    }
+
+    Uint64 last_ns = SDL_GetTicksNS();
+    double tick35_acc = 0.0;
+    int cursor_anim = 0;
+
+    while (!app_quit) {
+        pal_bgm_update(&bgm);
+
+        float win_mx = 0.0f, win_my = 0.0f;
+        SDL_GetMouseState(&win_mx, &win_my);
+        SDL_RenderCoordinatesFromWindow(renderer, win_mx, win_my, &mouse_lx, &mouse_ly);
+
+        if (scene == PAL_SCENE_TITLE) {
+            for (int i = 0; i < 3; i++) {
+                float bw = title_btns[i].sprite.w > 0 ? (float)title_btns[i].sprite.w : 104.0f;
+                float bh = title_btns[i].sprite.h > 0 ? (float)title_btns[i].sprite.h : 34.0f;
+                if (mouse_lx >= title_btns[i].base_x - 8.0f && mouse_lx <= title_btns[i].base_x + bw + 8.0f &&
+                    mouse_ly >= title_btns[i].base_y - 4.0f && mouse_ly <= title_btns[i].base_y + bh + 4.0f) {
+                    if (selected_btn != i) {
+                        selected_btn = i;
+                        play_ui_sfx(cfg->game_dir, 1, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+                    }
+                    break;
+                }
+            }
+        }
+
+        int activate_btn = -1;
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             if (ev.type == SDL_EVENT_QUIT ||
                 (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && ev.window.windowID == SDL_GetWindowID(window))) {
-                running = 0;
-            } else if (ev.type == SDL_EVENT_KEY_DOWN) {
+                app_quit = 1;
+                break;
+            }
+            if (ev.type == SDL_EVENT_KEY_DOWN) {
                 SDL_Keycode key = ev.key.key;
-                if (key == SDLK_ESCAPE) {
-                    running = 0;
-                } else if (key == SDLK_TAB) {
-                    show_hud = !show_hud;
-                } else if (key == SDLK_RIGHTBRACKET || key == SDLK_LEFTBRACKET) {
-                    int delta = (key == SDLK_RIGHTBRACKET) ? 1 : -1;
-                    map_idx = (map_idx + delta + map.total_maps) % map.total_maps;
-                    PalLoadedMap next_map = {0};
-                    if (vfs_load_lmf_map(cfg->game_dir, "huge.lmf", map_idx, renderer, scale_mode, &next_map) == 0) {
-                        free_loaded_map(&map);
-                        map = next_map;
-                        player_x = (float)map.w_px * 0.5f;
-                        player_y = (float)map.h_px * 0.5f;
+                if (scene == PAL_SCENE_TITLE) {
+                    if (key == SDLK_UP || key == SDLK_W) {
+                        selected_btn = (selected_btn + 2) % 3;
+                        play_ui_sfx(cfg->game_dir, 1, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+                    } else if (key == SDLK_DOWN || key == SDLK_S) {
+                        selected_btn = (selected_btn + 1) % 3;
+                        play_ui_sfx(cfg->game_dir, 1, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+                    } else if (key == SDLK_RETURN || key == SDLK_SPACE) {
+                        activate_btn = selected_btn;
+                    } else if (key == SDLK_ESCAPE) {
+                        app_quit = 1;
                     }
-                } else if (key == SDLK_N || key == SDLK_P) {
-                    int delta = (key == SDLK_N) ? 1 : -1;
-                    sprite_idx = (sprite_idx + delta + sprite.total_slots) % sprite.total_slots;
-                    PalLoadedSprite next_sp = {0};
-                    if (vfs_load_tsw_slot(cfg->game_dir, "all_char.tsw", sprite_idx, renderer, scale_mode, &next_sp) == 0) {
-                        free_loaded_sprite(&sprite);
-                        sprite = next_sp;
-                        frame_idx = 0;
+                } else if (scene == PAL_SCENE_LOAD_OVERLAY) {
+                    if (key == SDLK_ESCAPE || key == SDLK_RETURN || key == SDLK_SPACE) {
+                        scene = PAL_SCENE_TITLE;
                     }
-                } else if (key == SDLK_SPACE) {
-                    if (wav_buf && audio_stream && !cfg->mute_audio) {
-                        SDL_PutAudioStreamData(audio_stream, wav_buf, (int)wav_len);
-                    }
-                    snd_idx = (snd_idx + 1) % (report.snd_slots > 0 ? report.snd_slots : 1);
-                    uint8_t *nbuf = NULL;
-                    Uint32 nlen = 0;
-                    uint32_t nsid = 0;
-                    SDL_AudioSpec nspec = {0};
-                    if (vfs_load_snd_wav_bytes(cfg->game_dir, snd_idx, &nspec, &nbuf, &nlen, &nsid) == 0) {
-                        if (wav_buf) SDL_free(wav_buf);
-                        wav_buf = nbuf;
-                        wav_len = nlen;
-                        wav_sid = nsid;
-                        if (audio_stream) SDL_DestroyAudioStream(audio_stream);
-                        audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &nspec, NULL, NULL);
-                        if (audio_stream) {
-                            SDL_SetAudioStreamGain(audio_stream, cfg->mute_audio ? 0.0f : cfg->master_volume);
-                            SDL_ResumeAudioStreamDevice(audio_stream);
+                } else if (scene == PAL_SCENE_FIELD) {
+                    if (key == SDLK_ESCAPE) {
+                        if (run_fade_transition(window, renderer, 0, 200, &bgm) == 1) { app_quit = 1; break; }
+                        scene = PAL_SCENE_TITLE;
+                        pal_bgm_play_track(&bgm, cfg->game_dir, "Music/M001.mp3", cfg->master_volume, cfg->mute_audio);
+                    } else if (key == SDLK_TAB) {
+                        show_hud = !show_hud;
+                    } else if (key == SDLK_T) {
+                        show_dialogue = !show_dialogue;
+                    } else if (key == SDLK_B) {
+                        SDL_PauseAudioStreamDevice(bgm.stream);
+                        if (pal_bink_play_file(window, renderer, cfg->game_dir, "Video/begin.bik", cfg->master_volume, cfg->mute_audio) == 1) {
+                            app_quit = 1;
+                        }
+                        if (bgm.stream) SDL_ResumeAudioStreamDevice(bgm.stream);
+                    } else if (key == SDLK_SPACE || key == SDLK_RETURN) {
+                        if (show_dialogue && dialogues.count > 0) {
+                            dlg_idx = (dlg_idx + 1) % dialogues.count;
+                            if (dlg_text_tex) SDL_DestroyTexture(dlg_text_tex);
+                            dlg_text_tex = create_richtext_texture(renderer, dialogues.lines[dlg_idx], 18.0f, 520, &cur_dlg_w, &cur_dlg_h);
+                            play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+                        }
+                    } else if (key == SDLK_RIGHTBRACKET || key == SDLK_LEFTBRACKET) {
+                        int delta = (key == SDLK_RIGHTBRACKET) ? 1 : -1;
+                        map_idx = (map_idx + delta + map.total_maps) % map.total_maps;
+                        PalLoadedMap next_map = {0};
+                        if (vfs_load_lmf_map(cfg->game_dir, "huge.lmf", map_idx, renderer, scale_mode, &next_map) == 0) {
+                            free_loaded_map(&map);
+                            map = next_map;
+                            player_x = (float)map.w_px * 0.5f;
+                            player_y = (float)map.h_px * 0.5f;
+                        }
+                    } else if (key == SDLK_N || key == SDLK_P) {
+                        int delta = (key == SDLK_N) ? 1 : -1;
+                        sprite_idx = (sprite_idx + delta + hero_sprite.total_slots) % hero_sprite.total_slots;
+                        PalLoadedSprite next_sp = {0};
+                        if (vfs_load_tsw_slot(cfg->game_dir, "all_char.tsw", sprite_idx, renderer, scale_mode, &next_sp) == 0) {
+                            free_loaded_sprite(&hero_sprite);
+                            hero_sprite = next_sp;
+                            walk_frame = 0;
                         }
                     }
                 }
+            } else if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && ev.button.button == SDL_BUTTON_LEFT) {
+                if (scene == PAL_SCENE_TITLE) {
+                    for (int i = 0; i < 3; i++) {
+                        float bw = title_btns[i].sprite.w > 0 ? (float)title_btns[i].sprite.w : 104.0f;
+                        float bh = title_btns[i].sprite.h > 0 ? (float)title_btns[i].sprite.h : 34.0f;
+                        if (mouse_lx >= title_btns[i].base_x - 8.0f && mouse_lx <= title_btns[i].base_x + bw + 8.0f &&
+                            mouse_ly >= title_btns[i].base_y - 4.0f && mouse_ly <= title_btns[i].base_y + bh + 4.0f) {
+                            activate_btn = i;
+                            break;
+                        }
+                    }
+                } else if (scene == PAL_SCENE_LOAD_OVERLAY) {
+                    scene = PAL_SCENE_TITLE;
+                } else if (scene == PAL_SCENE_FIELD && show_dialogue && dialogues.count > 0) {
+                    dlg_idx = (dlg_idx + 1) % dialogues.count;
+                    if (dlg_text_tex) SDL_DestroyTexture(dlg_text_tex);
+                    dlg_text_tex = create_richtext_texture(renderer, dialogues.lines[dlg_idx], 18.0f, 520, &cur_dlg_w, &cur_dlg_h);
+                    play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+                }
             }
+        }
+
+        if (app_quit) break;
+
+        if (activate_btn == 0) {
+            play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+            if (run_fade_transition(window, renderer, 0, 220, &bgm) == 1) break;
+            scene = PAL_SCENE_FIELD;
+            pal_bgm_play_track(&bgm, cfg->game_dir, "Music/F001.mp3", cfg->master_volume, cfg->mute_audio);
+        } else if (activate_btn == 1) {
+            play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+            scene = PAL_SCENE_LOAD_OVERLAY;
+        } else if (activate_btn == 2) {
+            play_ui_sfx(cfg->game_dir, 2, &sfx_stream, cfg->master_volume, cfg->mute_audio);
+            SDL_Delay(120);
+            app_quit = 1;
+            break;
         }
 
         Uint64 now_ns = SDL_GetTicksNS();
@@ -1642,101 +3095,163 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         if (dt > 0.1f) dt = 0.1f;
         last_ns = now_ns;
 
-        const bool *keys = SDL_GetKeyboardState(NULL);
-        float vx = 0.0f, vy = 0.0f;
-        if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT])  vx -= 1.0f;
-        if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT]) vx += 1.0f;
-        if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP])    vy -= 1.0f;
-        if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN])  vy += 1.0f;
-
-        if (vx != 0.0f || vy != 0.0f) {
-            float speed = 180.0f;
-            player_x += vx * speed * dt;
-            player_y += vy * speed * dt;
-            if (player_x < 0.0f) player_x = 0.0f;
-            if (player_y < 0.0f) player_y = 0.0f;
-            if (player_x > (float)map.w_px) player_x = (float)map.w_px;
-            if (player_y > (float)map.h_px) player_y = (float)map.h_px;
-            anim_acc += dt;
-            if (anim_acc >= 0.12f && sprite.nframes > 0) {
-                anim_acc = 0.0f;
-                frame_idx = (frame_idx + 1) % sprite.nframes;
+        /* 35ms engine tick cadence for .act bytecode VMs & cursors */
+        tick35_acc += (double)dt;
+        while (tick35_acc >= 0.035) {
+            tick35_acc -= 0.035;
+            cursor_anim++;
+            if (scene == PAL_SCENE_TITLE) {
+                for (int i = 0; i < 3; i++) {
+                    if (i == selected_btn) {
+                        pal_act_vm_step_tick(&title_btns[i].vm);
+                        if (title_btns[i].vm.finished) {
+                            title_btns[i].vm.pc = 0;
+                            title_btns[i].vm.finished = 0;
+                            title_btns[i].vm.delay_rem = 0;
+                            pal_act_vm_step_tick(&title_btns[i].vm);
+                        }
+                    } else {
+                        title_btns[i].vm.frame_index = 0;
+                    }
+                }
             }
         }
 
-        float cam_x = player_x - 320.0f;
-        float cam_y = player_y - 240.0f;
-        if (map.w_px > 640) {
-            if (cam_x < 0.0f) cam_x = 0.0f;
-            if (cam_x > (float)(map.w_px - 640)) cam_x = (float)(map.w_px - 640);
-        } else {
-            cam_x = -0.5f * (float)(640 - map.w_px);
-        }
-        if (map.h_px > 480) {
-            if (cam_y < 0.0f) cam_y = 0.0f;
-            if (cam_y > (float)(map.h_px - 480)) cam_y = (float)(map.h_px - 480);
-        } else {
-            cam_y = -0.5f * (float)(480 - map.h_px);
-        }
-
-        SDL_SetRenderDrawColor(renderer, 12, 14, 20, 255);
+        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
         SDL_RenderClear(renderer);
 
-        SDL_FRect map_dst = {-cam_x, -cam_y, (float)map.w_px, (float)map.h_px};
-        SDL_RenderTexture(renderer, map.texture, NULL, &map_dst);
+        if (scene == PAL_SCENE_TITLE || scene == PAL_SCENE_LOAD_OVERLAY) {
+            draw_act_sprite_node(renderer, &title_bg, 0);
+            /* Focused button shimmers via additive .act animation; others stay subtle or unhighlighted */
+            draw_act_sprite_node(renderer, &title_btns[selected_btn], -1);
 
-        if (sprite.nframes > 0) {
-            SDL_Texture *fr = sprite.frames[frame_idx % sprite.nframes];
-            SDL_FRect sp_dst = {
-                player_x - cam_x - (float)sprite.w * 0.5f,
-                player_y - cam_y - (float)sprite.h,
-                (float)sprite.w,
-                (float)sprite.h
-            };
-            SDL_RenderTexture(renderer, fr, NULL, &sp_dst);
-        }
+            if (ver_tex) {
+                SDL_FRect vdst = {475.0f, 444.0f, (float)ver_w, (float)ver_h};
+                SDL_RenderTexture(renderer, ver_tex, NULL, &vdst);
+            }
 
-        if (show_hud) {
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 170);
-            SDL_FRect hud = {8.0f, 8.0f, 624.0f, 68.0f};
-            SDL_RenderFillRect(renderer, &hud);
-            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-            SDL_RenderDebugTextFormat(
-                renderer, 16.0f, 16.0f,
-                "SDL3 Renderer: %s | VSync: %d | Filter: %s",
-                active_backend ? active_backend : "unknown",
-                cfg->vsync_enabled,
-                cfg->nearest_filter ? "NEAREST" : "LINEAR"
-            );
-            SDL_RenderDebugTextFormat(
-                renderer, 16.0f, 30.0f,
-                "Map %d/%d (ID %u, %dx%d) | Pos: (%.0f, %.0f) | Sprite Slot %u (%d fr)",
-                map_idx + 1, map.total_maps, map.map_id, map.w_px, map.h_px,
-                player_x, player_y, sprite.slot_id, sprite.nframes
-            );
-            if (report.hero_summary_count > 0) {
-                const PalHeroSummary *h = &report.heroes[0];
+            if (scene == PAL_SCENE_LOAD_OVERLAY) {
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(renderer, 12, 16, 28, 215);
+                SDL_FRect ov = {64.0f, 120.0f, 512.0f, 220.0f};
+                SDL_RenderFillRect(renderer, &ov);
+                SDL_SetRenderDrawColor(renderer, 212, 178, 112, 230);
+                SDL_RenderRect(renderer, &ov);
+                if (save_tex) {
+                    SDL_FRect sdst = {92.0f, 152.0f, (float)save_w, (float)save_h};
+                    SDL_RenderTexture(renderer, save_tex, NULL, &sdst);
+                }
+            }
+
+            if (menu_cursor.nframes > 0) {
+                SDL_Texture *ctex = menu_cursor.frames[0];
+                SDL_FRect cdst = {mouse_lx, mouse_ly, (float)menu_cursor.w, (float)menu_cursor.h};
+                SDL_RenderTexture(renderer, ctex, NULL, &cdst);
+            }
+        } else {
+            const bool *keys = SDL_GetKeyboardState(NULL);
+            float vx = 0.0f, vy = 0.0f;
+            if (keys[SDL_SCANCODE_A] || keys[SDL_SCANCODE_LEFT])  vx -= 1.0f;
+            if (keys[SDL_SCANCODE_D] || keys[SDL_SCANCODE_RIGHT]) vx += 1.0f;
+            if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP])    vy -= 1.0f;
+            if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN])  vy += 1.0f;
+
+            if (vx != 0.0f || vy != 0.0f) {
+                player_x += vx * 180.0f * dt;
+                player_y += vy * 180.0f * dt;
+                if (player_x < 0.0f) player_x = 0.0f;
+                if (player_y < 0.0f) player_y = 0.0f;
+                if (player_x > (float)map.w_px) player_x = (float)map.w_px;
+                if (player_y > (float)map.h_px) player_y = (float)map.h_px;
+                walk_acc += dt;
+                if (walk_acc >= 0.12f && hero_sprite.nframes > 0) {
+                    walk_acc = 0.0f;
+                    walk_frame = (walk_frame + 1) % hero_sprite.nframes;
+                }
+            }
+
+            float cam_x = player_x - 320.0f;
+            float cam_y = player_y - 240.0f;
+            if (map.w_px > 640) {
+                if (cam_x < 0.0f) cam_x = 0.0f;
+                if (cam_x > (float)(map.w_px - 640)) cam_x = (float)(map.w_px - 640);
+            } else cam_x = -0.5f * (float)(640 - map.w_px);
+            if (map.h_px > 480) {
+                if (cam_y < 0.0f) cam_y = 0.0f;
+                if (cam_y > (float)(map.h_px - 480)) cam_y = (float)(map.h_px - 480);
+            } else cam_y = -0.5f * (float)(480 - map.h_px);
+
+            SDL_FRect map_dst = {-cam_x, -cam_y, (float)map.w_px, (float)map.h_px};
+            SDL_RenderTexture(renderer, map.texture, NULL, &map_dst);
+
+            if (hero_sprite.nframes > 0) {
+                SDL_Texture *fr = hero_sprite.frames[walk_frame % hero_sprite.nframes];
+                SDL_FRect sp_dst = {
+                    player_x - cam_x - (float)hero_sprite.w * 0.5f,
+                    player_y - cam_y - (float)hero_sprite.h,
+                    (float)hero_sprite.w,
+                    (float)hero_sprite.h
+                };
+                SDL_RenderTexture(renderer, fr, NULL, &sp_dst);
+            }
+
+            if (show_dialogue) {
+                if (dlg_box.nframes > 0) {
+                    SDL_FRect bd = {0.0f, 336.0f, (float)dlg_box.w, (float)dlg_box.h};
+                    SDL_RenderTexture(renderer, dlg_box.frames[0], NULL, &bd);
+                } else {
+                    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                    SDL_SetRenderDrawColor(renderer, 16, 18, 36, 210);
+                    SDL_FRect bd = {0.0f, 336.0f, 640.0f, 144.0f};
+                    SDL_RenderFillRect(renderer, &bd);
+                }
+                if (dlg_text_tex) {
+                    SDL_FRect td = {44.0f, 356.0f, (float)cur_dlg_w, (float)cur_dlg_h};
+                    SDL_RenderTexture(renderer, dlg_text_tex, NULL, &td);
+                }
+                if (dlg_cursor.nframes > 0) {
+                    SDL_Texture *dc = dlg_cursor.frames[(cursor_anim / 2) % dlg_cursor.nframes];
+                    SDL_FRect cd = {596.0f, 444.0f, (float)dlg_cursor.w, (float)dlg_cursor.h};
+                    SDL_RenderTexture(renderer, dc, NULL, &cd);
+                }
+            }
+
+            if (show_hud) {
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 165);
+                SDL_FRect hud = {8.0f, 8.0f, 624.0f, 46.0f};
+                SDL_RenderFillRect(renderer, &hud);
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
                 SDL_RenderDebugTextFormat(
-                    renderer, 16.0f, 44.0f,
-                    "Hero[%d] HP:%d/%d MP:%d/%d ATK:%d MAG:%d DEF:%d SPD:%d | SND:%u",
-                    h->id, h->cur_hp, h->max_hp, h->cur_mp, h->max_mp,
-                    h->atk, h->mag, h->def, h->spd, wav_sid
+                    renderer, 16.0f, 16.0f,
+                    "SDL3 %s | Map %d/%d (ID %u) | Sprite %u | Talk %d/%d",
+                    active_backend ? active_backend : "metal",
+                    map_idx + 1, map.total_maps, map.map_id, hero_sprite.slot_id,
+                    dlg_idx + 1, dialogues.count
+                );
+                SDL_RenderDebugText(
+                    renderer, 16.0f, 32.0f,
+                    "[WASD] Move  [[/]] Map  [N/P] Char  [Space/Click] Next Talk  [T] Box  [B] Intro  [Esc] Title"
                 );
             }
-            SDL_RenderDebugText(
-                renderer, 16.0f, 58.0f,
-                "[WASD/Arrows] Move  [ / ] Map  N/P Sprite  [Space] SFX  [Tab] HUD  [Esc] Exit"
-            );
         }
 
         SDL_RenderPresent(renderer);
     }
 
-    if (wav_buf) SDL_free(wav_buf);
-    if (audio_stream) SDL_DestroyAudioStream(audio_stream);
+    SDL_ShowCursor();
+    pal_bgm_stop(&bgm);
+    if (sfx_stream) SDL_DestroyAudioStream(sfx_stream);
+    if (ver_tex) SDL_DestroyTexture(ver_tex);
+    if (save_tex) SDL_DestroyTexture(save_tex);
+    if (dlg_text_tex) SDL_DestroyTexture(dlg_text_tex);
+    free_act_sprite_node(&title_bg);
+    for (int i = 0; i < 3; i++) free_act_sprite_node(&title_btns[i]);
+    free_loaded_sprite(&menu_cursor);
+    free_loaded_sprite(&dlg_box);
+    free_loaded_sprite(&dlg_cursor);
     free_loaded_map(&map);
-    free_loaded_sprite(&sprite);
+    free_loaded_sprite(&hero_sprite);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_QuitSubSystem(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS);

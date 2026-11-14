@@ -26,20 +26,34 @@ targets:
         PRODUCT_NAME: NewPal
         PRODUCT_BUNDLE_IDENTIFIER: com.steveshi.newpal
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "1"
+        CURRENT_PROJECT_VERSION: "2"
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Engine/NewPal-Bridging-Header.h
         HEADER_SEARCH_PATHS:
           - "$(inherited)"
           - "/opt/homebrew/opt/sdl3/include"
+          - "/opt/homebrew/opt/ffmpeg/include"
           - "$(SRCROOT)/Sources/Engine"
         LIBRARY_SEARCH_PATHS:
           - "$(inherited)"
           - "/opt/homebrew/opt/sdl3/lib"
+          - "/opt/homebrew/opt/ffmpeg/lib"
         OTHER_LDFLAGS:
           - "$(inherited)"
           - "-lSDL3"
           - "-liconv"
+          - "-lavformat"
+          - "-lavcodec"
+          - "-lswscale"
+          - "-lswresample"
+          - "-lavutil"
           - "-Wl,-rpath,/opt/homebrew/opt/sdl3/lib"
+          - "-Wl,-rpath,/opt/homebrew/opt/ffmpeg/lib"
+          - "-framework"
+          - "CoreText"
+          - "-framework"
+          - "CoreGraphics"
+          - "-framework"
+          - "CoreFoundation"
         OTHER_CFLAGS:
           - "-Wall"
           - "-Wextra"
