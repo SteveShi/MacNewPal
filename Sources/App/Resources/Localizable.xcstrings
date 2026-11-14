@@ -225,44 +225,44 @@
     },
     "whatsnew.version": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Version 1.0.0 — Clean-Room BYOD & SDL3 Metal Prototype" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "1.0.0 版 — 洁净室 BYOD 架构与 SDL3 Metal 原型" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Version 1.0.0 — M8 Metal Shaders, Audio & Gamepad" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "1.0.0 版 — M8 Metal 着色器、音频过渡与手柄全支持" } }
       }
     },
     "whatsnew.feature1.title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Copyright-Safe BYOD Validator" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "版权合规的自备正版数据校验" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Metal xBRZ / CRT-Royale & Retina UI" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Metal xBRZ / CRT-Royale 滤镜与视网膜级字体" } }
       }
     },
     "whatsnew.feature1.desc": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Verifies all 23 binary signatures (0xABCD sprites, MSF3 maps, 35-opcode action tables, 0x7F databases, Talk scripts) before launch without bundling proprietary assets." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启动前自动核验全部 23 项原版封包与数据库签名，不在应用内打包任何受版权保护素材。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Hardware Metal MSL post-processing shaders upscale the classic pixel canvas while CoreText dialogue, menus, and HUD stay crisp at native Retina resolution." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "采用原生 Metal MSL 片段着色器增强游戏画面，同时将对话、菜单与战斗界面在独立高清通道按视网膜分辨率锐利合成。" } }
       }
     },
     "whatsnew.feature2.title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Zero-Extraction In-Memory VFS" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "零落地内存虚拟文件系统 (VFS)" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Smooth BGM Fades & SDL3 Gamepad" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "平滑 BGM 淡入淡出与完整手柄操控" } }
       }
     },
     "whatsnew.feature2.desc": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Decompresses LZO1X + ARLE frames, MSF3 tile atlases, PCM/RIFF SFX, and CP950 scripts straight from the original archives on demand." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "直接按需从原版归档流式解压 LZO1X/ARLE 精灵、MSF3 地图图块、WAV 音效与 CP950 中文数据，无需在硬盘生成解包文件。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Seamless music crossfades across maps and battles plus hotplug SDL3 Gamepad support (D-Pad/left stick movement, confirm, cancel, camp & combat)." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "切图与战斗衔接自动启用平滑音频淡变与胜利压低；支持 SDL3 手柄热插拔、摇杆/十字键 8 向移动及全菜单战斗操控。" } }
       }
     },
     "whatsnew.feature3.title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Native SDL3 Metal Pipeline" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原生 SDL3 Metal 渲染与音频管线" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Clean-Room BYOD & Full Story Engine" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "洁净室 BYOD 架构与完整剧情战斗内核" } }
       }
     },
     "whatsnew.feature3.desc": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Targets Apple Metal via SDL3 3.4 with 640×480 logical presentation, configurable VSync/pixel filtering, and SDL_AudioStream playback." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "基于 SDL3 3.4 强制绑定 Apple Metal 硬件后端，支持 640×480 逻辑分辨率缩放、VSync、像素过滤与实时音频流。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "Verifies all 23 original archive signatures in memory and drives the full MSF3 world, 7,394 Talk scripts, turn-based combat, shops, and 10-slot saves." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "全内存流式核验 23 项原版档案签名，完整驱动 MSF3 大世界、7,394 条剧情脚本、回合制战斗、商店与 10 槽存档。" } }
       }
     },
     "whatsnew.done": {
@@ -289,10 +289,34 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "高清重制 (2× 锐化超分)" } }
       }
     },
+    "settings.gpu_shader": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Metal GPU Shader" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Metal GPU 滤镜" } }
+      }
+    },
+    "settings.shader_none": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Classic" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原版直出" } }
+      }
+    },
+    "settings.shader_xbrz": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Metal xBRZ" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Metal xBRZ 锐化" } }
+      }
+    },
+    "settings.shader_crt": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "CRT-Royale" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "CRT-Royale 显像管" } }
+      }
+    },
     "settings.hd_filter_note": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "HD Remastered uses 2× edge-preserving upscaling and linear smoothing automatically." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "高清重制模式下自动启用 2× 保边超分与平滑采样。" } }
+        "en": { "stringUnit": { "state": "translated", "value": "HD Remastered or active Metal GPU shaders override legacy nearest/bilinear scaling while keeping CoreText UI crisp." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启用高清重制或 Metal GPU 滤镜时会自动接管像素缩放，同时保持 CoreText 界面字体视网膜级锐利。" } }
       }
     },
     "test_mode.section_title": {

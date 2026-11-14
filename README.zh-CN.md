@@ -20,6 +20,7 @@
 | **M5** | `gmon.dat`/`gmap.dat`/`GFight1..4.dat` 回合制战斗、商店买卖 UI（`58000+`）与 10 槽位存档/读档（`Save/0..9.sav`） | ✅ 已完成 |
 | **M6** | 全量战斗还原：160 位异常状态掩码（毒伤 DOT 与 `3063`/`3074` 免疫转化、封魔/混乱/昏睡）、四人合体技、同伴倒下怒气加成、原版 `GFight` 公式与 AI、怪物死亡演出及可选 2x 高清模式 | ✅ 已完成 |
 | **M7** | 结局后日谈与 `Talk.cpp` 虚拟机闭环（`0x60`/`0xC2`/`0xC4`/`0xC8` 双遍分支直达 `talk 1439 -> Video/notice.bik` 与拔剑切换）及只读 BYOD 目录 `Application Support` 存档回退 | ✅ 已完成 |
+| **M8** | 重制级音画与操作升级：SDL3 Metal GPU 后处理着色器（`xBRZ` 与 `CRT-Royale` MSL）、视网膜级 CoreText UI 分层叠加、BGM 平滑淡入淡出与压低及完整 SDL3 手柄支持（`PalGamepad`） | ✅ 已完成 |
 
 ---
 
@@ -29,14 +30,15 @@
    - 基于 **Swift 6.0**（开启 `SWIFT_STRICT_CONCURRENCY: complete`）与 **SwiftUI** 构建，面向 macOS 14.0+（`arm64`）。
    - 完整提供英文与简体中文双语本地化资源目录（`Sources/App/Resources/Localizable.xcstrings`）。
    - 通过 `NSOpenPanel` 与安全作用域书签挂载原版游戏目录，启动前严格校验全部 **23 项**核心档案与数据库二进制签名（`PalLauncherStore.swift`）。
-   - 全功能设置面板（`SettingsView.swift`）：窗口倍率（`640×480`、`1280×960`、全屏等比）、Metal VSync 开关、纹理缩放模式（最近邻锐利像素 / 双线性平滑）、SDL3 主音量调节、静音开关及目录管理，均直接传参控制运行时。
+   - 全功能设置与启动控件（`SettingsView.swift`、`ContentView.swift`）：窗口倍率（`640×480`、`1280×960`、全屏等比）、**Metal GPU 滤镜**（`原版直出`、`Metal xBRZ 锐化`、`CRT-Royale 显像管`）、画面清晰度（原版 / 2× 高清重制）、Metal VSync 开关、纹理缩放模式、SDL3 主音量调节、静音开关及目录管理，均直接传参控制运行时。
    - Help 菜单内置“新功能介绍”弹窗（`WhatsNewSheetView.swift`）。
 
 2. **零落地内存 VFS 与 SDL3 Metal 运行时（`Sources/Engine/`）**：
-   - C11 引擎核心（`PalEngineCore.c` / `PalEngineCore.h`）直连 `libSDL3`（通过 `SDL_CreateRenderer(window, "metal")` 强制绑定 Apple **Metal** 后端）、**FFmpeg**（`libavformat`、`libavcodec`、`libswscale`、`libswresample`、`libavutil`）、**CoreText / CoreGraphics / CoreFoundation** 与 macOS `libiconv`（`CP950 -> UTF-8` 实时转码）。
+   - C11 引擎核心（`PalEngineCore.c` / `PalEngineCore.h`）联动 `PalGpuFilter.{h,c}`（SDL3 GPU/Metal MSL 滤镜管线）与 `PalGamepad.{h,c}`（SDL3 手柄热插拔与摇杆/十字键映射），直连 `libSDL3`（优先 `gpu` + Metal MSL 后端并支持回退 `metal`）、**FFmpeg**（`libavformat`、`libavcodec`、`libswscale`、`libavutil`、`libswresample`）、**CoreText / CoreGraphics / CoreFoundation** 与 macOS `libiconv`（`CP950 -> UTF-8` 实时转码）。
+   - **双通道 GPU 后处理与视网膜级 UI 合成器**（`PalGpuFilter.c`）：先将 640×480 场景离屏绘制至渲染目标纹理，再使用内嵌 Metal MSL 片段着色器（`xBRZ` 保边锐化或 `CRT-Royale` 扫描线/栅格/辉光）输出至原生交换链，随后清除着色器状态并在独立高清通道将动态 Retina（`1×..4×`）CoreText 对话、营地菜单、商店与战斗 HUD 锐利叠加。
    - 无需在硬盘解包，直接按需流式读取原版容器：
      - **Bink 视频播放器（`.bik`）**（`pal_bink_probe` 及运行时播放器）：实时解码 `.bik` 动画为 Metal 流式纹理并经 `SDL_AudioStream` 同步回放音轨（新故事开场播放 `Video/begin.bik`；`Video/notice.bik` 为通关后 `talk2.dat` `talk_id=1439` 后日谈《仙剑奇侠传二》预告，保留给结局后日谈播放并在 `--self-test` 中探测校验）。
-     - **BGM 背景音乐流式解码器**（`pal_bgm_probe` 及运行时播放）：流式解码 `Music/*.mp3` / `*.wav`（`M001.mp3`、`M020.wav`、`F001.mp3` 等），通过 `libswresample` 重采样为 44.1 kHz 立体声 S16 PCM。
+     - **BGM 背景音乐流式解码与平滑淡变**（`pal_bgm_probe` 与音量包络器）：流式解码 `Music/*.mp3` / `*.wav`（`M001.mp3`、`M020.wav`、`F001.mp3` 等），通过 `libswresample` 重采样为 44.1 kHz 立体声 S16 PCM，切图/进出战斗支持平滑淡入淡出，战后结算自动压低伴奏音量。
      - **`.tsw` 精灵图集与 ARLE 色键根因修复**：支持 `0xABCD` 魔数、LZO1X + ARLE `0xFFFF`、8-bit/16-bit RGB555，将 `0x319F`（`0x8000`）与 `0x026B`（`0xC000`）双透明色键均精确还原为 `alpha = 0`，叠加发光（`MA`）使用 `SDL_BLENDMODE_ADD`，并按归档 ID 区间路由读取 `all_char` / `all_item` / `all_magic` / `all_sys` / `all_map1` / `all_map2`。
      - **`.act` 动画字节码虚拟机**（`pal_act_vm_init`、`pal_act_vm_step_tick`、`PalActVM`）：35 ms 节拍驱动全部 35 个动作操作码，同时驱动 UI 动画（`all_sys.act`）与 8 方向主角/NPC 动作（`all_char.act`：`001李逍遙`、`002趙靈兒`、`003林月如`、`004阿奴`，涵盖站立 `0..7`、行走 `8..15`、奔跑 `16..23`、`YX` 锚点偏移与 `AP`/`DS`/`DE`/`VO`）。
      - **`MSF3` 全量地图引擎与 3 桶 Y 轴遮挡合成器**（`pal_map_probe_m2`、`vfs_load_lmf_map_by_id`）：跨 `huge.lmf`（320 张地图）与 `huge2.lmf`（149 张地图）加载 16×16 拼图底层、LZO1X 行走/触发网格（`walk_grid & 0x60000000` 碰撞、`& 0xFF` 触发器 ID）、触发器表、前景 ARLE 物件与 3 桶分层渲染（低于角色层、与角色按 `sort_y` 动态排序层、高于角色遮挡层）。
@@ -80,6 +82,7 @@
 | `T` | 在未运行剧情脚本时开关示例 CoreText 对话框 |
 | `B` | 重播开场动画 `Video/begin.bik` |
 | `Tab` | 显示 / 隐藏顶部调试 HUD（默认隐藏） |
+| **游戏手柄（SDL3）** | 十字键 / 左摇杆：8 向移动与菜单导航；`A`（下键）：交互 / 对话 / 确认；`B`（右键）：取消 / 返回；`X`（左键）：切换走路/奔跑；`Y`（上键）/ `Start`：营地菜单；`LB` / `RB`：上/下一主角或页签；`Back`：调试 HUD |
 
 ---
 

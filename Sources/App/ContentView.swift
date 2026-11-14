@@ -7,6 +7,7 @@ struct ContentView: View {
     @AppStorage("vsyncEnabled") private var vsyncEnabled: Bool = true
     @AppStorage("nearestFilter") private var nearestFilter: Bool = true
     @AppStorage("hdMode") private var hdMode: Bool = true
+    @AppStorage("shaderFilter") private var shaderFilter: Int = 1
     @AppStorage("masterVolume") private var masterVolume: Double = 0.85
     @AppStorage("muteAudio") private var muteAudio: Bool = false
 
@@ -154,15 +155,34 @@ struct ContentView: View {
         GroupBox("launch.section_title") {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 12) {
-                    Text("settings.render_quality")
-                        .font(.callout.weight(.medium))
-                    Picker("settings.render_quality", selection: $hdMode) {
-                        Text("settings.quality_original").tag(false)
-                        Text("settings.quality_hd").tag(true)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 12) {
+                            Text("settings.render_quality")
+                                .font(.callout.weight(.medium))
+                                .frame(minWidth: 92, alignment: .leading)
+                            Picker("settings.render_quality", selection: $hdMode) {
+                                Text("settings.quality_original").tag(false)
+                                Text("settings.quality_hd").tag(true)
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: 310)
+                        }
+
+                        HStack(spacing: 12) {
+                            Text("settings.gpu_shader")
+                                .font(.callout.weight(.medium))
+                                .frame(minWidth: 92, alignment: .leading)
+                            Picker("settings.gpu_shader", selection: $shaderFilter) {
+                                Text("settings.shader_none").tag(0)
+                                Text("settings.shader_xbrz").tag(1)
+                                Text("settings.shader_crt").tag(2)
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(maxWidth: 310)
+                        }
                     }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 320)
 
                     Spacer()
 
@@ -173,6 +193,7 @@ struct ContentView: View {
                             vsyncEnabled: vsyncEnabled,
                             nearestFilter: nearestFilter,
                             hdMode: hdMode,
+                            shaderFilter: shaderFilter,
                             masterVolume: masterVolume,
                             muteAudio: muteAudio
                         )

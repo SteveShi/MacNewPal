@@ -20,6 +20,7 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 | **M5** | `gmon.dat`/`gmap.dat`/`GFight1..4.dat` Turn-Based Combat, Shop UI (`58000+`) & 10-Slot Save/Load (`Save/0..9.sav`) | ✅ Completed |
 | **M6** | Full Combat Fidelity: 160-Bit Status Masks (Poison DOT + `3063`/`3074` Immunity/Healing, Seal/Confuse/Sleep), 4-Hero Combos (`合體技`), Ally-Down Fury, Authentic `GFight` Formulas & AI, Monster Death Animation & Optional 2x HD Mode | ✅ Completed |
 | **M7** | Endgame & `Talk.cpp` VM Closure (`0x60`/`0xC2`/`0xC4`/`0xC8` two-pass `talk 1439 -> Video/notice.bik` epilogue & Sword Pose transitions) + Read-Only BYOD `Application Support` Save Fallback | ✅ Completed |
+| **M8** | Remaster Polish: SDL3 Metal GPU Shaders (`xBRZ` & `CRT-Royale` MSL), Retina-Crisp CoreText UI Pass, Smooth BGM Crossfade & Ducking, and Full SDL3 Gamepad Support (`PalGamepad`) | ✅ Completed |
 
 ---
 
@@ -29,14 +30,15 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
    - Built with **Swift 6.0** (`SWIFT_STRICT_CONCURRENCY: complete`) and **SwiftUI** for macOS 14.0+ (`arm64`).
    - Full `en` / `zh-Hans` localization catalog in `Sources/App/Resources/Localizable.xcstrings`.
    - Security-scoped directory picker (`NSOpenPanel`) validating all **23** core archive and database signatures before enabling launch (`PalLauncherStore.swift`).
-   - Real settings wired directly to the SDL3 engine (`SettingsView.swift`): window scale (`640×480`, `1280×960`, fullscreen letterbox), Metal VSync toggle, texture scale mode (nearest pixel-art / bilinear), master volume, audio mute, and saved directory management.
+   - Real settings wired directly to the SDL3 engine (`SettingsView.swift` & `ContentView.swift`): window scale (`640×480`, `1280×960`, fullscreen letterbox), **Metal GPU Shader** (`Classic`, `Metal xBRZ`, `CRT-Royale`), Resolution Mode (`Original` / `HD Remastered 2×`), Metal VSync toggle, texture scale mode, master volume, audio mute, and saved directory management.
    - Release highlights modal in Help menu (`WhatsNewSheetView.swift`).
 
 2. **In-Memory VFS & SDL3 Metal Runtime (`Sources/Engine/`)**:
-   - C11 engine core (`PalEngineCore.c` / `PalEngineCore.h`) linked against `libSDL3` (targeting Apple **Metal** via `SDL_CreateRenderer(window, "metal")`), **FFmpeg** (`libavformat`, `libavcodec`, `libswscale`, `libswresample`, `libavutil`), **CoreText / CoreGraphics / CoreFoundation**, and macOS `libiconv` (`CP950 -> UTF-8`).
+   - C11 engine core (`PalEngineCore.c` / `PalEngineCore.h`) paired with `PalGpuFilter.{h,c}` (SDL3 GPU/Metal MSL shader pipeline) and `PalGamepad.{h,c}` (SDL3 gamepad hotplug & analog/D-Pad input mapper), linked against `libSDL3` (targeting Apple **Metal** via `gpu` + MSL or `metal` fallback), **FFmpeg** (`libavformat`, `libavcodec`, `libswscale`, `libavutil`, `libswresample`), **CoreText / CoreGraphics / CoreFoundation**, and macOS `libiconv` (`CP950 -> UTF-8`).
+   - **Two-Pass GPU Post-Processing & Retina UI Compositor** (`PalGpuFilter.c`): Renders the 640×480 scene into an offscreen render target, applies embedded Metal Shading Language (`xBRZ` edge-preserving upscaling or `CRT-Royale` scanline/aperture-grille/bloom) to the native swapchain, then clears the GPU pixel shader so dynamic Retina (`1×..4×`) CoreText dialogue, Camp menu, Shop, HUD, and Combat banners composite razor-sharp on top.
    - Direct archive streaming from original containers without extracting files to disk:
      - **Bink Video (`.bik`)** (`pal_bink_probe` & runtime player): Decodes `.bik` videos (such as `Video/begin.bik` at New Game start, while `Video/notice.bik` is verified by `--self-test` and reserved for the `talk2.dat` `talk_id=1439` post-game *Sword and Fairy 2* epilogue trailer) directly into Metal streaming textures with synchronized `SDL_AudioStream` audio playback.
-     - **BGM Audio Streamer** (`pal_bgm_probe` & runtime playback): Streams `Music/*.mp3` and `*.wav` (`M001.mp3`, `M020.wav`, `F001.mp3`, etc.) resampled via `libswresample` into 44.1 kHz stereo S16 PCM.
+     - **BGM Audio Streamer** (`pal_bgm_probe` & smooth fade envelope): Streams `Music/*.mp3` and `*.wav` (`M001.mp3`, `M020.wav`, `F001.mp3`, etc.) resampled via `libswresample` into 44.1 kHz stereo S16 PCM with smooth crossfades across scene/map/Talk switches and automatic victory audio ducking.
      - **`.tsw` Sprites & ARLE Keying**: `0xABCD` magic, LZO1X + ARLE `0xFFFF`, 8-bit/16-bit RGB555 with transparent color keys (`0x319F` / `0x026B` decoded to `alpha = 0`), additive glow (`MA` via `SDL_BLENDMODE_ADD`), and archive-ID-routed lookup across `all_char`, `all_item`, `all_magic`, `all_sys`, `all_map1`, and `all_map2`.
      - **`.act` Action Bytecode VM** (`pal_act_vm_init`, `pal_act_vm_step_tick`, `PalActVM`): 35-opcode 35 ms tick VM driving UI animations (`all_sys.act`) as well as 8-direction hero and NPC sprites (`all_char.act` — `001李逍遙`, `002趙靈兒`, `003林月如`, `004阿奴`: stand `0..7`, walk `8..15`, run `16..23`, `YX` hotspot anchor subtraction, `AP`/`DS`/`DE`/`VO`).
      - **`MSF3` Map & 3-Bucket Compositor** (`pal_map_probe_m2`, `vfs_load_lmf_map_by_id`): Loads maps across `huge.lmf` (320 maps) and `huge2.lmf` (149 maps) with 16×16 background tiles, LZO1X walk/trigger grid (`walk_grid & 0x60000000` collision, `& 0xFF` trigger ID), trigger table, foreground ARLE occlusion sprites, and a 3-bucket Y-sorted compositor (`below`, `sort_y`, `above`).
@@ -80,6 +82,7 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 | `T` | Toggle sample CoreText dialogue box (when no Talk script is active) |
 | `B` | Replay `Video/begin.bik` |
 | `Tab` | Toggle debug HUD (hidden by default) |
+| **Gamepad (SDL3)** | D-Pad / Left Stick: 8-dir move & menus; `A` (South): Interact / Confirm; `B` (East): Cancel / Back; `X` (West): Walk / Run; `Y` (North) / `Start`: Camp Menu; `LB` / `RB`: Prev / Next Hero or Page; `Back`: Debug HUD |
 
 ---
 

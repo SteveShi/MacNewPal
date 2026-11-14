@@ -69,7 +69,8 @@ typedef struct {
     int32_t window_scale;    /* 1 = 640x480, 2 = 1280x960, 0 = fullscreen */
     int32_t vsync_enabled;   /* 0 or 1 */
     int32_t nearest_filter;  /* 1 = nearest pixel-art, 0 = linear */
-    int32_t hd_mode;         /* 0 = Original 640x480 Classic, 1 = HD Remastered 2x */
+    int32_t hd_mode;         /* 0 = Original 640x480 Classic, 1 = HD Remastered (sharp text + filters) */
+    int32_t shader_filter;   /* 0 = Classic/None, 1 = Metal xBRZ Edge-Preserving HD, 2 = Metal CRT-Royale */
     float master_volume;     /* 0.0f .. 1.0f */
     int32_t mute_audio;      /* 0 or 1 */
 #if PAL_ENABLE_TEST_MODE

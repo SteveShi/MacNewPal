@@ -7,6 +7,7 @@ struct SettingsView: View {
     @AppStorage("vsyncEnabled") private var vsyncEnabled: Bool = true
     @AppStorage("nearestFilter") private var nearestFilter: Bool = true
     @AppStorage("hdMode") private var hdMode: Bool = true
+    @AppStorage("shaderFilter") private var shaderFilter: Int = 1
     @AppStorage("masterVolume") private var masterVolume: Double = 0.85
     @AppStorage("muteAudio") private var muteAudio: Bool = false
 
@@ -18,6 +19,13 @@ struct SettingsView: View {
                 Picker("settings.render_quality", selection: $hdMode) {
                     Text("settings.quality_original").tag(false)
                     Text("settings.quality_hd").tag(true)
+                }
+                .pickerStyle(.segmented)
+
+                Picker("settings.gpu_shader", selection: $shaderFilter) {
+                    Text("settings.shader_none").tag(0)
+                    Text("settings.shader_xbrz").tag(1)
+                    Text("settings.shader_crt").tag(2)
                 }
                 .pickerStyle(.segmented)
 
@@ -33,8 +41,8 @@ struct SettingsView: View {
                     Text("settings.filter_nearest").tag(true)
                     Text("settings.filter_linear").tag(false)
                 }
-                .disabled(hdMode)
-                if hdMode {
+                .disabled(hdMode || shaderFilter != 0)
+                if hdMode || shaderFilter != 0 {
                     Text("settings.hd_filter_note")
                         .font(.caption)
                         .foregroundStyle(.secondary)

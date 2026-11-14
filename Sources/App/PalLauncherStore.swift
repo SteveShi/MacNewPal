@@ -162,6 +162,7 @@ final class PalLauncherStore {
         vsyncEnabled: Bool,
         nearestFilter: Bool,
         hdMode: Bool,
+        shaderFilter: Int,
         masterVolume: Double,
         muteAudio: Bool
     ) {
@@ -177,6 +178,7 @@ final class PalLauncherStore {
         cfg.vsync_enabled = vsyncEnabled ? 1 : 0
         cfg.nearest_filter = nearestFilter ? 1 : 0
         cfg.hd_mode = hdMode ? 1 : 0
+        cfg.shader_filter = Int32(shaderFilter)
         cfg.master_volume = Float(min(max(masterVolume, 0.0), 1.0))
         cfg.mute_audio = muteAudio ? 1 : 0
 #if PAL_ENABLE_TEST_MODE

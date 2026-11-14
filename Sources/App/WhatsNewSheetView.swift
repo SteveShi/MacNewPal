@@ -22,20 +22,20 @@ struct WhatsNewSheetView: View {
 
             VStack(alignment: .leading, spacing: 14) {
                 featureRow(
-                    icon: "checkmark.shield.fill",
-                    color: .green,
+                    icon: "wand.and.stars",
+                    color: .purple,
                     titleKey: "whatsnew.feature1.title",
                     descKey: "whatsnew.feature1.desc"
                 )
                 featureRow(
-                    icon: "archivebox.fill",
+                    icon: "gamecontroller.fill",
                     color: .blue,
                     titleKey: "whatsnew.feature2.title",
                     descKey: "whatsnew.feature2.desc"
                 )
                 featureRow(
-                    icon: "cpu.fill",
-                    color: .orange,
+                    icon: "checkmark.shield.fill",
+                    color: .green,
                     titleKey: "whatsnew.feature3.title",
                     descKey: "whatsnew.feature3.desc"
                 )
@@ -53,7 +53,7 @@ struct WhatsNewSheetView: View {
             }
         }
         .padding(24)
-        .frame(width: 500, height: 390)
+        .frame(width: 520, height: 410)
     }
 
     private func featureRow(
