@@ -419,7 +419,7 @@ static inline void rgb555_write_rgba(uint8_t *dst, uint16_t c, uint8_t a) {
 }
 
 static inline void rgb555_write_keyed(uint8_t *dst, uint16_t c) {
-    /* Verified in Palgame.exe (0x401d84, 0x438acc, 0x465e43): both 0x319F and 0x026B are transparent chromakeys. */
+    /* Both 0x319F and 0x026B are treated as transparent chromakeys. */
     if (c == PAL_TSW_KEY_TRANSPARENT || c == PAL_TSW_KEY_SHADOW) {
         dst[0] = dst[1] = dst[2] = dst[3] = 0;
     } else {
@@ -476,7 +476,7 @@ static void decode_arle_to_rgba(
                     col++;
                 }
             } else {
-                /* Both 0x8000 (0x319F) and 0xC000 (0x026B) are transparent skip runs (0x438acc). */
+                /* Both 0x8000 (0x319F) and 0xC000 (0x026B) decode as transparent skip runs. */
                 col += count;
             }
         }
@@ -1199,7 +1199,7 @@ typedef struct {
     int16_t px;
     int16_t py_top;
     int16_t sort_y;
-    uint8_t layer_bucket; /* 2=below actors, 0=Y-sorted with actors, 1=above actors (0x443800) */
+    uint8_t layer_bucket; /* 2=below actors, 0=Y-sorted with actors, 1=above actors */
     uint8_t reserved;
 } PalMapFgInst;
 
@@ -1374,7 +1374,7 @@ static void vfs_lookup_map_metadata(
         return;
     }
 
-    /* Slot 19: packed (uint16 map_id, cp950 title, "%Q") entries (0x41d793) */
+    /* Slot 19: packed (uint16 map_id, cp950 title, "%Q") entries */
     if (slots[19] > 0 && slots[19] + 2 <= plen) {
         size_t pos = slots[19];
         while (pos + 2 <= plen) {
@@ -1396,7 +1396,7 @@ static void vfs_lookup_map_metadata(
         }
     }
 
-    /* Slot 1: double-indirection BGM string table (0x41d335) indexed by MSF3 hdr[0x10c] or slot2_bgm_idx */
+    /* Slot 1: double-indirection BGM string table indexed by MSF3 hdr[0x10c] or slot2_bgm_idx */
     uint32_t eff_bgm_idx = out_map->music_idx > 0 ? (uint32_t)out_map->music_idx : (uint32_t)slot2_bgm_idx;
     if (eff_bgm_idx > 0 && slots[1] > 0 && slots[1] + 4 <= plen) {
         uint32_t tbl_off = rd_u32(p + slots[1]);
@@ -1418,7 +1418,7 @@ static void vfs_lookup_map_metadata(
         }
     }
 
-    /* Slot 0: NPC & map object placement table (26 bytes per record, 0x4197a6) */
+    /* Slot 0: NPC & map object placement table (26 bytes per record) */
     if (!out_map->npcs && slots[0] > 0 && slots[0] + 26 <= plen) {
         size_t pos = slots[0];
         int match_cnt = 0;
@@ -2446,7 +2446,7 @@ static int resolve_rel_path_ci(const char *base_dir, const char *rel_path, char 
 }
 
 /* =========================================================================
- * M1 Module 1: 35-Opcode .act Bytecode VM (myact.cpp / 0x45bae2)
+ * M1 Module 1: 35-Opcode .act Bytecode VM
  * ========================================================================= */
 
 static int resolve_tsw_from_fr(int32_t fr_id, const char **out_tsw_file, uint32_t *out_slot_id) {
@@ -2484,7 +2484,7 @@ static int apply_act_opcode(PalActVM *vm, const PalActInsn *in) {
         case 0x5344u: /* DS: set base duration ticks (35ms/tick) */
             vm->duration_ticks = in->args[0] > 0 ? in->args[0] : 1;
             return 0;
-        case 0x4E4Fu: /* ON: visible on (clear hidden bit 0 at 0x45bae2:357) */
+        case 0x4E4Fu: /* ON: visible on (clear hidden bit 0) */
             vm->visible = 1;
             return 0;
         case 0x5649u: /* IV: visible off / hidden */
@@ -2738,7 +2738,7 @@ int32_t pal_act_vm_init(
  * M1 Module 2: CoreText Chinese Rich-Text Renderer (GrpFont.cpp / %C %N %S %K)
  * ========================================================================= */
 
-/* Authentic 10-entry palette from Palgame.exe DAT_004edd0c (Win32 COLORREF 0x00BBGGRR) */
+/* SWD2k 10-entry UI text color palette (Win32 COLORREF 0x00BBGGRR) */
 static const uint32_t kPalFontColorRef[10] = {
     0x00FFE581u, /* %C0 sky cyan */
     0x00B9DAFFu, /* %C1 warm peach */
@@ -3012,7 +3012,7 @@ static SDL_Texture *create_richtext_texture(
 }
 
 /* =========================================================================
- * M1 Module 3: FFmpeg MP3/WAV BGM Streamer (SGSound.cpp / 0x4983ac)
+ * M1 Module 3: FFmpeg MP3/WAV BGM Streamer
  * ========================================================================= */
 
 static int ffmpeg_decode_audio_to_s16(
@@ -4040,7 +4040,7 @@ static int dir_from_delta(int dx, int dy, int prev_dir) {
 }
 
 /* =========================================================================
- * M3 Module: Multi-Bank talk1..8.dat Loader & Talk.cpp Bytecode VM (0x401eb5)
+ * M3 Module: Multi-Bank talk1..8.dat Loader & Talk Bytecode VM
  * ========================================================================= */
 
 #define PAL_STORY_FLAG_CAP  8192
@@ -5204,7 +5204,7 @@ static void pal_party_recalc_member(const PalGameDatabase *db, PalPartyMemberSta
     if (m->cur_mp > m->eff_max_mp) m->cur_mp = m->eff_max_mp;
 }
 
-/* Merge pending 修行 (training props 13,19,25,31,37,43,49) into permanent base stats if alive (FUN_004a472e/004a483b). */
+/* Merge pending 修行 (training props 13,19,25,31,37,43,49) into permanent base stats if alive. */
 static void pal_party_merge_training(const PalGameDatabase *db, PalPartyMemberState *m) {
     if (!m || !m->active || m->cur_hp <= 0) return;
     if (m->train_max_hp == 0 && m->train_max_mp == 0 && m->train_atk == 0 &&
@@ -5570,7 +5570,7 @@ static int pal_party_level_up_slot_rng(const PalGameDatabase *db, PalPartyMember
     const PalLevelTemplate *lt = pal_db_find_level(db, tpl_id);
     if (!lt) return -1;
 
-    /* Carry over excess EXP past current level threshold (FUN_004b1d5d). */
+    /* Carry over excess EXP past current level threshold. */
     int32_t prev_needed = (lt->next_exp > 0) ? lt->next_exp : m->next_exp;
     if (prev_needed > 0 && m->exp >= prev_needed) {
         m->exp -= prev_needed;
@@ -6673,7 +6673,7 @@ static void pal_talk_vm_step_ex(
                 vm->ip += ilen;
                 break;
 
-            case 0x43u: { /* Wait timer (milliseconds in Talk.cpp, converted to 35ms ticks) */
+            case 0x43u: { /* Wait timer (milliseconds converted to 35ms ticks) */
                 uint16_t ms = rd_u16(ins + 2u);
                 vm->ip += ilen;
                 if (!auto_advance_wait && ms > 0u) {
@@ -7620,7 +7620,7 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x40u: { /* Stop Talk screen shake effect (FUN_0041b2b9) */
+            case 0x40u: { /* Stop Talk screen shake effect */
                 ws->shake_ticks = 0;
                 vm->ip += ilen;
                 break;
@@ -8434,7 +8434,7 @@ static void pal_push_actor_render_item(
     if (fi < 0) fi = 0;
     fi %= sp->nframes;
 
-    /* FUN_0042498f + FUN_004346d3: scale around tile center (px + 16, py + 8) when obj_id != -1 and !(flags & 8) */
+    /* Scale sprite around tile center (px + 16, py + 8) when obj_id != -1 and !(flags & 8) */
     int scale_fp = 1024;
     if (actor->obj_id != 0xFFFFu && (actor->npc_flags & 8u) == 0u) {
         scale_fp = pal_map_scale_fp(map, actor->py);
@@ -8737,7 +8737,7 @@ static void pal_field_env_draw_bg(
         SDL_RenderTexture(renderer, map->texture, NULL, &map_dst);
         return;
     }
-    /* FUN_004282e5: horizontal strip water/heat shimmer */
+    /* Horizontal strip water/heat shimmer */
     const int strip_h = 8;
     for (int sy = 0; sy < 480; sy += strip_h) {
         float wy = (float)sy + cam_y;
@@ -8845,7 +8845,7 @@ static void pal_field_env_draw_pre_ui(
         }
     }
 
-    /* Dark cave radial spotlight (story_flags[19] / FUN_0042926f) */
+    /* Dark cave radial spotlight (story_flags[19]) */
     if (ws->story_flags[19]) {
         float lx = leader ? ((float)(leader->px + 16) - cam_x) : 320.0f;
         float ly = leader ? ((float)(leader->py + 4) - cam_y) : 240.0f;
@@ -10278,14 +10278,14 @@ static uint32_t pal_combat_rand_n(PalCombatState *cb, uint32_t n) {
     return combat_next_rng(cb) % n;
 }
 
-/* FUN_004ac17d: 10%..20% physical critical hit check (u >= 90 - rand(11)) */
+/* Physical critical hit check: 10%..20% chance (u >= 90 - rand(11)) */
 static int pal_combat_roll_crit(PalCombatState *cb) {
     uint32_t u = pal_combat_rand_n(cb, 100u);
     uint32_t thresh = 90u - pal_combat_rand_n(cb, 11u);
     return (u >= thresh) ? 1 : 0;
 }
 
-/* FUN_004ae5c9 + FUN_004b06f1: Exact Palgame.exe formula & post-modifier evaluator.
+/* SWD2k combat damage formula & post-modifier evaluator.
  * Returns signed HP/MP delta (negative = damage, positive = heal). */
 static int32_t pal_combat_eval_hp_mp_delta(
     PalCombatState *cb, const PalCombatUnitView *caster, const PalCombatUnitView *tgt,
@@ -10316,7 +10316,7 @@ static int32_t pal_combat_eval_hp_mp_delta(
             }
         }
     } else if (formula >= 1 && formula <= 10) {
-        /* Hero physical / weapon skill (FUN_004ae5c9 cases 1..10) */
+        /* Hero physical / weapon skill (modes 1..10) */
         int32_t luck_div = (tgt->luck > 0) ? tgt->luck : 1;
         double base = ((double)caster->atk / 0.72) / (double)luck_div * (1.0 - (double)tgt->def / 100.0);
         if (base < 0.0) base = 0.0;
@@ -10335,7 +10335,7 @@ static int32_t pal_combat_eval_hp_mp_delta(
         }
         if (val >= 0) val = -1;
     } else if (formula >= 11 && formula <= 26) {
-        /* Hero magic & throwing items (FUN_004ae5c9 cases 0x0b..0x1a) */
+        /* Hero magic & throwing items (modes 0x0b..0x1a) */
         double base_pos = (double)(-power) * 7.2 + (double)caster->atk / 4.0 + (double)caster->mag / 12.0;
         if (base_pos < 0.0) base_pos = 0.0;
         int32_t v = 5 - (int32_t)pal_combat_rand_n(cb, 10u); /* [-4..+5] */
@@ -10368,7 +10368,7 @@ static int32_t pal_combat_eval_hp_mp_delta(
         val = -(int32_t)llround(lbase * (1.0 + (double)v / 100.0));
         if (val >= 0) val = -1;
     } else if (formula == 51 || formula == 52) {
-        /* Monster physical attack (FUN_004ae5c9 cases 0x33..0x34) */
+        /* Monster physical attack (modes 0x33..0x34) */
         double base = ((double)caster->atk / 0.72) - (double)tgt->def;
         if (base < 0.0) base = 0.0;
         if (formula == 52) base *= 2.0;
@@ -10376,7 +10376,7 @@ static int32_t pal_combat_eval_hp_mp_delta(
         val = -(int32_t)llround(base * (1.0 + (double)v / 100.0));
         if (val >= 0) val = -1;
     } else if (formula >= 61 && formula <= 67) {
-        /* Enemy magic (FUN_004ae5c9 cases 0x3d..0x43) */
+        /* Enemy magic (modes 0x3d..0x43) */
         double base = (double)(-power) * 7.2 + (double)caster->monster_mag - (double)tgt->def * 0.72;
         if (base < 0.0) base = 0.0;
         int32_t rsum = (formula >= 62) ? tgt->res[formula - 62] : 100;
@@ -10392,7 +10392,7 @@ static int32_t pal_combat_eval_hp_mp_delta(
         val = power;
     }
 
-    /* Post-formula combat modifiers (FUN_004b06f1) */
+    /* Post-formula combat modifiers */
     if (val < 0) {
         if ((pal_cstat_has(tgt->status_bits, PAL_CSTAT_BIT_DEFEND) ||
              pal_cstat_has(tgt->status_bits, PAL_CSTAT_BIT_DEFEND_LOW)) &&
@@ -10864,7 +10864,7 @@ static void combat_start_enemy_death(PalCombatState *cb, const PalTalkWorldState
     if (!cb || !eu || eu->death_state != 0) return;
     eu->death_state = 1;
     eu->death_timer = 0.0f;
-    eu->death_dur = 1.12f; /* FUN_004cf77d case 7: 32 ticks * 35ms */
+    eu->death_dur = 1.12f; /* Enemy dissolve death animation: 32 ticks * 35ms */
     int32_t resolved_sid = 8000;
     combat_resolve_monster_death_script(ws ? ws->db : NULL, eu->death_script,
                                         &resolved_sid, &eu->death_sfx_id, &eu->death_has_sub52);
@@ -11985,7 +11985,7 @@ static void combat_exec_fight_script(
     }
 }
 
-/* FUN_004a343c (cc==4), FUN_004a5036 (1/3 revive), FUN_004a62b9 (1/2 alive heal), FUN_004a472e (修行 merge). */
+/* End-of-battle rewards, 1/3 HP/MP dead-ally revival, 1/2 post-level-up recovery, and 修行 merge. */
 static void combat_cleanup_battle_end(PalCombatState *cb, PalTalkWorldState *ws, int won) {
     if (!cb || !ws || cb->cleanup_done) return;
     cb->cleanup_done = 1;
@@ -12045,7 +12045,7 @@ static void pal_combat_apply_victory_rewards(PalCombatState *cb, PalTalkWorldSta
         }
     }
 
-    /* Item 3073 (0xC01): double gold if equipped by an active alive hero (FUN_004a4234) */
+    /* Item 3073 (0xC01): double gold if equipped by an active alive hero */
     for (int p = 0; p < ws->party_member_count && p < 4; p++) {
         const PalPartyMemberState *m = &ws->party_members[p];
         if (!m->active || m->cur_hp <= 0) continue;
@@ -12057,7 +12057,7 @@ static void pal_combat_apply_victory_rewards(PalCombatState *cb, PalTalkWorldSta
     }
 
     ws->money += gold_sum;
-    /* Dead allies receive 0 EXP before battle-end 1/3 revival (FUN_004c517c / 004a5036). */
+    /* Dead allies receive 0 EXP before battle-end 1/3 revival. */
     for (int p = 0; p < ws->party_member_count && p < 4; p++) {
         PalPartyMemberState *m = &ws->party_members[p];
         if (!m->active || m->cur_hp <= 0) continue;
@@ -12217,7 +12217,7 @@ static void pal_combat_execute_hero_action_ex(
         if (out_beat) *out_beat = beat;
         return;
     }
-    if (action_type == 5) { /* 合擊 (FUN_004a790b: GFight1 679..696) */
+    if (action_type == 5) { /* 合擊 (GFight1 679..696) */
         int tgt = target_idx;
         if (tgt < 0 || tgt >= cb->enemy_count || !cb->enemies[tgt].alive) {
             tgt = pal_combat_first_alive_enemy(cb);
@@ -12263,7 +12263,7 @@ static void pal_combat_execute_hero_action_ex(
         if (out_beat) *out_beat = beat;
         return;
     }
-    if (action_type == 4) { /* Flee (FUN_004ac7a2 + boss flag 3) */
+    if (action_type == 4) { /* Flee check (blocked by boss encounter flag 3) */
         if (cb->flee_blocked) {
             snprintf(cb->log_text, sizeof(cb->log_text), "此戰無法逃跑！");
             snprintf(beat.log_msg, sizeof(beat.log_msg), "%s", cb->log_text);
@@ -12532,7 +12532,7 @@ static void pal_combat_execute_hero_action_ex(
                 return;
             }
 
-            /* Offensive magic: single or AoE using exact FUN_004ae5c9 formula script */
+            /* Offensive magic: single or AoE using GFight formula script */
             int32_t bonus_spend = 0;
             if (mg->id == 6152 && ws->money >= 200) {
                 bonus_spend = ws->money / 10;
@@ -12594,7 +12594,7 @@ static void pal_combat_execute_hero_action_ex(
         }
     }
 
-    /* Normal Physical Attack: FUN_004ac17d crit (10%..20%, formula 5 = 2x) + FUN_004ae5c9 formula 1 */
+    /* Normal Physical Attack: crit check (10%..20%, formula 5 = 2x) + base formula 1 */
     int tgt = target_idx;
     if (tgt < 0 || tgt >= cb->enemy_count || !cb->enemies[tgt].alive) {
         tgt = pal_combat_first_alive_enemy(cb);
@@ -12674,7 +12674,7 @@ static void pal_combat_execute_enemy_ai_ex(
     }
     int32_t chosen_atk = sum.executed_script_id ? sum.executed_script_id : ai_sid;
     if (sum.tgt_count == 0) {
-        /* Fallback monster physical formula 51 (FUN_004ae5c9 case 0x33) */
+        /* Fallback monster physical formula 51 (mode 0x33) */
         PalCombatUnitView cv, tv;
         pal_combat_build_enemy_view(cb, eidx, &cv);
         pal_combat_build_hero_view(cb, ws, hidx, &tv);
@@ -13030,7 +13030,7 @@ static float combat_party_card_x(int party_n, int p) {
 }
 
 static void combat_bagua_pos(int party_n, int slot, float *ox, float *oy) {
-    /* Exact SWD2k FUN_0047e7e1 Bagua diamond: 0=Top(Atk), 1=Right(Combo), 2=Left(Magic), 3=Bottom(Other) */
+    /* SWD2k Bagua command diamond: 0=Top(Atk), 1=Right(Combo), 2=Left(Magic), 3=Bottom(Other) */
     static const float kBx[4] = {58.0f, 103.0f, 12.0f, 58.0f};
     static const float kBy[4] = {344.0f, 381.0f, 381.0f, 417.0f};
     float y_off = (party_n < 4) ? 0.0f : -108.0f;
@@ -13643,7 +13643,7 @@ static void combat_draw_scene(
         if (esp && esp->nframes > 0) {
             uint8_t mr = 255, mg = eu->hit_flash > 0.0f ? 110 : 255, mb = eu->hit_flash > 0.0f ? 110 : 255;
             if (eu->death_state == 1) {
-                /* FUN_004cf77d case 7: Pass 1 holds ~15/16 alpha on ticks 0..15 then fades 15..0 */
+                /* Enemy death fade: Pass 1 holds ~15/16 alpha on ticks 0..15 then fades 15..0 */
                 float p1_f = (death_t < 0.5f) ? 1.0f : (1.0f - (death_t - 0.5f) * 2.0f);
                 if (p1_f < 0.0f) p1_f = 0.0f;
                 uint8_t ea1 = (uint8_t)(240.0f * p1_f);
@@ -16036,7 +16036,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         return -1;
     }
 
-    /* Title Screen .act VM Nodes (GeMainMenu 0x4831f2: all_sys.act id=10000 sub 0x5a..0x5d) */
+    /* Title Screen .act VM Nodes (all_sys.act id=10000 sub 0x5a..0x5d) */
     PalActSpriteNode title_bg = {.base_x = 0.0f, .base_y = 0.0f};
     PalActSpriteNode title_btns[3] = {
         {.base_x = 270.0f, .base_y = 282.0f}, /* 0x10e, 0x11a: 新的故事 (9055) */
@@ -16566,7 +16566,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     }
 
     /* =====================================================================
-     * Interactive Boot Flow: Title Screen directly (0x440348 -> 0x4983ac(-9))
+     * Interactive Boot Flow: Title Screen directly (M001 BGM -> New Game -> talk1:100)
      * ===================================================================== */
     int rt_scale = (active_shader != PAL_SHADER_NONE) ? 1 : (g_pal_hd_mode ? 2 : 1);
     SDL_Texture *scene_rt = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_TARGET, 640 * rt_scale, 480 * rt_scale);
@@ -18394,7 +18394,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 combat_draw_scene(renderer, cfg->game_dir, scale_mode, &tsw_cache, world_state, &combat_state);
             }
         } else {
-            /* Authentic SWD2k camera deadzone (304, 240) clamped to map pixels (0x41aab1), or OP 0x32/0x46/0x49 pan override */
+            /* SWD2k camera deadzone (304, 240) clamped to map pixels, or OP 0x32/0x46/0x49 pan override */
             if (world_state && world_state->cam_override_active) {
                 cam_x = world_state->cam_cur_x;
                 cam_y = world_state->cam_cur_y;

@@ -4,7 +4,7 @@
 Parses:
   1. 0x7F-tagged entity/script databases (ghero, gmon, glevel, gitem, gmagic, gmap, GFight1..4).
   2. namex.dat CP950 string table (7,100 entries).
-  3. talk1..8.dat Talk.cpp VM bytecode scripts (all 1..0x402 opcodes, dialogues, choices, Bink videos).
+  3. talk1..8.dat Talk VM bytecode scripts (all 1..0x402 opcodes, dialogues, choices, Bink videos).
   4. maps.dat (map title table + slot inventory) & path1..10.dat (waypoint/path archive inventory).
 
 Strictly read-only against --game-dir; writes UTF-8 JSON outputs only inside --out-dir.
@@ -21,8 +21,7 @@ from typing import Any
 
 MZ_HEADER_SIZE = 0x200
 
-# Verified Talk.cpp VM fixed-length instruction byte sizes (from 0x401eb5.c).
-# Keyed by (raw_word & 0x3FFF).
+# Talk VM fixed-length instruction byte sizes, keyed by (raw_word & 0x3FFF).
 TALK_FIXED_BYTES: dict[int, int] = {
     0x07: 2, 0x08: 4, 0x09: 2, 0x0A: 6, 0x0B: 6, 0x0C: 8, 0x0D: 4, 0x0E: 4,
     0x0F: 6, 0x10: 8, 0x11: 8, 0x12: 4, 0x13: 2,
@@ -155,7 +154,7 @@ CONFIRMED_MAGIC_PROPS: dict[int, str] = {
     8: "user_category_mask",
 }
 
-# All 88 GFight VM opcodes dispatched by 0x4bdce0, keyed by (tag & 0xFF00FFFF).
+# All 88 GFight VM opcodes, keyed by (tag & 0xFF00FFFF).
 COMBAT_OPCODES: dict[int, str] = {
     0x7F00FFFF: "battle_end_return",
     0x7F00F002: "dialogue_or_banner_str",
@@ -464,7 +463,7 @@ class NamexArchive:
 
 
 class TalkDisassembler:
-    """Exact byte-level disassembler for Talk.cpp VM scripts in talk1..8.dat."""
+    """Exact byte-level parser for Talk VM scripts in talk1..8.dat."""
 
     @staticmethod
     def _table_slots(talk_index: int) -> int:
@@ -781,7 +780,7 @@ class TalkDisassembler:
 def parse_maps_dat(path: pathlib.Path) -> dict[str, Any]:
     """Parse maps.dat (u32 magic=100 + 25x u32 offsets, slot 24 sentinel 0xFFFFFFFF).
 
-    Verified slots from disassembly (0x41d335 / binary inspection):
+    Known slots:
       - slot 1: map_id -> Music/<filename> string table
       - slot 16: quest/objective CP950 descriptions
       - slot 19: u16 map_id + CP950 map title table terminated by %Q

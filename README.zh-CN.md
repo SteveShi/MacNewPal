@@ -15,11 +15,11 @@
 | **M0** | 原生 SwiftUI BYOD 启动器、23 项 VFS 签名校验器、SDL3 Metal 窗口与 LZO1X/ARLE 解码底座 | ✅ 已完成 |
 | **M1** | Bink 视频播放、BGM 流式解码、`.tsw` 色键修复、`.act` 虚拟机、CoreText 富文本与标题/开场流程 | ✅ 已完成 |
 | **M2** | 全量 `MSF3` 地图引擎（`huge.lmf` + `huge2.lmf`）、`maps.dat` 元数据联动、3 桶 Y 轴遮挡、8 向角色 `.act` 虚拟机、A* 寻路、死区镜头与 4 人队列跟随 | ✅ 已完成 |
-| **M3** | 全 8 卷 `talk1..8.dat` 多库加载器与 `Talk.cpp` 字节码虚拟机（`7,394` 条脚本）、剧情旗标与脚本变量、`%B` 对话分支选项、`0xD8`/`0xD9` 半身立绘、地块触发器、NPC/宝箱交互与 `0x1B` 切图传送 | ✅ 已完成 |
+| **M3** | 全 8 卷 `talk1..8.dat` 多库加载器与 Talk 字节码虚拟机（`7,394` 条脚本）、剧情旗标与脚本变量、`%B` 对话分支选项、`0xD8`/`0xD9` 半身立绘、地块触发器、NPC/宝箱交互与 `0x1B` 切图传送 | ✅ 已完成 |
 | **M4** | 完整 `0x7F` 数据库（`ghero`/`glevel`/`gitem`/`gmagic`）、队伍属性/换装/仙术/升级运行时、`Talk`（`0x80`..`0x86` 与 `0x309` 物品脚本）联动及游戏内营地菜单（狀態/仙術/物品/系統） | ✅ 已完成 |
 | **M5** | `gmon.dat`/`gmap.dat`/`GFight1..4.dat` 回合制战斗、商店买卖 UI（`58000+`）与 10 槽位存档/读档（`Save/0..9.sav`） | ✅ 已完成 |
 | **M6** | 全量战斗还原：160 位异常状态掩码（毒伤 DOT 与 `3063`/`3074` 免疫转化、封魔/混乱/昏睡）、四人合体技、同伴倒下怒气加成、原版 `GFight` 公式与 AI、怪物死亡演出及可选 2x 高清模式 | ✅ 已完成 |
-| **M7** | 结局后日谈与 `Talk.cpp` 虚拟机闭环（`0x60`/`0xC2`/`0xC4`/`0xC8` 双遍分支直达 `talk 1439 -> Video/notice.bik` 与拔剑切换）及只读 BYOD 目录 `Application Support` 存档回退 | ✅ 已完成 |
+| **M7** | 结局后日谈与 Talk 虚拟机闭环（`0x60`/`0xC2`/`0xC4`/`0xC8` 双遍分支直达 `talk 1439 -> Video/notice.bik` 与拔剑切换）及只读 BYOD 目录 `Application Support` 存档回退 | ✅ 已完成 |
 | **M8** | 重制级音画与操作升级：SDL3 Metal GPU 后处理着色器（`xBRZ` 与 `CRT-Royale` MSL）、视网膜级 CoreText UI 分层叠加、BGM 平滑淡入淡出与压低及完整 SDL3 手柄支持（`PalGamepad`） | ✅ 已完成 |
 
 ---
@@ -45,18 +45,18 @@
      - **`maps.dat` 全局元数据联动**：对接 `slot 19`（`CP950 -> UTF-8` 淡入地名横幅）、`slot 1`（按 `hdr[0x10c]` / `slot 2` 二级指针查表切换地图 BGM）、`slot 2`（`map_id` 映射 `msf3_id` 及移动步速）与 `slot 0`（26 字节 NPC 放置表，按 `flags & 0x8000` 激活）。
      - **场景移动、死区镜头与 4 人队列跟随**：复刻 `(304, 240)` 镜头死区与地图边界钳位、斜向贴墙滑动碰撞、左键点击全地图 8 向 A* 自动寻路，以及 4 主角队列拖尾跟随缓冲。
      - **CoreText 中文富文本渲染器**（`pal_font_probe_rich_text`、`PalRichTextMetrics`）：解析 SWD2k 排版控制符（`%N` 换行、`%C0`..`%C9` 10 色调色盘、`%S`、`%D`、`%G`、`%K`）并栅格化为带投影的 UTF-8 文字纹理。
-     - **`Talk.cpp` 剧情脚本虚拟机、半身立绘与触发器引擎**（`pal_talk_vm_probe_m3`、`PalTalkVM`、`PalTalkWorldState`）：全 8 卷 `talk1..8.dat` 多库加载器（`talk1`/`talk4` 各 `701` 槽、其余 `1000` 槽 —— 全库 **7,394 / 7,394** 条脚本 100% 无错解码），完整支持剧情旗标（`8192`）、脚本变量（`256`、`obj_rv`）、地图/道具/距离条件跳转、`0xD8`/`0xD9` 动态半身立绘（`all_map1.act` -> `all_map1.tsw`）、`%B` 多选项对话菜单、踩踏地块触发器、`0x26`/`0x27`/`0x64` NPC 显隐与脚本改写、`0x309` 道具奖励与 `0x1B` 切图传送。
-     - **`0x7F` 游戏数据库运行时、角色成长与营地菜单**（`pal_db_menu_probe_m4`、`PalGameDatabase`、`PalPartyMemberState`）：完整解析 `ghero.dat`（`9` 位主角）、`gitem.dat`（`252` 件物品与效果/装备脚本）、`gmagic.dat`（`66` 种仙术与 `601` 条脚本含 `5001..5319` 奖励及 `58000+` 商店清单）、`glevel.dat`（`410` 条升级模板）、`gmon.dat`（`160` 种怪物）、`gmap.dat`（`265` 遇敌区域）与 `GFight1..4.dat`（`1,056` 条战斗编队脚本）。完整复现 `0x4acbf1`/`0x4ad456` 装备槽位与主角掩码限制、装备属性被动加成（`0x7F30200B`）、非战斗道具/仙术恢复（`0x7EFF1001`/`0x7EFF1015`），并与 `Talk` 脚本指令（`0x80`、`0x81`/`0x82`/`0xA7`/`0xA8`、`0x83`、`0x84`、`0x86`、`0x309`）实时联动；按 `I` / `U` / `F1` 打开「狀態 / 仙術 / 物品 / 系統」四分页营地菜单（联动 `all_sys.tsw`、`all_item.act`/`all_item.tsw` 与 CoreText）。
+     - **Talk 剧情脚本虚拟机、半身立绘与触发器引擎**（`pal_talk_vm_probe_m3`、`PalTalkVM`、`PalTalkWorldState`）：全 8 卷 `talk1..8.dat` 多库加载器（`talk1`/`talk4` 各 `701` 槽、其余 `1000` 槽 —— 全库 **7,394 / 7,394** 条脚本 100% 无错解码），完整支持剧情旗标（`8192`）、脚本变量（`256`、`obj_rv`）、地图/道具/距离条件跳转、`0xD8`/`0xD9` 动态半身立绘（`all_map1.act` -> `all_map1.tsw`）、`%B` 多选项对话菜单、踩踏地块触发器、`0x26`/`0x27`/`0x64` NPC 显隐与脚本改写、`0x309` 道具奖励与 `0x1B` 切图传送。
+     - **`0x7F` 游戏数据库运行时、角色成长与营地菜单**（`pal_db_menu_probe_m4`、`PalGameDatabase`、`PalPartyMemberState`）：完整解析 `ghero.dat`（`9` 位主角）、`gitem.dat`（`252` 件物品与效果/装备脚本）、`gmagic.dat`（`66` 种仙术与 `601` 条脚本含 `5001..5319` 奖励及 `58000+` 商店清单）、`glevel.dat`（`410` 条升级模板）、`gmon.dat`（`160` 种怪物）、`gmap.dat`（`265` 遇敌区域）与 `GFight1..4.dat`（`1,056` 条战斗编队脚本）。完整实现装备槽位与主角掩码兼容性检查、装备属性被动加成（`0x7F30200B`）、非战斗道具/仙术恢复（`0x7EFF1001`/`0x7EFF1015`），并与 `Talk` 脚本指令（`0x80`、`0x81`/`0x82`/`0xA7`/`0xA8`、`0x83`、`0x84`、`0x86`、`0x309`）实时联动；按 `I` / `U` / `F1` 打开「狀態 / 仙術 / 物品 / 系統」四分页营地菜单（联动 `all_sys.tsw`、`all_item.act`/`all_item.tsw` 与 CoreText）。
      - **回合制战斗、商店买卖与 10 槽位存档/读档**（`pal_combat_shop_save_probe_m5`、`PalCombatState`、`PalShopMenuState`、`PalLoadOverlayState`）：完整接入 `GFight1..4.dat` 与 `gmon.dat` 回合制战斗（`all_map2.tsw` 战斗背景、原版布局 HUD 与静态待机/动作姿态、怪物死亡渐隐与音效、完整 `0..74` 物攻/仙术/投掷/属性与装备公式、`160` 位异常状态掩码含 `3063` 五毒珠免疫与 `3074` 七彩玉靈芝毒性转化、四人合体技、同伴倒下激怒加成、`2009` 上限与升级规则、逃跑/掉落及可选 2x 高清渲染），支持 `58000+` 脚本商店买卖界面（`all_sys.tsw` `9017`）及 10 槽位读写（兼容原版 `0x6A54` `Save/0..9.sav`、`"NPAL"` 扩展尾标及只读目录自动回退 macOS `Application Support`，可在主菜单「舊的回憶」或营地「系統」分页中存取）。
      - **主菜单 → 原版开场剧情脚本 → 场景游历循环**：启动直入主菜单竹简界面（`all_sys.act` `10000`、`Music/M001.mp3`），支持「舊的回憶」10 槽读档；点击「新的故事」执行 `talk1.dat` `talk_id=100` 原版开场剧情（`532` -> `533` -> `Video/begin.bik` -> `501` `羅剎峰` -> `502` `羅剎洞外`，夢境李逍遙 `2009` 单人开局），支持自由行走、宝箱开盖状态切换（`OP 0x0A`）与跳出土怪、脚本内遇敌战斗（`2801` / `5001+`）、触发器切图、商店与营地系统。
      - **`all.snd` 音效与 `MZ + 0x200` 数据库**：`RIFF` 直通及 44 字节 PCM WAV 头重构，以及内存 TLV 解析（`ghero.dat`、`gmon.dat`、`gitem.dat`、`gmagic.dat`、`GFight1.dat`、`namex.dat`、`maps.dat`、`talk1.dat`）。
 
-3. **逆向工程规范、测试模块与离线验证工具链**：
-   - 完整格式规范与战斗公式文档：[REVERSE_ENGINEERING.md](REVERSE_ENGINEERING.md)。
+3. **数据格式规范、测试模块与离线校验工具链**：
+   - 完整数据格式与战斗公式规范：[docs/FORMAT_SPEC.md](docs/FORMAT_SPEC.md)。
    - 可选 QA 测试模式模块说明（`PAL_ENABLE_TEST_MODE`）：[docs/TEST_MODE.zh-CN.md](docs/TEST_MODE.zh-CN.md)（[English](docs/TEST_MODE.md)）。
    - 独立只读 Python 解析工具位于 `Tools/`：
-     - `Tools/pal_unpack.py`：生成目录清单、LZO1X/ARLE `.tsw` 导图、35 操作码 `.act` 反汇编、`all.snd` WAV 导出及 `MSF3` 地图渲染。
-     - `Tools/pal_db_unpack.py`：`0x7F` TLV 数据库导出（含全部 88 个 `GFight` 战斗指令注释）、`Talk.cpp` 脚本反汇编及 `maps.dat` / `namex.dat` / `path1..10.dat` 解析。
+     - `Tools/pal_unpack.py`：生成目录清单、LZO1X/ARLE `.tsw` 导图、35 操作码 `.act` 脚本解码、`all.snd` WAV 导出及 `MSF3` 地图渲染。
+     - `Tools/pal_db_unpack.py`：`0x7F` TLV 数据库导出（含全部 88 个 `GFight` 战斗指令注释）、Talk 字节码解码及 `maps.dat` / `namex.dat` / `path1..10.dat` 解析。
      - `Tools/_lzo_accel.c`：供离线工具加速使用的 C 语言 LZO1X 解压库。
 
 ---
@@ -104,3 +104,11 @@ xcodebuild -project NewPal.xcodeproj -scheme NewPal -configuration Release -deri
 ```
 
 指向有效的 `PalGame` 目录时，自检将输出 `Validation: 23/23 (is_valid=1)`、`Renderer: metal`、FFmpeg Bink/BGM 探测、UI 与角色 `.act` VM 步进、`MSF3` + `maps.dat` + A* 寻路探测（`MapM2[1]`、`MapM2[2]`、`MapM2[501]`）、`TalkM3`（8 卷共 `7394/7394` 条脚本无错解码，传送 `6001`/`6007`、宝箱 `7012` 与剧情 `104`/`105` 状态推进）、`DbM4`（`0x7F` 数据表：`9` 角色、`252` 道具、`66` 仙术、`410` 升级记录，`h2000` 穿脱装备/道具/仙术/升级推演与 `0x309` 物品脚本解析 `5150 -> 3254 皮帽`）、`CombatShopSaveM5`（`160` 怪物、`265` 遇敌区域、`1056` 战斗编队、`2801` 对战 `羅剎鬼婆` 结算升级、`58001` 商店交易、`Save/0.sav` 读取与临时 `Save/99.sav` 往返校验）、CoreText 富文本渲染与实时解码诊断信息，并以 `[SelfTest] ALL CHECKS PASSED.` 与退出码 `0` 结束。
+
+---
+
+## 法律与商标声明
+
+- **独立兼容性项目**：本项目为旨在实现跨平台兼容性与历史软件保存的独立洁净室（clean-room）开源运行时，与大宇资讯（Softstar Entertainment）、软星科技及原著作权人无任何从属、合作或官方授权关系。
+- **不含受版权保护的游戏资产**：本仓库代码按 GPL-3.0 协议（[LICENSE](LICENSE)）开源，不包含任何受版权保护的原版游戏程序、美术素材、音乐音效、视频或剧本文件，运行时须由用户自行提供合法取得的正版 `PalGame` 数据。
+- **商标归属**：《新仙劍奇俠傳》（*Sword and Fairy*）及相关角色、道具名称与商标均归各自原权利人所有。

@@ -262,8 +262,8 @@ def rgb555_to_rgba(c: int, alpha: int = 255) -> Tuple[int, int, int, int]:
     b8 = (b5 << 3) | (b5 >> 2)
     return (r8, g8, b8, alpha)
 
-KEY_COLOR_TRANSPARENT = 0x319F  # DAT_00588aa0 in Palgame.exe
-KEY_COLOR_SHADOW      = 0x026B  # DAT_00588af8 in Palgame.exe
+KEY_COLOR_TRANSPARENT = 0x319F  # Transparent chroma key
+KEY_COLOR_SHADOW      = 0x026B  # Translucent 50% shadow chroma key
 
 
 def _rgb555_with_keys(c: int) -> Tuple[int, int, int, int]:
@@ -285,7 +285,6 @@ def decode_arle(
 ) -> List[Tuple[int, int, int, int]]:
     """
     Decodes 8-bit or 16-bit ARLE (magic 0xFFFF) pixel stream into RGBA tuples.
-    Follows FUN_00405e6a (arle.cpp).
     """
     bp = 8  # skip 8-byte ARLE header (magic, width, height, bpp)
     total_pixels = width * height
@@ -483,7 +482,7 @@ class TswArchive:
         return saved_paths
 
 
-# Confirmed 2-byte little-endian opcodes in all_*.act action bytecode (from myact.cpp 0x45bae2).
+# 2-byte little-endian opcodes in all_*.act action bytecode.
 # Format per opcode: (mnemonic, arg_count_u16, description)
 ACT_OPCODES: Dict[int, Tuple[str, int, str]] = {
     0x4544: ("DE", 0, "delay_frame_end"),
