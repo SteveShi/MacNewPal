@@ -47,6 +47,7 @@ private struct TestModeControlsGrid: View {
                 HStack(spacing: 10) {
                     Text("test_mode.speed_mult")
                         .font(.callout)
+                        .fixedSize(horizontal: true, vertical: false)
                     Picker("test_mode.speed_mult", selection: $speedMult) {
                         Text("test_mode.speed_1x").tag(1)
                         Text("test_mode.speed_2x").tag(2)
@@ -54,7 +55,7 @@ private struct TestModeControlsGrid: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
-                    .frame(maxWidth: 210)
+                    .fixedSize(horizontal: true, vertical: false)
                 }
 
                 Text("test_mode.hotkeys_hint")

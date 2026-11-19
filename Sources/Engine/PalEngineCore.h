@@ -73,6 +73,7 @@ typedef struct {
     int32_t shader_filter;   /* 0 = Classic/None, 1 = Metal xBRZ Edge-Preserving HD, 2 = Metal CRT-Royale */
     float master_volume;     /* 0.0f .. 1.0f */
     int32_t mute_audio;      /* 0 or 1 */
+    int32_t text_language;   /* 0 = Traditional Chinese (Original), 1 = Simplified Chinese */
 #if PAL_ENABLE_TEST_MODE
     PalTestConfig test_cfg;
 #endif
@@ -109,7 +110,7 @@ typedef struct {
     int32_t start_at_ap;     /* 1-based slice start AP (0 = from beginning) */
     int32_t stop_at_ap;      /* 1-based slice end AP (0 = no limit) */
     int32_t loop_active;     /* 1 = active LP block */
-    int32_t last_sfx_id;     /* CS / WV sound effect ID */
+    int32_t last_sfx_id;     /* VW sound effect ID (cleared after dispatch) */
     int32_t pc;              /* Instruction pointer */
     int32_t finished;        /* VO/2O/OV reached without active loop */
     int32_t insn_count;

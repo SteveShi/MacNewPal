@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ContentView: View {
@@ -10,6 +11,7 @@ struct ContentView: View {
     @AppStorage("shaderFilter") private var shaderFilter: Int = 1
     @AppStorage("masterVolume") private var masterVolume: Double = 0.85
     @AppStorage("muteAudio") private var muteAudio: Bool = false
+    @AppStorage("gameLanguage") private var gameLanguage: Int = 0
 
     let store: PalLauncherStore
 
@@ -28,7 +30,7 @@ struct ContentView: View {
             }
             .padding(20)
         }
-        .frame(minWidth: 740, minHeight: 620)
+        .frame(minWidth: 880, minHeight: 620)
         .onAppear {
             let resolved = store.restoreBookmarkIfNeeded(storedPath: gameDataPath, storedBookmarkData: gameDataBookmark)
             if !resolved.isEmpty {
@@ -44,29 +46,17 @@ struct ContentView: View {
                 .font(.system(size: 32))
                 .foregroundStyle(.tint)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text("app.title")
-                    .font(.title2.bold())
-                Text("app.subtitle")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+            Text("app.title")
+                .font(.title2.bold())
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 4) {
-                Label(
-                    store.metalAvailable ? "badge.sdl3_metal_ready" : "badge.sdl3_metal_missing",
-                    systemImage: store.metalAvailable ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"
-                )
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(store.metalAvailable ? .green : .red)
-                if !store.availableRenderDrivers.isEmpty {
-                    Text(store.availableRenderDrivers)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                }
-            }
+            Label(
+                store.metalAvailable ? "badge.sdl3_metal_ready" : "badge.sdl3_metal_missing",
+                systemImage: store.metalAvailable ? "checkmark.seal.fill" : "exclamationmark.triangle.fill"
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(store.metalAvailable ? .green : .red)
         }
         .padding(14)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
@@ -154,37 +144,56 @@ struct ContentView: View {
     private var launchSection: some View {
         GroupBox("launch.section_title") {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 12) {
+                HStack(alignment: .center, spacing: 16) {
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                        GridRow {
+                            Text("settings.game_language")
+                                .font(.callout.weight(.medium))
+                                .fixedSize(horizontal: true, vertical: false)
+                            AlignedSegmentedPicker(
+                                labels: [
+                                    String(localized: "settings.lang_traditional"),
+                                    String(localized: "settings.lang_simplified")
+                                ],
+                                selection: $gameLanguage,
+                                distribution: .fillEqually
+                            )
+                        }
+                        GridRow {
                             Text("settings.render_quality")
                                 .font(.callout.weight(.medium))
-                                .frame(minWidth: 92, alignment: .leading)
-                            Picker("settings.render_quality", selection: $hdMode) {
-                                Text("settings.quality_original").tag(false)
-                                Text("settings.quality_hd").tag(true)
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .frame(maxWidth: 310)
+                                .fixedSize(horizontal: true, vertical: false)
+                            AlignedSegmentedPicker(
+                                labels: [
+                                    String(localized: "settings.quality_original"),
+                                    String(localized: "settings.quality_hd")
+                                ],
+                                selection: Binding(
+                                    get: { hdMode ? 1 : 0 },
+                                    set: { hdMode = ($0 == 1) }
+                                ),
+                                distribution: .fillEqually
+                            )
                         }
 
-                        HStack(spacing: 12) {
+                        GridRow {
                             Text("settings.gpu_shader")
                                 .font(.callout.weight(.medium))
-                                .frame(minWidth: 92, alignment: .leading)
-                            Picker("settings.gpu_shader", selection: $shaderFilter) {
-                                Text("settings.shader_none").tag(0)
-                                Text("settings.shader_xbrz").tag(1)
-                                Text("settings.shader_crt").tag(2)
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .frame(maxWidth: 310)
+                                .fixedSize(horizontal: true, vertical: false)
+                            AlignedSegmentedPicker(
+                                labels: [
+                                    String(localized: "settings.shader_none"),
+                                    String(localized: "settings.shader_xbrz"),
+                                    String(localized: "settings.shader_crt")
+                                ],
+                                selection: $shaderFilter,
+                                distribution: .fillProportionally
+                            )
                         }
                     }
+                    .fixedSize(horizontal: true, vertical: false)
 
-                    Spacer()
+                    Spacer(minLength: 16)
 
                     Button {
                         store.launchEngine(
@@ -195,7 +204,8 @@ struct ContentView: View {
                             hdMode: hdMode,
                             shaderFilter: shaderFilter,
                             masterVolume: masterVolume,
-                            muteAudio: muteAudio
+                            muteAudio: muteAudio,
+                            textLanguage: gameLanguage
                         )
                     } label: {
                         Label("launch.button", systemImage: "play.fill")
@@ -204,6 +214,7 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
+                    .fixedSize()
                     .disabled(store.validation?.isValid != true || store.isRunningEngine)
                 }
 
@@ -214,6 +225,73 @@ struct ContentView: View {
                 }
             }
             .padding(6)
+        }
+    }
+}
+
+private struct AlignedSegmentedPicker: NSViewRepresentable {
+    let labels: [String]
+    @Binding var selection: Int
+    var distribution: NSSegmentedControl.Distribution = .fillEqually
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSSegmentedControl {
+        let sc = NSSegmentedControl(
+            labels: labels,
+            trackingMode: .selectOne,
+            target: context.coordinator,
+            action: #selector(Coordinator.changed(_:))
+        )
+        sc.segmentDistribution = distribution
+        if selection >= 0 && selection < labels.count {
+            sc.selectedSegment = selection
+        }
+        sc.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        sc.setContentCompressionResistancePriority(.required, for: .horizontal)
+        return sc
+    }
+
+    func updateNSView(_ sc: NSSegmentedControl, context: Context) {
+        context.coordinator.parent = self
+        if sc.segmentCount != labels.count {
+            sc.segmentCount = labels.count
+        }
+        for (i, title) in labels.enumerated() where sc.label(forSegment: i) != title {
+            sc.setLabel(title, forSegment: i)
+        }
+        if sc.segmentDistribution != distribution {
+            sc.segmentDistribution = distribution
+        }
+        if sc.selectedSegment != selection && selection >= 0 && selection < sc.segmentCount {
+            sc.selectedSegment = selection
+        }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSSegmentedControl, context: Context) -> CGSize? {
+        let intrinsic = nsView.intrinsicContentSize
+        let h = ceil(intrinsic.height)
+        if let pw = proposal.width, pw.isFinite {
+            return CGSize(width: ceil(max(intrinsic.width, pw)), height: h)
+        }
+        return CGSize(width: ceil(intrinsic.width), height: h)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var parent: AlignedSegmentedPicker
+
+        init(_ parent: AlignedSegmentedPicker) {
+            self.parent = parent
+        }
+
+        @objc func changed(_ sender: NSSegmentedControl) {
+            let idx = sender.selectedSegment
+            if idx >= 0 && idx < parent.labels.count && parent.selection != idx {
+                parent.selection = idx
+            }
         }
     }
 }

@@ -4,13 +4,7 @@
     "app.title": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "NewPal for macOS" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "新仙剑奇侠传 macOS 洁净版启动器" } }
-      }
-    },
-    "app.subtitle": {
-      "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Clean-Room BYOD Engine • SDL3 Metal Hardware Backend" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "洁净室自备正版数据引擎 • SDL3 Metal 原生硬件后端" } }
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "新仙剑奇侠传 macOS 版启动器" } }
       }
     },
     "menu.whats_new": {
@@ -371,6 +365,30 @@
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "3× Turbo" } },
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "3× 极速" } }
+      }
+    },
+    "settings.game_language": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Game Language" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "游戏语言" } }
+      }
+    },
+    "settings.lang_traditional": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "繁體中文（原版）" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "繁體中文（原版）" } }
+      }
+    },
+    "settings.lang_simplified": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "简体中文" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "简体中文" } }
+      }
+    },
+    "settings.language_note": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Converts all runtime game scripts, menus, items, magic, and UI labels in memory without altering original archives or saves." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "运行时在内存中动态转换全套剧情、菜单、物品仙术与界面贴图文字，不改动原版游戏资源或存档文件。" } }
       }
     },
     "test_mode.hotkeys_hint": {

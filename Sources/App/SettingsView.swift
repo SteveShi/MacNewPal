@@ -10,12 +10,21 @@ struct SettingsView: View {
     @AppStorage("shaderFilter") private var shaderFilter: Int = 1
     @AppStorage("masterVolume") private var masterVolume: Double = 0.85
     @AppStorage("muteAudio") private var muteAudio: Bool = false
+    @AppStorage("gameLanguage") private var gameLanguage: Int = 0
 
     let store: PalLauncherStore
 
     var body: some View {
         Form {
             Section("settings.tab_general") {
+                Picker("settings.game_language", selection: $gameLanguage) {
+                    Text("settings.lang_traditional").tag(0)
+                    Text("settings.lang_simplified").tag(1)
+                }
+                .pickerStyle(.segmented)
+                Text("settings.language_note")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Picker("settings.render_quality", selection: $hdMode) {
                     Text("settings.quality_original").tag(false)
                     Text("settings.quality_hd").tag(true)
@@ -91,7 +100,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520, height: 560)
+        .frame(minWidth: 620, minHeight: 580)
     }
 
     private func vfsMetricsSection(_ val: ValidationSummaryModel) -> some View {

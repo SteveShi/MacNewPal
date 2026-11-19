@@ -164,7 +164,8 @@ final class PalLauncherStore {
         hdMode: Bool,
         shaderFilter: Int,
         masterVolume: Double,
-        muteAudio: Bool
+        muteAudio: Bool,
+        textLanguage: Int = 0
     ) {
         guard validation?.isValid == true, !isRunningEngine else { return }
         lastErrorMessage = ""
@@ -181,6 +182,7 @@ final class PalLauncherStore {
         cfg.shader_filter = Int32(shaderFilter)
         cfg.master_volume = Float(min(max(masterVolume, 0.0), 1.0))
         cfg.mute_audio = muteAudio ? 1 : 0
+        cfg.text_language = Int32(textLanguage)
 #if PAL_ENABLE_TEST_MODE
         cfg.test_cfg = TestModeDefaults.currentConfig()
 #endif

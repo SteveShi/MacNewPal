@@ -440,12 +440,12 @@ static void pal_test_rebuild_textures(
 
     if (!ts->header_tex) {
         ts->header_tex = ops->create_rich_text(
-            renderer, "%%C6測試模式工具箱  %%C5(QA 全流程輔助模組)", 14.0f, 360, &ts->header_w, &ts->header_h
+            renderer, "%C6測試模式工具箱  %C5(QA 全流程輔助模組)", 14.0f, 360, &ts->header_w, &ts->header_h
         );
     }
     if (!ts->footer_tex) {
         ts->footer_tex = ops->create_rich_text(
-            renderer, "%%C0[~ / F11] 面板  [F12] 總開關  [K / F4] 秒殺  [滑鼠 / 1-9] 操作", 11.0f, 396,
+            renderer, "%C0[~ / F11] 面板  [F12] 總開關  [K / F4] 秒殺  [滑鼠 / 1-9] 操作", 11.0f, 396,
             &ts->footer_w, &ts->footer_h
         );
     }
@@ -454,13 +454,13 @@ static void pal_test_rebuild_textures(
     int in_cb = (ops->is_in_combat) ? ops->is_in_combat(ops->ctx) : 0;
     char rows[PAL_TEST_MENU_ROWS][128];
     snprintf(rows[0], sizeof(rows[0]), "%%C5[1 / F2]  人物無敵 (鎖血／免疫／免藍)    %s",
-             ts->cfg.god_mode ? "%%C3[開啟]" : "%%C0[關閉]");
+             ts->cfg.god_mode ? "%C3[開啟]" : "%C0[關閉]");
     snprintf(rows[1], sizeof(rows[1]), "%%C5[2 / F3]  禁止漫游遇敵 (免追擊觸發)    %s",
-             ts->cfg.no_encounter ? "%%C3[開啟]" : "%%C0[關閉]");
+             ts->cfg.no_encounter ? "%C3[開啟]" : "%C0[關閉]");
     snprintf(rows[2], sizeof(rows[2]), "%%C5[3 / K]   戰鬥一鍵秒殺 (正常結算獎勵)  %s",
-             in_cb ? "%%C3[可執行]" : "%%C0[需在戰中]");
+             in_cb ? "%C3[可執行]" : "%C0[需在戰中]");
     snprintf(rows[3], sizeof(rows[3]), "%%C5[4]      入戰自動秒殺 (極速通關劇情)  %s",
-             ts->cfg.auto_instant_kill ? "%%C3[開啟]" : "%%C0[關閉]");
+             ts->cfg.auto_instant_kill ? "%C3[開啟]" : "%C0[關閉]");
     snprintf(rows[4], sizeof(rows[4]), "%%C5[5 / F5]  全隊滿血滿藍 + 淨化異常狀態    %%C6[執行]");
     snprintf(rows[5], sizeof(rows[5]), "%%C5[6 / F6]  獲得測試金錢 (+50,000 文)      %%C6[執行]");
     snprintf(rows[6], sizeof(rows[6]), "%%C5[7 / F7]  在隊全員立即升級 (+1 級)       %%C6[執行]");
@@ -468,10 +468,10 @@ static void pal_test_rebuild_textures(
     snprintf(rows[8], sizeof(rows[8]), "%%C5[9 / F8]  大圖移動倍速                  %%C3[%d×]",
              ts->cfg.speed_mult);
     snprintf(rows[9], sizeof(rows[9]), "%%C5[0 / F9]  穿牆模式 (無視地形碰撞)        %s",
-             nc ? "%%C3[開啟]" : "%%C0[關閉]");
+             nc ? "%C3[開啟]" : "%C0[關閉]");
     snprintf(rows[10], sizeof(rows[10]), "%%C5[- / F10] 快進劇情等待 (跳過演出延遲)    %%C6[執行]");
     snprintf(rows[11], sizeof(rows[11]), "%%C5[S]      快速存檔至測試槽 (Slot 9)      %s",
-             in_cb ? "%%C0[限地圖]" : "%%C6[存檔]");
+             in_cb ? "%C0[限地圖]" : "%C6[存檔]");
     snprintf(rows[12], sizeof(rows[12]), "%%C5[L]      快速讀取測試槽 (Slot 9)        %%C6[讀檔]");
 
     for (int i = 0; i < PAL_TEST_MENU_ROWS; i++) {
