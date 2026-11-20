@@ -10762,8 +10762,8 @@ static void shop_draw_overlay(
         shop_free_textures(sm);
         shop_clamp_cursor(ws, sm);
         char buf[384];
-        snprintf(buf, sizeof(buf), "%%C6商鋪 #%d  %%C0[%s]  %%C6所持金錢：%d 文",
-                 sm->shop_id, sm->mode == 0 ? "購買模式" : "出售模式", ws->money);
+        snprintf(buf, sizeof(buf), "%%C6商鋪  %%C0[%s]  %%C6所持金錢：%d 文",
+                 sm->mode == 0 ? "購買模式" : "出售模式", ws->money);
         sm->header_tex = create_richtext_texture(renderer, buf, 16.0f, 540, &sm->header_w, &sm->header_h);
 
         int total = shop_row_count(ws, sm);
@@ -12549,8 +12549,8 @@ static int pal_combat_init(
     if (cb->active_hero_idx < 0) cb->active_hero_idx = 0;
     cb->target_cursor = pal_combat_first_alive_enemy(cb);
     if (cb->target_cursor < 0) cb->target_cursor = 0;
-    snprintf(cb->log_text, sizeof(cb->log_text), "遭遇戰 #%d！%s 等敵人現身。",
-             cb->formation_id, cb->enemies[0].name_utf8);
+    snprintf(cb->log_text, sizeof(cb->log_text), "遭遇戰！%s 等敵人現身。",
+             cb->enemies[0].name_utf8);
     cb->toast_timer = 2.8f;
     cb->dirty = 1;
     return 0;
@@ -13929,11 +13929,11 @@ static void pal_combat_execute_enemy_ai_ex(
     int main_tgt = (sum.tgt_count > 0) ? sum.tgt_indices[0] : hidx;
     const char *tgt_name = (main_tgt >= 0 && main_tgt < ws->party_member_count) ? ws->party_members[main_tgt].name_utf8 : hero->name_utf8;
     if (sum.tgt_count > 1) {
-        snprintf(cb->log_text, sizeof(cb->log_text), "%s 發動招式 #%d 攻擊全體，共造成 %d 點傷害！",
-                 eu->name_utf8, chosen_atk, sum.total_dmg);
+        snprintf(cb->log_text, sizeof(cb->log_text), "%s 發動攻擊全體，共造成 %d 點傷害！",
+                 eu->name_utf8, sum.total_dmg);
     } else {
-        snprintf(cb->log_text, sizeof(cb->log_text), "%s 發動招式 #%d，對 %s 造成 %d 點傷害！",
-                 eu->name_utf8, chosen_atk, tgt_name, sum.total_dmg);
+        snprintf(cb->log_text, sizeof(cb->log_text), "%s 發動攻擊，對 %s 造成 %d 點傷害！",
+                 eu->name_utf8, tgt_name, sum.total_dmg);
     }
     if (out_beat) {
         memset(out_beat, 0, sizeof(*out_beat));
@@ -22070,7 +22070,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 map_banner_timer = 0.0f;
                 if (map.map_id != 532u && map.map_id != 533u) {
                     char banner_msg[128];
-                    snprintf(banner_msg, sizeof(banner_msg), "%%C6%s %%C3(Map #%u)", map.title_utf8, map.map_id);
+                    snprintf(banner_msg, sizeof(banner_msg), "%%C6%s", map.title_utf8);
                     map_banner_tex = create_richtext_texture(renderer, banner_msg, 20.0f, 360, &map_banner_w, &map_banner_h);
                     map_banner_timer = 3.0f;
                 }
