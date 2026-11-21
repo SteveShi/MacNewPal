@@ -58,6 +58,8 @@ targets:
           - "CoreGraphics"
           - "-framework"
           - "CoreFoundation"
+          - "-framework"
+          - "ImageIO"
         SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) PAL_ENABLE_TEST_MODE"
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) PAL_ENABLE_TEST_MODE=1"
         OTHER_CFLAGS:

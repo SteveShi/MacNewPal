@@ -17,9 +17,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define PAL_TEST_MODE_RUNTIME 1
 #include "PalTestMode.h"
+#include "PalMcpBridge.h"
 #include "PalGpuFilter.h"
 #include "PalGamepad.h"
 
@@ -35,6 +38,8 @@ static int g_pal_hd_mode = 0;
 static int g_pal_cpu_upscale_2x = 0;
 static int g_pal_text_scale = 1;
 static int g_pal_text_lang = 0; /* 0 = Traditional Chinese (Original), 1 = Simplified Chinese */
+static int g_pal_headless_mode = 0;
+static int g_pal_skip_videos = 0;
 
 static inline int pal_px_close(const uint8_t *a, const uint8_t *b) {
     if (a[3] == 0 && b[3] == 0) return 1;
@@ -2842,6 +2847,25 @@ static CFStringRef pal_create_localized_cfstring(const char *utf8, size_t len) {
     return (CFStringRef)ms;
 }
 
+static void pal_localize_utf8_copy(const char *src, char *dst, size_t cap) {
+    if (!dst || cap == 0) return;
+    dst[0] = '\0';
+    if (!src || src[0] == '\0') return;
+    if (g_pal_text_lang != 1) {
+        snprintf(dst, cap, "%s", src);
+        return;
+    }
+    CFStringRef conv = pal_create_localized_cfstring(src, strlen(src));
+    if (conv) {
+        if (!CFStringGetCString(conv, dst, (CFIndex)cap, kCFStringEncodingUTF8)) {
+            snprintf(dst, cap, "%s", src);
+        }
+        CFRelease(conv);
+    } else {
+        snprintf(dst, cap, "%s", src);
+    }
+}
+
 static CTFontRef pal_sc_create_calligraphy_font(float pt_size) {
     static const char *const kBrushFamilies[] = {
         "STKaitiSC-Bold",
@@ -3949,6 +3973,7 @@ static int pal_bink_play_file(
     const char *game_dir, const char *rel_path,
     float master_volume, int mute_audio
 ) {
+    if (g_pal_headless_mode || g_pal_skip_videos) return 0;
     char full_path[1200];
     if (resolve_rel_path_ci(game_dir, rel_path, full_path, sizeof(full_path)) != 0) return -1;
 
@@ -4086,6 +4111,9 @@ static int pal_bink_play_file(
                             }
                         }
                         if (skip || app_quit) break;
+                        int vskip = pal_mcp_poll_video_skip();
+                        if (vskip == 2) { app_quit = 1; break; }
+                        if (vskip == 1) { skip = 1; break; }
 
                         double elapsed_sec = (double)(SDL_GetTicksNS() - start_ns) / 1e9;
                         if (elapsed_sec >= target_sec) break;
@@ -4200,6 +4228,7 @@ static int run_fade_transition_ex(
     PalGpuFilterPipeline *gpu_filter, int active_shader, int tex_w, int tex_h,
     int fade_in, Uint32 duration_ms, PalBgmPlayer *bgm
 ) {
+    if (g_pal_headless_mode) return 0;
     SDL_SetRenderTarget(renderer, NULL);
     SDL_SetRenderScale(renderer, 1.0f, 1.0f);
     int out_w = 1280, out_h = 960;
@@ -13908,7 +13937,6 @@ static void pal_combat_execute_enemy_ai_ex(
     if (ai_sid > 0) {
         combat_exec_fight_script(cb, ws, ai_sid, PAL_DB_KIND_FIGHT, 0, eidx, 1, hidx, 0, &sum, 0);
     }
-    int32_t chosen_atk = sum.executed_script_id ? sum.executed_script_id : ai_sid;
     if (sum.tgt_count == 0) {
         /* Fallback monster physical formula 51 (mode 0x33) */
         PalCombatUnitView cv, tv;
@@ -19118,15 +19146,63 @@ static void pal_test_bridge_toggle_noclip(void *ctx) {
     if (c && c->noclip_mode) *c->noclip_mode = !(*c->noclip_mode);
 }
 
+static void pal_snap_cutscene_actors_and_fx(
+    PalTalkWorldState *ws, const char *game_dir,
+    PalFieldActor *party, PalFieldActor *npcs, int npc_cnt
+) {
+    if (ws) {
+        if (ws->fade_steps > 0) {
+            ws->fade_r = ws->fade_target_r;
+            ws->fade_g = ws->fade_target_g;
+            ws->fade_b = ws->fade_target_b;
+            ws->fade_steps = 0;
+        }
+        if (ws->cam_pan_steps_x > 0) {
+            ws->cam_cur_x = ws->cam_target_x;
+            ws->cam_pan_steps_x = 0;
+        }
+        if (ws->cam_pan_steps_y > 0) {
+            ws->cam_cur_y = ws->cam_target_y;
+            ws->cam_pan_steps_y = 0;
+        }
+    }
+    if (party) {
+        for (int p = 0; p < 4; p++) {
+            if (!party[p].active || !party[p].script_moving) continue;
+            party[p].px = party[p].walk_target_px;
+            party[p].py = party[p].walk_target_py;
+            party[p].script_moving = 0;
+            if (game_dir) {
+                int stand_base = pal_actor_move_sub_base(&party[p], 1, 0);
+                field_actor_set_sub(&party[p], game_dir, party[p].act_id,
+                                    stand_base + (party[p].dir & 7), (stand_base == 0) ? 0 : 1);
+            }
+        }
+    }
+    if (npcs && npc_cnt > 0) {
+        int lim = (npc_cnt < 128) ? npc_cnt : 128;
+        for (int n = 0; n < lim; n++) {
+            if (!npcs[n].active || !npcs[n].script_moving) continue;
+            npcs[n].px = npcs[n].walk_target_px;
+            npcs[n].py = npcs[n].walk_target_py;
+            npcs[n].script_moving = 0;
+            if (game_dir) {
+                int stand_base = pal_actor_move_sub_base(&npcs[n], 0, 0);
+                field_actor_set_sub(&npcs[n], game_dir, npcs[n].act_id,
+                                    stand_base + (npcs[n].dir & 7), 1);
+            }
+        }
+    }
+}
+
 static void pal_test_bridge_skip_wait(void *ctx) {
     PalTestBridgeCtx *c = (PalTestBridgeCtx *)ctx;
     if (!c) return;
     if (c->pending_fade_in_ms) *c->pending_fade_in_ms = 0;
-    if (c->ws) {
-        c->ws->fade_steps = 0;
-        c->ws->cam_pan_steps_x = 0;
-        c->ws->cam_pan_steps_y = 0;
-    }
+    pal_snap_cutscene_actors_and_fx(
+        c->ws, c->cfg ? c->cfg->game_dir : NULL,
+        c->party, c->map_npcs, c->io_npc_cnt ? *c->io_npc_cnt : 0
+    );
     if (c->talk_vm && c->talk_vm->active && !c->talk_vm->waiting_input &&
         c->talk_vm->pending_map_id < 0 && c->ws && c->cfg && c->map) {
         c->talk_vm->wait_ticks = 0;
@@ -19158,6 +19234,1218 @@ static void pal_test_bridge_play_sfx(void *ctx, uint32_t sfx_id) {
 }
 #endif /* PAL_ENABLE_TEST_MODE */
 
+typedef struct {
+    const PalLaunchConfig *cfg;
+    SDL_Window *window;
+    SDL_Renderer *renderer;
+    SDL_ScaleMode scale_mode;
+    PalSceneState *scene;
+    PalLoadedMap *map;
+    PalFieldActor *party;
+    PalFieldActor *map_npcs;
+    int *io_npc_cnt;
+    int *astar_tx;
+    int *astar_ty;
+    int *astar_count;
+    int *astar_cursor;
+    int *interact_target_npc_idx;
+    PalCampMenuState *camp_menu;
+    PalShopMenuState *shop_menu;
+    PalLoadOverlayState *load_overlay;
+    PalCombatState *cb;
+    PalTalkWorldState *ws;
+    PalTalkVM *talk_vm;
+    int *show_dialogue;
+    int *selected_btn;
+    int *activate_btn;
+    int *request_return_title;
+    int *requested_load_slot;
+    int *need_setup_loaded_map;
+    int *pending_spawn_override;
+    int *spawn_override_tx;
+    int *spawn_override_ty;
+    int *spawn_override_dir;
+    int *pending_fade_in_ms;
+    int *noclip_mode;
+    int *app_quit;
+    int *has_synth_mouse;
+    float *synth_mouse_x;
+    float *synth_mouse_y;
+    int allow_qa;
+    PalTestState *test_state;
+    PalSfxPool *sfx_pool;
+    int *runtime_mute;
+    float *runtime_sfx_vol;
+    uint32_t wait_start_map_id;
+    int wait_prev_px;
+    int wait_prev_py;
+    int wait_stall_frames;
+    int wait_frames_rem;
+} PalMcpBridgeCtx;
+
+static void mcp_append_jstr_loc(PalJsonBuf *jb, const char *utf8) {
+    if (!utf8 || utf8[0] == '\0') {
+        pal_jbuf_append_json_str(jb, "");
+        return;
+    }
+    char loc[1024];
+    pal_localize_utf8_copy(utf8, loc, sizeof(loc));
+    pal_jbuf_append_json_str(jb, loc);
+}
+
+static int mcp_parse_dir(const char *s, int fallback) {
+    if (!s || s[0] == '\0') return fallback;
+    if (s[0] >= '0' && s[0] <= '7' && s[1] == '\0') return s[0] - '0';
+    if (strcmp(s, "up") == 0 || strcmp(s, "u") == 0 || strcmp(s, "n") == 0) return 0;
+    if (strcmp(s, "down") == 0 || strcmp(s, "d") == 0 || strcmp(s, "s") == 0) return 1;
+    if (strcmp(s, "left") == 0 || strcmp(s, "l") == 0 || strcmp(s, "w") == 0) return 2;
+    if (strcmp(s, "right") == 0 || strcmp(s, "r") == 0 || strcmp(s, "e") == 0) return 3;
+    if (strcmp(s, "ul") == 0 || strcmp(s, "nw") == 0) return 4;
+    if (strcmp(s, "dr") == 0 || strcmp(s, "se") == 0) return 5;
+    if (strcmp(s, "dl") == 0 || strcmp(s, "sw") == 0) return 6;
+    if (strcmp(s, "ur") == 0 || strcmp(s, "ne") == 0) return 7;
+    return fallback;
+}
+
+static const char *mcp_scene_name(PalSceneState sc) {
+    switch (sc) {
+        case PAL_SCENE_TITLE: return "title";
+        case PAL_SCENE_LOAD_OVERLAY: return "load_overlay";
+        case PAL_SCENE_COMBAT: return "combat";
+        case PAL_SCENE_FIELD:
+        default: return "field";
+    }
+}
+
+static const char *mcp_sub_state_name(const PalMcpBridgeCtx *c) {
+    if (!c || !c->scene) return "unknown";
+    switch (*c->scene) {
+        case PAL_SCENE_TITLE: return "title";
+        case PAL_SCENE_LOAD_OVERLAY: return "load_overlay";
+        case PAL_SCENE_COMBAT:
+            if (!c->cb) return "combat";
+            switch (c->cb->phase) {
+                case COMBAT_PHASE_COMMAND: return "combat_command";
+                case COMBAT_PHASE_SUBMENU: return "combat_submenu";
+                case COMBAT_PHASE_TARGET:  return "combat_target";
+                case COMBAT_PHASE_ANIMATE: return "combat_animate";
+                case COMBAT_PHASE_VICTORY: return "combat_victory";
+                case COMBAT_PHASE_DEFEAT:  return "combat_defeat";
+                case COMBAT_PHASE_FLED:    return "combat_fled";
+                default: return "combat";
+            }
+        case PAL_SCENE_FIELD:
+        default:
+            if (c->shop_menu && c->shop_menu->open) return "shop_menu";
+            if (c->camp_menu && c->camp_menu->open) return "camp_menu";
+            if (c->talk_vm && c->talk_vm->active) {
+                if (c->talk_vm->waiting_input) {
+                    return (c->talk_vm->choice_count > 0) ? "dialogue_choice" : "dialogue";
+                }
+                return "cutscene_wait";
+            }
+            if (c->show_dialogue && *c->show_dialogue) return "dialogue_sample";
+            return "exploring";
+    }
+}
+
+static void pal_mcp_cb_state(void *ctx, PalJsonBuf *out) {
+    PalMcpBridgeCtx *c = (PalMcpBridgeCtx *)ctx;
+    if (!c || !out) return;
+    pal_jbuf_reset(out);
+
+    PalSceneState sc = c->scene ? *c->scene : PAL_SCENE_TITLE;
+    const char *sub = mcp_sub_state_name(c);
+    int astar_rem = (c->astar_count && c->astar_cursor && *c->astar_count > *c->astar_cursor)
+                        ? (*c->astar_count - *c->astar_cursor) : 0;
+
+    pal_jbuf_append_cstr(out, "{\"scene\":");
+    pal_jbuf_append_json_str(out, mcp_scene_name(sc));
+    pal_jbuf_append_cstr(out, ",\"sub_state\":");
+    pal_jbuf_append_json_str(out, sub);
+    pal_jbuf_append_fmt(out, ",\"language\":%s,\"headless\":%s,\"allow_qa_tools\":%s",
+                        (g_pal_text_lang == 1) ? "\"sc\"" : "\"tc\"",
+                        g_pal_headless_mode ? "true" : "false",
+                        c->allow_qa ? "true" : "false");
+
+    pal_jbuf_append_fmt(out, ",\"title\":{\"selected_button\":%d}", c->selected_btn ? *c->selected_btn : 0);
+
+    if (c->map) {
+        pal_jbuf_append_fmt(out, ",\"map\":{\"id\":%u,\"title\":", c->map->map_id);
+        mcp_append_jstr_loc(out, c->map->title_utf8);
+        pal_jbuf_append_fmt(out, ",\"w_tiles\":%d,\"h_tiles\":%d,\"bgm\":", c->map->w_tiles, c->map->h_tiles);
+        pal_jbuf_append_json_str(out, c->map->bgm_track);
+        pal_jbuf_append_cstr(out, "}");
+    }
+
+    if (c->party) {
+        pal_jbuf_append_fmt(out,
+            ",\"player\":{\"px\":%d,\"py\":%d,\"tx\":%d,\"ty\":%d,\"dir\":%d,\"moving\":%s,\"astar_remaining\":%d}",
+            c->party[0].px, c->party[0].py, c->party[0].px >> 4, c->party[0].py >> 4, c->party[0].dir,
+            (astar_rem > 0 || c->party[0].script_moving) ? "true" : "false", astar_rem);
+    }
+
+    if (c->ws) {
+        pal_jbuf_append_fmt(out, ",\"money\":%d,\"inventory_count\":%d,\"party\":[",
+                            c->ws->money, c->ws->inventory_count);
+        for (int p = 0; p < c->ws->party_member_count && p < 4; p++) {
+            const PalPartyMemberState *m = &c->ws->party_members[p];
+            if (p > 0) pal_jbuf_append_cstr(out, ",");
+            pal_jbuf_append_fmt(out, "{\"slot\":%d,\"hero_id\":%d,\"active\":%s,\"name\":",
+                                p, m->hero_id, m->active ? "true" : "false");
+            mcp_append_jstr_loc(out, m->name_utf8);
+            pal_jbuf_append_fmt(out,
+                ",\"lv\":%d,\"exp\":%d,\"next_exp\":%d,\"hp\":%d,\"max_hp\":%d,\"mp\":%d,\"max_mp\":%d,"
+                "\"atk\":%d,\"mag\":%d,\"def\":%d,\"spd\":%d,\"luck\":%d,\"magics\":[",
+                m->lv, m->exp, m->next_exp, m->cur_hp, m->eff_max_hp, m->cur_mp, m->eff_max_mp,
+                m->eff_atk, m->eff_mag, m->eff_def, m->eff_spd, m->eff_luck);
+            for (int mi = 0; mi < m->magic_count && mi < PAL_HERO_MAX_MAGICS; mi++) {
+                uint16_t mid = m->magics[mi];
+                const PalMagicRecord *mg = c->ws->db ? pal_db_find_magic(c->ws->db, (int32_t)mid) : NULL;
+                if (mi > 0) pal_jbuf_append_cstr(out, ",");
+                pal_jbuf_append_fmt(out, "{\"id\":%u,\"mp_cost\":%d,\"name\":",
+                                    (unsigned)mid, mg ? mg->mp_cost : 0);
+                mcp_append_jstr_loc(out, mg ? mg->name_utf8 : "");
+                pal_jbuf_append_cstr(out, "}");
+            }
+            pal_jbuf_append_cstr(out, "]}");
+        }
+        pal_jbuf_append_cstr(out, "]");
+    }
+
+    if (c->talk_vm && (c->talk_vm->active || (c->show_dialogue && *c->show_dialogue))) {
+        pal_jbuf_append_fmt(out,
+            ",\"dialogue\":{\"active\":%s,\"visible\":%s,\"waiting_input\":%s,\"talk_id\":%d,"
+            "\"wait_ticks\":%d,\"pending_map_id\":%d,\"selected_choice\":%d,\"text\":",
+            c->talk_vm->active ? "true" : "false",
+            c->talk_vm->dlg_visible ? "true" : "false",
+            c->talk_vm->waiting_input ? "true" : "false",
+            c->talk_vm->talk_id, c->talk_vm->wait_ticks, c->talk_vm->pending_map_id,
+            c->talk_vm->choice_selected);
+        mcp_append_jstr_loc(out, c->talk_vm->dlg_clean_utf8);
+        pal_jbuf_append_cstr(out, ",\"choices\":[");
+        for (int ci = 0; ci < c->talk_vm->choice_count && ci < PAL_MAX_CHOICES; ci++) {
+            if (ci > 0) pal_jbuf_append_cstr(out, ",");
+            pal_jbuf_append_fmt(out, "{\"index\":%d,\"label\":", ci);
+            mcp_append_jstr_loc(out, c->talk_vm->choice_labels[ci]);
+            pal_jbuf_append_cstr(out, "}");
+        }
+        pal_jbuf_append_cstr(out, "]}");
+    }
+
+    if (sc == PAL_SCENE_COMBAT && c->cb) {
+        pal_jbuf_append_fmt(out,
+            ",\"combat\":{\"formation_id\":%d,\"turn_no\":%d,\"phase\":%d,\"active_hero_idx\":%d,"
+            "\"flee_blocked\":%s,\"settle_stage\":%d,\"defeat_stage\":%d,\"exp_gained\":%d,\"gold_gained\":%d,\"log\":",
+            c->cb->formation_id, c->cb->turn_no, (int)c->cb->phase, c->cb->active_hero_idx,
+            c->cb->flee_blocked ? "true" : "false", c->cb->settle_stage, c->cb->defeat_stage,
+            c->cb->total_exp_gained, c->cb->total_gold_gained);
+        mcp_append_jstr_loc(out, c->cb->log_text);
+        pal_jbuf_append_cstr(out, ",\"enemies\":[");
+        for (int e = 0; e < c->cb->enemy_count && e < 6; e++) {
+            const PalCombatEnemyUnit *eu = &c->cb->enemies[e];
+            if (e > 0) pal_jbuf_append_cstr(out, ",");
+            pal_jbuf_append_fmt(out,
+                "{\"index\":%d,\"mon_id\":%d,\"active\":%s,\"alive\":%s,\"hp\":%d,\"max_hp\":%d,\"name\":",
+                e, eu->mon_id, eu->active ? "true" : "false", eu->alive ? "true" : "false",
+                eu->cur_hp, eu->max_hp);
+            mcp_append_jstr_loc(out, eu->name_utf8);
+            pal_jbuf_append_cstr(out, "}");
+        }
+        pal_jbuf_append_cstr(out, "]}");
+    }
+
+    if (c->shop_menu && c->shop_menu->open && c->ws) {
+        pal_jbuf_append_fmt(out, ",\"shop\":{\"open\":true,\"shop_id\":%d,\"mode\":%s,\"items\":[",
+                            c->shop_menu->shop_id, c->shop_menu->mode == 0 ? "\"buy\"" : "\"sell\"");
+        int cnt = (c->shop_menu->mode == 0) ? c->shop_menu->buy_count : c->ws->inventory_count;
+        for (int i = 0; i < cnt && i < 64; i++) {
+            uint16_t iid = (c->shop_menu->mode == 0) ? c->shop_menu->buy_items[i] : c->ws->inventory_ids[i];
+            const PalItemRecord *it = c->ws->db ? pal_db_find_item(c->ws->db, (int32_t)iid) : NULL;
+            int32_t price = (it && it->price > 0) ? it->price : 50;
+            if (c->shop_menu->mode == 1) price = (price > 1) ? (price / 2) : 25;
+            if (i > 0) pal_jbuf_append_cstr(out, ",");
+            pal_jbuf_append_fmt(out, "{\"item_id\":%u,\"price\":%d,\"name\":", (unsigned)iid, price);
+            mcp_append_jstr_loc(out, it ? it->name_utf8 : "");
+            pal_jbuf_append_cstr(out, "}");
+        }
+        pal_jbuf_append_cstr(out, "]}");
+    }
+
+    if (c->camp_menu && c->camp_menu->open) {
+        pal_jbuf_append_fmt(out, ",\"camp_menu\":{\"open\":true,\"state\":%d,\"cat_cursor\":%d}",
+                            c->camp_menu->state, c->camp_menu->cat_cursor);
+    }
+
+#if PAL_ENABLE_TEST_MODE
+    pal_jbuf_append_fmt(out,
+        ",\"test_flags\":{\"enabled\":%s,\"god_mode\":%s,\"no_encounter\":%s,\"auto_instant_kill\":%s,\"speed_mult\":%d,\"noclip\":%s}",
+        (c->test_state && c->test_state->cfg.enabled) ? "true" : "false",
+        (c->test_state && c->test_state->cfg.god_mode) ? "true" : "false",
+        (c->test_state && c->test_state->cfg.no_encounter) ? "true" : "false",
+        (c->test_state && c->test_state->cfg.auto_instant_kill) ? "true" : "false",
+        c->test_state ? pal_test_speed_mult(c->test_state) : 1,
+        (c->noclip_mode && *c->noclip_mode) ? "true" : "false");
+#else
+    pal_jbuf_append_fmt(out,
+        ",\"test_flags\":{\"enabled\":false,\"god_mode\":false,\"no_encounter\":false,\"auto_instant_kill\":false,\"speed_mult\":1,\"noclip\":%s}",
+        (c->noclip_mode && *c->noclip_mode) ? "true" : "false");
+#endif
+    pal_jbuf_append_cstr(out, "}");
+}
+
+static void pal_mcp_cb_map_entities(void *ctx, int radius, PalJsonBuf *out) {
+    PalMcpBridgeCtx *c = (PalMcpBridgeCtx *)ctx;
+    if (!c || !out || !c->map) {
+        if (out) { pal_jbuf_reset(out); pal_jbuf_append_cstr(out, "{}"); }
+        return;
+    }
+    pal_jbuf_reset(out);
+    int ptx = c->party ? (c->party[0].px >> 4) : 0;
+    int pty = c->party ? (c->party[0].py >> 4) : 0;
+    int ppx = c->party ? c->party[0].px : 0;
+    int ppy = c->party ? c->party[0].py : 0;
+    int npc_cnt = c->io_npc_cnt ? *c->io_npc_cnt : 0;
+
+    pal_jbuf_append_fmt(out, "{\"map_id\":%u,\"title\":", c->map->map_id);
+    mcp_append_jstr_loc(out, c->map->title_utf8);
+    pal_jbuf_append_fmt(out, ",\"w_tiles\":%d,\"h_tiles\":%d,\"player_tx\":%d,\"player_ty\":%d,\"npcs\":[",
+                        c->map->w_tiles, c->map->h_tiles, ptx, pty);
+
+    int emitted_npc = 0;
+    for (int i = 0; i < npc_cnt && i < 128; i++) {
+        const PalFieldActor *a = &c->map_npcs[i];
+        if (!a->active) continue;
+        int ntx = a->px >> 4, nty = a->py >> 4;
+        int dx = a->px - ppx, dy = a->py - ppy;
+        int dist_sq = dx * dx + dy * dy;
+        int manhattan = abs(ntx - ptx) + abs(nty - pty);
+        if (emitted_npc > 0) pal_jbuf_append_cstr(out, ",");
+        pal_jbuf_append_fmt(out,
+            "{\"index\":%d,\"obj_id\":%u,\"act_id\":%u,\"tx\":%d,\"ty\":%d,\"distance_tiles\":%d,"
+            "\"talk_id\":%u,\"npc_flags\":%u,\"auto_trigger\":%s,\"aggro\":%u,\"can_interact_now\":%s}",
+            i, (unsigned)a->obj_id, a->act_id, ntx, nty, manhattan,
+            (unsigned)a->talk_id, a->npc_flags,
+            ((a->npc_flags & 0x20u) != 0u) ? "true" : "false",
+            (unsigned)a->aggro, (dist_sq <= 46 * 46) ? "true" : "false");
+        emitted_npc++;
+    }
+
+    typedef struct {
+        uint8_t id;
+        int count;
+        int min_tx, max_tx, min_ty, max_ty;
+        int64_t sum_tx, sum_ty;
+    } McpTrigAgg;
+    McpTrigAgg trigs[256];
+    memset(trigs, 0, sizeof(trigs));
+    int trig_order[256];
+    int trig_unique = 0;
+
+    if (c->map->walk_grid && c->map->w_tiles > 0 && c->map->h_tiles > 0) {
+        int W = c->map->w_tiles, H = c->map->h_tiles;
+        for (int ty = 0; ty < H; ty++) {
+            for (int tx = 0; tx < W; tx++) {
+                uint8_t tid = (uint8_t)(c->map->walk_grid[(size_t)ty * (size_t)W + (size_t)tx] & 0xFFu);
+                if (tid == 0) continue;
+                McpTrigAgg *ag = &trigs[tid];
+                if (ag->count == 0) {
+                    ag->id = tid;
+                    ag->min_tx = ag->max_tx = tx;
+                    ag->min_ty = ag->max_ty = ty;
+                    trig_order[trig_unique++] = tid;
+                } else {
+                    if (tx < ag->min_tx) ag->min_tx = tx;
+                    if (tx > ag->max_tx) ag->max_tx = tx;
+                    if (ty < ag->min_ty) ag->min_ty = ty;
+                    if (ty > ag->max_ty) ag->max_ty = ty;
+                }
+                ag->count++;
+                ag->sum_tx += tx;
+                ag->sum_ty += ty;
+            }
+        }
+    }
+
+    pal_jbuf_append_cstr(out, "],\"triggers\":[");
+    for (int ti = 0; ti < trig_unique; ti++) {
+        uint8_t tid = (uint8_t)trig_order[ti];
+        const McpTrigAgg *ag = &trigs[tid];
+        uint32_t talk_id = 0, param = 0, flag_id = 0;
+        for (int k = 0; k < c->map->trigger_count; k++) {
+            if (c->map->triggers[k].id == (uint32_t)tid) {
+                talk_id = c->map->triggers[k].talk_id;
+                param = c->map->triggers[k].param;
+                flag_id = c->map->triggers[k].flag_id;
+                break;
+            }
+        }
+        if (ti > 0) pal_jbuf_append_cstr(out, ",");
+        pal_jbuf_append_fmt(out,
+            "{\"trigger_id\":%u,\"tiles\":%d,\"center_tx\":%d,\"center_ty\":%d,"
+            "\"min_tx\":%d,\"max_tx\":%d,\"min_ty\":%d,\"max_ty\":%d,"
+            "\"talk_id\":%u,\"param\":%u,\"flag_id\":%u}",
+            (unsigned)tid, ag->count, (int)(ag->sum_tx / ag->count), (int)(ag->sum_ty / ag->count),
+            ag->min_tx, ag->max_tx, ag->min_ty, ag->max_ty, talk_id, param, flag_id);
+    }
+    pal_jbuf_append_cstr(out, "]");
+
+    if (radius > 0 && c->map->w_tiles > 0 && c->map->h_tiles > 0) {
+        if (radius > 25) radius = 25;
+        int x0 = ptx - radius, x1 = ptx + radius;
+        int y0 = pty - radius, y1 = pty + radius;
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 >= c->map->w_tiles) x1 = c->map->w_tiles - 1;
+        if (y1 >= c->map->h_tiles) y1 = c->map->h_tiles - 1;
+
+        pal_jbuf_append_fmt(out, ",\"ascii_map\":{\"origin_tx\":%d,\"origin_ty\":%d,\"legend\":\"P=player N=npc T=trigger .=walk #=block\",\"rows\":[",
+                            x0, y0);
+        for (int ty = y0; ty <= y1; ty++) {
+            char row[64];
+            int rw = 0;
+            for (int tx = x0; tx <= x1 && rw + 1 < (int)sizeof(row); tx++) {
+                char ch = pal_map_can_stand_tile(c->map, tx, ty, 2) ? '.' : '#';
+                if (c->map->walk_grid) {
+                    uint8_t tr = (uint8_t)(c->map->walk_grid[(size_t)ty * (size_t)c->map->w_tiles + (size_t)tx] & 0xFFu);
+                    if (tr != 0) ch = 'T';
+                }
+                for (int i = 0; i < npc_cnt && i < 128; i++) {
+                    if (c->map_npcs[i].active && (c->map_npcs[i].px >> 4) == tx && (c->map_npcs[i].py >> 4) == ty) {
+                        ch = 'N';
+                        break;
+                    }
+                }
+                if (tx == ptx && ty == pty) ch = 'P';
+                row[rw++] = ch;
+            }
+            row[rw] = '\0';
+            if (ty > y0) pal_jbuf_append_cstr(out, ",");
+            pal_jbuf_append_json_str(out, row);
+        }
+        pal_jbuf_append_cstr(out, "]}");
+    }
+    pal_jbuf_append_cstr(out, "}");
+}
+
+static void pal_mcp_cb_inventory_saves(void *ctx, PalJsonBuf *out) {
+    PalMcpBridgeCtx *c = (PalMcpBridgeCtx *)ctx;
+    if (!c || !out) return;
+    pal_jbuf_reset(out);
+    pal_jbuf_append_cstr(out, "{\"inventory\":[");
+    if (c->ws) {
+        for (int32_t i = 0; i < c->ws->inventory_count && i < PAL_INVENTORY_CAP; i++) {
+            uint16_t iid = c->ws->inventory_ids[i];
+            int32_t qty = c->ws->inventory_qty[i];
+            const PalItemRecord *it = c->ws->db ? pal_db_find_item(c->ws->db, (int32_t)iid) : NULL;
+            int eq_slot = pal_item_equip_slot((int32_t)iid);
+            if (i > 0) pal_jbuf_append_cstr(out, ",");
+            pal_jbuf_append_fmt(out, "{\"item_id\":%u,\"qty\":%d,\"price\":%d,\"equip_slot\":%d,\"name\":",
+                                (unsigned)iid, qty, it ? it->price : 0, eq_slot);
+            mcp_append_jstr_loc(out, it ? it->name_utf8 : "");
+            pal_jbuf_append_cstr(out, ",\"desc\":");
+            mcp_append_jstr_loc(out, it ? it->desc_utf8 : "");
+            pal_jbuf_append_cstr(out, "}");
+        }
+    }
+    pal_jbuf_append_cstr(out, "],\"saves\":[");
+    if (c->cfg) {
+        for (int s = 0; s < PAL_SAVE_UI_SLOTS; s++) {
+            PalSaveSlotSummary sum;
+            pal_save_slot_read_summary(c->cfg->game_dir, s, &sum);
+            if (s > 0) pal_jbuf_append_cstr(out, ",");
+            pal_jbuf_append_fmt(out, "{\"slot\":%d,\"exists\":%s", s, sum.exists ? "true" : "false");
+            if (sum.exists) {
+                pal_jbuf_append_fmt(out, ",\"map_id\":%u,\"lead_lv\":%d,\"money\":%d,\"time\":",
+                                    sum.map_id, sum.lead_lv, sum.money);
+                pal_jbuf_append_json_str(out, sum.time_str);
+                pal_jbuf_append_cstr(out, ",\"title\":");
+                mcp_append_jstr_loc(out, sum.title_utf8);
+            }
+            pal_jbuf_append_cstr(out, "}");
+        }
+    }
+    pal_jbuf_append_cstr(out, "]}");
+}
+
+static void pal_mcp_cb_flags(void *ctx, int flag_start, int flag_end, const char *list_csv, int include_vars, PalJsonBuf *out) {
+    PalMcpBridgeCtx *c = (PalMcpBridgeCtx *)ctx;
+    if (!c || !out || !c->ws) {
+        if (out) { pal_jbuf_reset(out); pal_jbuf_append_cstr(out, "{}"); }
+        return;
+    }
+    pal_jbuf_reset(out);
+    pal_jbuf_append_cstr(out, "{\"story_flags\":{");
+    int first = 1;
+    if (list_csv && list_csv[0] != '\0') {
+        const char *p = list_csv;
+        int count = 0;
+        while (*p && count < 256) {
+            while (*p && (*p == ',' || *p == ' ')) p++;
+            if (!*p) break;
+            char *endp = NULL;
+            long fid = strtol(p, &endp, 10);
+            if (endp == p) { p++; continue; }
+            p = endp;
+            if (fid >= 0 && fid < PAL_STORY_FLAG_CAP) {
+                if (!first) pal_jbuf_append_cstr(out, ",");
+                pal_jbuf_append_fmt(out, "\"%ld\":%u", fid, (unsigned)c->ws->story_flags[fid]);
+                first = 0;
+                count++;
+            }
+        }
+    } else {
+        if (flag_start < 0) flag_start = 0;
+        if (flag_end < flag_start) flag_end = flag_start;
+        if (flag_end - flag_start >= 256) flag_end = flag_start + 255;
+        if (flag_end >= PAL_STORY_FLAG_CAP) flag_end = PAL_STORY_FLAG_CAP - 1;
+        for (int f = flag_start; f <= flag_end; f++) {
+            if (!first) pal_jbuf_append_cstr(out, ",");
+            pal_jbuf_append_fmt(out, "\"%d\":%u", f, (unsigned)c->ws->story_flags[f]);
+            first = 0;
+        }
+    }
+    pal_jbuf_append_cstr(out, "}");
+    if (include_vars) {
+        pal_jbuf_append_fmt(out, ",\"script_var_0_15\":[");
+        for (int v = 0; v < 16 && v < PAL_SCRIPT_VAR_CAP; v++) {
+            if (v > 0) pal_jbuf_append_cstr(out, ",");
+            pal_jbuf_append_fmt(out, "%d", c->ws->script_vars[v]);
+        }
+        pal_jbuf_append_cstr(out, "]");
+    }
+    pal_jbuf_append_cstr(out, "}");
+}
+
+static void mcp_push_key(SDL_Window *win, SDL_Keycode key) {
+    SDL_Event ev;
+    SDL_zero(ev);
+    ev.type = SDL_EVENT_KEY_DOWN;
+    ev.key.windowID = win ? SDL_GetWindowID(win) : 0;
+    ev.key.key = key;
+    ev.key.scancode = SDL_GetScancodeFromKey(key, NULL);
+    ev.key.down = true;
+    ev.key.repeat = false;
+    SDL_PushEvent(&ev);
+    ev.type = SDL_EVENT_KEY_UP;
+    ev.key.down = false;
+    SDL_PushEvent(&ev);
+}
+
+static SDL_Keycode mcp_parse_keycode(const char *name) {
+    if (!name || !name[0]) return SDLK_UNKNOWN;
+    if (strcmp(name, "up") == 0 || strcmp(name, "w") == 0) return SDLK_UP;
+    if (strcmp(name, "down") == 0 || strcmp(name, "s") == 0) return SDLK_DOWN;
+    if (strcmp(name, "left") == 0 || strcmp(name, "a") == 0) return SDLK_LEFT;
+    if (strcmp(name, "right") == 0 || strcmp(name, "d") == 0) return SDLK_RIGHT;
+    if (strcmp(name, "space") == 0 || strcmp(name, " ") == 0) return SDLK_SPACE;
+    if (strcmp(name, "return") == 0 || strcmp(name, "enter") == 0) return SDLK_RETURN;
+    if (strcmp(name, "escape") == 0 || strcmp(name, "esc") == 0) return SDLK_ESCAPE;
+    if (strcmp(name, "e") == 0) return SDLK_E;
+    if (strcmp(name, "i") == 0) return SDLK_I;
+    if (strcmp(name, "p") == 0) return SDLK_P;
+    if (strcmp(name, "c") == 0) return SDLK_C;
+    if (strcmp(name, "f") == 0) return SDLK_F;
+    if (strcmp(name, "o") == 0) return SDLK_O;
+    if (strcmp(name, "t") == 0) return SDLK_T;
+    if (strcmp(name, "m") == 0) return SDLK_M;
+    if (strcmp(name, "tab") == 0) return SDLK_TAB;
+    if (name[0] >= '1' && name[0] <= '9' && name[1] == '\0') return (SDL_Keycode)(SDLK_1 + (name[0] - '1'));
+    if (strcmp(name, "f2") == 0) return SDLK_F2;
+    if (strcmp(name, "f3") == 0) return SDLK_F3;
+    if (strcmp(name, "f4") == 0) return SDLK_F4;
+    if (strcmp(name, "f5") == 0) return SDLK_F5;
+    if (strcmp(name, "f6") == 0) return SDLK_F6;
+    if (strcmp(name, "f7") == 0) return SDLK_F7;
+    if (strcmp(name, "f8") == 0) return SDLK_F8;
+    if (strcmp(name, "f9") == 0) return SDLK_F9;
+    if (strcmp(name, "f10") == 0) return SDLK_F10;
+    if (strcmp(name, "f11") == 0) return SDLK_F11;
+    if (strcmp(name, "f12") == 0) return SDLK_F12;
+    return SDLK_UNKNOWN;
+}
+
+static int pal_mcp_cb_exec(
+    void *ctx, const PalMcpReq *req, int allow_qa,
+    PalMcpWaitKind *out_wait, int *out_wait_param,
+    PalJsonBuf *out_extra, char *err_buf, size_t err_cap
+) {
+    PalMcpBridgeCtx *c = (PalMcpBridgeCtx *)ctx;
+    if (!c || !req || !out_wait) return -1;
+    *out_wait = PAL_MCP_WAIT_NONE;
+    if (out_wait_param) *out_wait_param = 0;
+
+    if (strcmp(req->cmd, "title_action") == 0) {
+        if (strcmp(req->action, "new_game") == 0) {
+            if (*c->scene != PAL_SCENE_TITLE) {
+                snprintf(err_buf, err_cap, "new_game requires title scene (current: %s)", mcp_scene_name(*c->scene));
+                return -1;
+            }
+            *c->activate_btn = 0;
+            *out_wait = PAL_MCP_WAIT_FRAMES;
+            if (out_wait_param) *out_wait_param = 3;
+            c->wait_frames_rem = 3;
+            return 0;
+        } else if (strcmp(req->action, "load_slot") == 0) {
+            int slot = req->has_slot ? req->slot : 0;
+            if (slot < 0 || slot >= PAL_SAVE_UI_SLOTS) {
+                snprintf(err_buf, err_cap, "Save slot out of range (0..9)");
+                return -1;
+            }
+            PalSaveSlotSummary sum;
+            if (pal_save_slot_read_summary(c->cfg->game_dir, slot, &sum) != 0 || !sum.exists) {
+                snprintf(err_buf, err_cap, "Save slot %d is empty", slot);
+                return -1;
+            }
+            *c->requested_load_slot = slot;
+            *out_wait = PAL_MCP_WAIT_FRAMES;
+            if (out_wait_param) *out_wait_param = 3;
+            c->wait_frames_rem = 3;
+            return 0;
+        } else if (strcmp(req->action, "return_title") == 0) {
+            *c->request_return_title = 1;
+            *out_wait = PAL_MCP_WAIT_FRAMES;
+            if (out_wait_param) *out_wait_param = 3;
+            c->wait_frames_rem = 3;
+            return 0;
+        }
+        snprintf(err_buf, err_cap, "Unknown title_action: %s", req->action);
+        return -1;
+    }
+
+    if (strcmp(req->cmd, "move_to") == 0) {
+        if (*c->scene != PAL_SCENE_FIELD) {
+            snprintf(err_buf, err_cap, "move_to only works in field scene");
+            return -1;
+        }
+        if (c->talk_vm->active || c->camp_menu->open || c->shop_menu->open) {
+            snprintf(err_buf, err_cap, "Cannot move while dialogue/menu is active");
+            return -1;
+        }
+        int ptx = c->party[0].px >> 4;
+        int pty = c->party[0].py >> 4;
+        int goal_tx = ptx, goal_ty = pty;
+        int npc_idx = -1;
+        int npc_cnt = c->io_npc_cnt ? *c->io_npc_cnt : 0;
+
+        if (req->has_npc_obj_id && req->npc_obj_id > 0) {
+            for (int i = 0; i < npc_cnt && i < 128; i++) {
+                if (c->map_npcs[i].active && (int32_t)c->map_npcs[i].obj_id == req->npc_obj_id) {
+                    npc_idx = i;
+                    break;
+                }
+            }
+            if (npc_idx < 0) {
+                snprintf(err_buf, err_cap, "Active NPC obj_id %d not found on current map", req->npc_obj_id);
+                return -1;
+            }
+            int dx = c->map_npcs[npc_idx].px - c->party[0].px;
+            int dy = c->map_npcs[npc_idx].py - c->party[0].py;
+            if (dx * dx + dy * dy <= 46 * 46) {
+                *c->interact_target_npc_idx = -1;
+                *c->astar_count = 0;
+                *c->astar_cursor = 0;
+                talk_begin_npc_interaction(c->talk_vm, c->ws, c->cfg->game_dir, c->map->map_id,
+                                           c->party, c->map_npcs, c->io_npc_cnt, 128, npc_idx, c->show_dialogue);
+                *out_wait = PAL_MCP_WAIT_FRAMES;
+                c->wait_frames_rem = 2;
+                return 0;
+            }
+            goal_tx = c->map_npcs[npc_idx].px >> 4;
+            goal_ty = c->map_npcs[npc_idx].py >> 4;
+        } else if (req->has_trigger_id && req->trigger_id > 0) {
+            int found_t = 0, best_d = 1000000;
+            if (c->map->walk_grid) {
+                int W = c->map->w_tiles, H = c->map->h_tiles;
+                for (int ty = 0; ty < H; ty++) {
+                    for (int tx = 0; tx < W; tx++) {
+                        uint8_t tid = (uint8_t)(c->map->walk_grid[(size_t)ty * (size_t)W + (size_t)tx] & 0xFFu);
+                        if (tid == (uint8_t)req->trigger_id) {
+                            int d = abs(tx - ptx) + abs(ty - pty);
+                            if (!found_t || d < best_d) {
+                                found_t = 1; best_d = d; goal_tx = tx; goal_ty = ty;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!found_t) {
+                snprintf(err_buf, err_cap, "Trigger id %d not found on current map", req->trigger_id);
+                return -1;
+            }
+        } else if (req->has_tx && req->has_ty) {
+            goal_tx = req->tx;
+            goal_ty = req->ty;
+        } else if (req->has_dir) {
+            int d = mcp_parse_dir(req->dir, c->party[0].dir);
+            int st = req->has_steps ? req->steps : 1;
+            if (st < 1) st = 1;
+            if (st > 24) st = 24;
+            static const int kDx[8] = { 0,  0, -1,  1, -1,  1, -1,  1};
+            static const int kDy[8] = {-1,  1,  0,  0, -1,  1,  1, -1};
+            goal_tx = ptx + kDx[d & 7] * st;
+            goal_ty = pty + kDy[d & 7] * st;
+        } else {
+            snprintf(err_buf, err_cap, "move_to requires tx/ty, dir, npc_obj_id, or trigger_id");
+            return -1;
+        }
+
+        if (goal_tx < 0) goal_tx = 0;
+        if (goal_ty < 0) goal_ty = 0;
+        if (c->map->w_tiles > 0 && goal_tx >= c->map->w_tiles) goal_tx = c->map->w_tiles - 1;
+        if (c->map->h_tiles > 0 && goal_ty >= c->map->h_tiles) goal_ty = c->map->h_tiles - 1;
+
+        *c->interact_target_npc_idx = npc_idx;
+        *c->astar_count = pal_map_find_path_astar(c->map, ptx, pty, goal_tx, goal_ty, 2, c->astar_tx, c->astar_ty, 512);
+        *c->astar_cursor = 0;
+
+        if (*c->astar_count <= 0 && (goal_tx != ptx || goal_ty != pty)) {
+            if (out_extra) pal_jbuf_append_cstr(out_extra, "\"move_status\":\"path_blocked\"");
+            return 0;
+        }
+        int do_wait = req->has_wait ? req->wait : 1;
+        if (do_wait) {
+            c->wait_start_map_id = c->map->map_id;
+            c->wait_prev_px = c->party[0].px;
+            c->wait_prev_py = c->party[0].py;
+            c->wait_stall_frames = 0;
+            *out_wait = PAL_MCP_WAIT_MOVE;
+        }
+        return 0;
+    }
+
+    if (strcmp(req->cmd, "interact") == 0) {
+        if (*c->scene == PAL_SCENE_COMBAT && c->cb->phase >= COMBAT_PHASE_VICTORY) {
+            if (combat_advance_settlement(c->cb, c->ws, c->cfg->game_dir, c->sfx_pool, *c->runtime_sfx_vol, *c->runtime_mute)) {
+                /* Final dismiss runs through key push so all cleanup/audio triggers identically */
+                mcp_push_key(c->window, SDLK_RETURN);
+            }
+        } else if (c->talk_vm->active) {
+            if (c->talk_vm->waiting_input) {
+                pal_talk_vm_advance_input_ex(c->talk_vm, c->ws, c->cfg->game_dir, c->map->map_id,
+                                             c->party, c->map_npcs, c->io_npc_cnt, 128);
+            } else if (req->skip_wait) {
+                if (c->pending_fade_in_ms) *c->pending_fade_in_ms = 0;
+                pal_snap_cutscene_actors_and_fx(
+                    c->ws, c->cfg ? c->cfg->game_dir : NULL,
+                    c->party, c->map_npcs, c->io_npc_cnt ? *c->io_npc_cnt : 0
+                );
+                if (c->talk_vm->pending_map_id < 0) {
+                    c->talk_vm->wait_ticks = 0;
+                    c->talk_vm->waiting_fade = 0;
+                    c->talk_vm->waiting_pan = 0;
+                    c->talk_vm->waiting_walk_obj = -1;
+                    pal_talk_vm_step_ex(c->talk_vm, c->ws, c->cfg->game_dir, c->map->map_id,
+                                        c->party, c->map_npcs, c->io_npc_cnt, 128, 0);
+                }
+            }
+        } else if (*c->scene == PAL_SCENE_FIELD) {
+            int nidx = -1;
+            int npc_cnt = c->io_npc_cnt ? *c->io_npc_cnt : 0;
+            if (req->has_npc_obj_id && req->npc_obj_id > 0) {
+                for (int i = 0; i < npc_cnt && i < 128; i++) {
+                    if (c->map_npcs[i].active && (int32_t)c->map_npcs[i].obj_id == req->npc_obj_id) {
+                        int dx = c->map_npcs[i].px - c->party[0].px;
+                        int dy = c->map_npcs[i].py - c->party[0].py;
+                        if (dx * dx + dy * dy <= 56 * 56) nidx = i;
+                        break;
+                    }
+                }
+            } else {
+                nidx = talk_find_interact_npc(&c->party[0], c->map_npcs, npc_cnt);
+            }
+            if (nidx >= 0) {
+                *c->astar_count = 0; *c->astar_cursor = 0; *c->interact_target_npc_idx = -1;
+                talk_begin_npc_interaction(c->talk_vm, c->ws, c->cfg->game_dir, c->map->map_id,
+                                           c->party, c->map_npcs, c->io_npc_cnt, 128, nidx, c->show_dialogue);
+                if (c->camp_menu) c->camp_menu->dirty = 1;
+            } else if (*c->show_dialogue) {
+                mcp_push_key(c->window, SDLK_SPACE);
+            } else {
+                if (out_extra) pal_jbuf_append_cstr(out_extra, "\"interacted\":false");
+                return 0;
+            }
+        }
+        *out_wait = PAL_MCP_WAIT_FRAMES;
+        c->wait_frames_rem = 3;
+        return 0;
+    }
+
+    if (strcmp(req->cmd, "choose_dialogue") == 0) {
+        if (*c->scene != PAL_SCENE_FIELD || !c->talk_vm->active || !c->talk_vm->waiting_input || c->talk_vm->choice_count <= 0) {
+            snprintf(err_buf, err_cap, "No dialogue choice menu is active");
+            return -1;
+        }
+        int idx = req->has_index ? req->index : 0;
+        if (idx < 0 || idx >= c->talk_vm->choice_count) {
+            snprintf(err_buf, err_cap, "Choice index %d out of range (0..%d)", idx, c->talk_vm->choice_count - 1);
+            return -1;
+        }
+        c->talk_vm->choice_selected = idx;
+        pal_talk_vm_advance_input_ex(c->talk_vm, c->ws, c->cfg->game_dir, c->map->map_id,
+                                     c->party, c->map_npcs, c->io_npc_cnt, 128);
+        *out_wait = PAL_MCP_WAIT_FRAMES;
+        c->wait_frames_rem = 3;
+        return 0;
+    }
+
+    if (strcmp(req->cmd, "combat_action") == 0) {
+        if (*c->scene != PAL_SCENE_COMBAT || !c->cb) {
+            snprintf(err_buf, err_cap, "Not currently in combat");
+            return -1;
+        }
+        if (strcmp(req->action, "advance_settlement") == 0) {
+            if (c->cb->phase < COMBAT_PHASE_VICTORY) {
+                snprintf(err_buf, err_cap, "Combat is not in settlement/victory/defeat phase");
+                return -1;
+            }
+            if (combat_advance_settlement(c->cb, c->ws, c->cfg->game_dir, c->sfx_pool, *c->runtime_sfx_vol, *c->runtime_mute)) {
+                mcp_push_key(c->window, SDLK_RETURN);
+            }
+            *out_wait = PAL_MCP_WAIT_FRAMES;
+            c->wait_frames_rem = 2;
+            return 0;
+        }
+        if (c->cb->phase >= COMBAT_PHASE_VICTORY) {
+            snprintf(err_buf, err_cap, "Combat already ended; use advance_settlement");
+            return -1;
+        }
+        if (c->cb->phase == COMBAT_PHASE_ANIMATE) {
+            snprintf(err_buf, err_cap, "Combat turn animation is currently playing");
+            return -1;
+        }
+        /* Reset submenu/target state back to command root for deterministic semantic control */
+        c->cb->phase = COMBAT_PHASE_COMMAND;
+        c->cb->other_open = 0;
+        c->cb->sub_mode = 0;
+        int hidx = c->cb->active_hero_idx;
+        if (hidx < 0 || hidx >= c->ws->party_member_count) {
+            snprintf(err_buf, err_cap, "Invalid active_hero_idx %d", hidx);
+            return -1;
+        }
+
+        if (strcmp(req->action, "attack") == 0) {
+            int tgt = (req->has_target_idx && req->target_idx >= 0 && req->target_idx < c->cb->enemy_count && c->cb->enemies[req->target_idx].alive)
+                          ? req->target_idx : pal_combat_first_alive_enemy(c->cb);
+            if (tgt < 0) tgt = 0;
+            c->cb->hero_action_type[hidx] = 0;
+            c->cb->hero_action_id[hidx] = 0;
+            c->cb->target_is_ally = 0;
+            c->cb->target_is_aoe = 0;
+            c->cb->target_allow_dead = 0;
+            combat_confirm_target(c->cb, c->ws, tgt);
+        } else if (strcmp(req->action, "combo") == 0) {
+            if (combat_execute_command(c->cb, c->ws, 1) != 2u || c->cb->phase != COMBAT_PHASE_TARGET) {
+                snprintf(err_buf, err_cap, "%s", c->cb->log_text[0] ? c->cb->log_text : "Combo unavailable");
+                return -1;
+            }
+            int tgt = (req->has_target_idx && req->target_idx >= 0 && req->target_idx < c->cb->enemy_count && c->cb->enemies[req->target_idx].alive)
+                          ? req->target_idx : pal_combat_first_alive_enemy(c->cb);
+            if (tgt < 0) tgt = 0;
+            combat_confirm_target(c->cb, c->ws, tgt);
+        } else if (strcmp(req->action, "magic") == 0) {
+            if (!req->has_skill_id) {
+                snprintf(err_buf, err_cap, "magic requires skill_id");
+                return -1;
+            }
+            int sub_i = -1;
+            for (int k = 0; k < c->ws->party_members[hidx].magic_count; k++) {
+                if ((int32_t)c->ws->party_members[hidx].magics[k] == req->skill_id) { sub_i = k; break; }
+            }
+            if (sub_i < 0) {
+                snprintf(err_buf, err_cap, "Active hero does not know skill_id %d", req->skill_id);
+                return -1;
+            }
+            const PalMagicRecord *mg = c->ws->db ? pal_db_find_magic(c->ws->db, req->skill_id) : NULL;
+            if (mg && !pal_test_runtime_god_mode() && c->ws->party_members[hidx].cur_mp < mg->mp_cost) {
+                snprintf(err_buf, err_cap, "Insufficient MP (%d < %d)", c->ws->party_members[hidx].cur_mp, mg->mp_cost);
+                return -1;
+            }
+            PalCombatMagicPlan plan;
+            pal_combat_analyze_magic(c->ws->db, mg, c->ws->party_members[hidx].hero_id, &plan);
+            c->cb->hero_action_type[hidx] = 1;
+            c->cb->hero_action_id[hidx] = (uint16_t)req->skill_id;
+            int tgt = 0;
+            if (plan.scope == PAL_MSCOPE_ESCAPE || plan.scope == PAL_MSCOPE_SELF || plan.scope == PAL_MSCOPE_ALLY_ALL) {
+                tgt = hidx;
+            } else if (plan.scope == PAL_MSCOPE_ALLY_REVIVE || plan.scope == PAL_MSCOPE_ALLY_SINGLE) {
+                int dead = (plan.scope == PAL_MSCOPE_ALLY_REVIVE) ? 1 : 0;
+                tgt = (req->has_target_idx && req->target_idx >= 0 && req->target_idx < c->ws->party_member_count)
+                          ? req->target_idx : combat_first_valid_ally(c->ws, dead);
+            } else {
+                tgt = (req->has_target_idx && req->target_idx >= 0 && req->target_idx < c->cb->enemy_count && c->cb->enemies[req->target_idx].alive)
+                          ? req->target_idx : pal_combat_first_alive_enemy(c->cb);
+                if (tgt < 0) tgt = 0;
+            }
+            combat_confirm_target(c->cb, c->ws, tgt);
+        } else if (strcmp(req->action, "item") == 0) {
+            if (!req->has_item_id || pal_world_item_qty(c->ws, (uint16_t)req->item_id) <= 0) {
+                snprintf(err_buf, err_cap, "Item %d not in inventory", req->item_id);
+                return -1;
+            }
+            const PalItemRecord *it = c->ws->db ? pal_db_find_item(c->ws->db, req->item_id) : NULL;
+            if (!it || (!pal_dat_has_script(it->throw_script) && !pal_dat_has_script(it->battle_script) && !pal_dat_has_script(it->field_script))) {
+                snprintf(err_buf, err_cap, "Item %d cannot be used in combat", req->item_id);
+                return -1;
+            }
+            c->cb->hero_action_type[hidx] = 2;
+            c->cb->hero_action_id[hidx] = (uint16_t)req->item_id;
+            int tgt = 0;
+            if (pal_dat_has_script(it->throw_script)) {
+                tgt = (req->has_target_idx && req->target_idx >= 0 && req->target_idx < c->cb->enemy_count && c->cb->enemies[req->target_idx].alive)
+                          ? req->target_idx : pal_combat_first_alive_enemy(c->cb);
+                if (tgt < 0) tgt = 0;
+            } else {
+                tgt = (req->has_target_idx && req->target_idx >= 0 && req->target_idx < c->ws->party_member_count)
+                          ? req->target_idx : hidx;
+            }
+            combat_confirm_target(c->cb, c->ws, tgt);
+        } else if (strcmp(req->action, "defend") == 0) {
+            combat_execute_other_item(c->cb, c->ws, 1);
+        } else if (strcmp(req->action, "auto_battle_turn") == 0) {
+            int tgt = (req->has_target_idx && req->target_idx >= 0 && req->target_idx < c->cb->enemy_count && c->cb->enemies[req->target_idx].alive)
+                          ? req->target_idx : pal_combat_first_alive_enemy(c->cb);
+            if (tgt < 0) tgt = 0;
+            combat_assign_all_out_attack(c->cb, c->ws, tgt);
+        } else if (strcmp(req->action, "flee") == 0) {
+            combat_execute_other_item(c->cb, c->ws, 3);
+        } else {
+            snprintf(err_buf, err_cap, "Unknown combat action: %s", req->action);
+            return -1;
+        }
+
+        int do_wait = req->has_wait ? req->wait : 1;
+        if (do_wait && c->cb->phase == COMBAT_PHASE_ANIMATE) {
+            *out_wait = PAL_MCP_WAIT_COMBAT;
+        }
+        return 0;
+    }
+
+    if (strcmp(req->cmd, "manage_party") == 0) {
+        char msg[192] = {0};
+        if (strcmp(req->action, "use_item") == 0) {
+            int hi = req->has_hero_idx ? req->hero_idx : 0;
+            if (pal_party_use_field_item(c->ws, hi, (uint16_t)req->item_id, msg, sizeof(msg)) != 0) {
+                char lmsg[192]; pal_localize_utf8_copy(msg[0] ? msg : "use_item failed", lmsg, sizeof(lmsg));
+                snprintf(err_buf, err_cap, "%s", lmsg);
+                return -1;
+            }
+        } else if (strcmp(req->action, "equip_item") == 0) {
+            int hi = req->has_hero_idx ? req->hero_idx : 0;
+            if (pal_party_equip_item(c->ws, hi, (uint16_t)req->item_id, msg, sizeof(msg)) != 0) {
+                char lmsg[192]; pal_localize_utf8_copy(msg[0] ? msg : "equip_item failed", lmsg, sizeof(lmsg));
+                snprintf(err_buf, err_cap, "%s", lmsg);
+                return -1;
+            }
+        } else if (strcmp(req->action, "unequip_slot") == 0) {
+            int hi = req->has_hero_idx ? req->hero_idx : 0;
+            int sl = req->has_equip_slot ? req->equip_slot : 0;
+            if (hi < 0 || hi >= c->ws->party_member_count || sl < 0 || sl >= PAL_EQUIP_SLOT_COUNT) {
+                snprintf(err_buf, err_cap, "Invalid hero_idx or equip_slot (0..5)");
+                return -1;
+            }
+            uint16_t eid = c->ws->party_members[hi].equips[sl];
+            if (eid == 0u || pal_party_unequip_item(c->ws, hi, eid, 1) != 0) {
+                snprintf(err_buf, err_cap, "Nothing equipped in slot %d", sl);
+                return -1;
+            }
+        } else if (strcmp(req->action, "shop_buy") == 0) {
+            if (!c->shop_menu->open) { snprintf(err_buf, err_cap, "Shop is not open"); return -1; }
+            if (pal_shop_buy_item(c->ws, (uint16_t)req->item_id, msg, sizeof(msg)) != 0) {
+                char lmsg[192]; pal_localize_utf8_copy(msg[0] ? msg : "shop_buy failed", lmsg, sizeof(lmsg));
+                snprintf(err_buf, err_cap, "%s", lmsg);
+                return -1;
+            }
+        } else if (strcmp(req->action, "shop_sell") == 0) {
+            if (!c->shop_menu->open) { snprintf(err_buf, err_cap, "Shop is not open"); return -1; }
+            if (pal_shop_sell_item(c->ws, (uint16_t)req->item_id, msg, sizeof(msg)) != 0) {
+                char lmsg[192]; pal_localize_utf8_copy(msg[0] ? msg : "shop_sell failed", lmsg, sizeof(lmsg));
+                snprintf(err_buf, err_cap, "%s", lmsg);
+                return -1;
+            }
+        } else if (strcmp(req->action, "shop_close") == 0) {
+            c->shop_menu->open = 0;
+        } else if (strcmp(req->action, "save_slot") == 0) {
+            int slot = req->has_slot ? req->slot : 0;
+            if (slot < 0 || slot >= PAL_SAVE_UI_SLOTS) {
+                snprintf(err_buf, err_cap, "Save slot out of range (0..9)");
+                return -1;
+            }
+            if (pal_save_game_slot(c->cfg->game_dir, slot, c->ws, c->map->map_id, c->map->title_utf8,
+                                   c->party[0].px, c->party[0].py, c->party[0].dir) != 0) {
+                snprintf(err_buf, err_cap, "Failed to save slot %d", slot);
+                return -1;
+            }
+            snprintf(msg, sizeof(msg), "Saved to slot %d", slot);
+        } else if (strcmp(req->action, "load_slot") == 0) {
+            int slot = req->has_slot ? req->slot : 0;
+            if (slot < 0 || slot >= PAL_SAVE_UI_SLOTS) {
+                snprintf(err_buf, err_cap, "Save slot out of range (0..9)");
+                return -1;
+            }
+            *c->requested_load_slot = slot;
+            *out_wait = PAL_MCP_WAIT_FRAMES;
+            c->wait_frames_rem = 3;
+        } else {
+            snprintf(err_buf, err_cap, "Unknown manage_party action: %s", req->action);
+            return -1;
+        }
+        if (c->camp_menu) c->camp_menu->dirty = 1;
+        if (c->shop_menu) c->shop_menu->dirty = 1;
+        if (msg[0] && out_extra) {
+            pal_jbuf_append_cstr(out_extra, "\"message\":");
+            mcp_append_jstr_loc(out_extra, msg);
+        }
+        return 0;
+    }
+
+    if (strcmp(req->cmd, "raw_input") == 0) {
+        if (strcmp(req->action, "key_tap") == 0) {
+            SDL_Keycode k = mcp_parse_keycode(req->str_arg);
+            if (k == SDLK_UNKNOWN) {
+                snprintf(err_buf, err_cap, "Unsupported key name: %s", req->str_arg);
+                return -1;
+            }
+            mcp_push_key(c->window, k);
+            if (!req->has_wait || req->wait) {
+                *out_wait = PAL_MCP_WAIT_FRAMES;
+                c->wait_frames_rem = 2;
+            }
+            return 0;
+        } else if (strcmp(req->action, "mouse_click") == 0) {
+            int lx = req->has_x ? req->x : 320;
+            int ly = req->has_y ? req->y : 240;
+            if (lx < 0) lx = 0; if (lx > 639) lx = 639;
+            if (ly < 0) ly = 0; if (ly > 479) ly = 479;
+            Uint8 btn = (strcmp(req->button, "right") == 0) ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT;
+            if (c->has_synth_mouse && c->synth_mouse_x && c->synth_mouse_y) {
+                *c->has_synth_mouse = 1;
+                *c->synth_mouse_x = (float)lx;
+                *c->synth_mouse_y = (float)ly;
+            }
+            SDL_Event ev;
+            SDL_zero(ev);
+            ev.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+            ev.button.windowID = c->window ? SDL_GetWindowID(c->window) : 0;
+            ev.button.button = btn;
+            ev.button.down = true;
+            ev.button.clicks = 1;
+            ev.button.x = (float)lx;
+            ev.button.y = (float)ly;
+            SDL_PushEvent(&ev);
+            ev.type = SDL_EVENT_MOUSE_BUTTON_UP;
+            ev.button.down = false;
+            SDL_PushEvent(&ev);
+            if (!req->has_wait || req->wait) {
+                *out_wait = PAL_MCP_WAIT_FRAMES;
+                c->wait_frames_rem = 2;
+            }
+            return 0;
+        } else if (strcmp(req->action, "wait_frames") == 0) {
+            int fr = req->has_frames ? req->frames : 10;
+            if (fr < 1) fr = 1;
+            if (fr > 600) fr = 600;
+            *out_wait = PAL_MCP_WAIT_FRAMES;
+            c->wait_frames_rem = fr;
+            return 0;
+        }
+        snprintf(err_buf, err_cap, "Unknown raw_input action: %s", req->action);
+        return -1;
+    }
+
+    if (strcmp(req->cmd, "test_control") == 0) {
+        if (!allow_qa) {
+            snprintf(err_buf, err_cap, "QA/cheat MCP tools are disabled in settings (mcp_allow_qa_tools=0)");
+            return -1;
+        }
+#if PAL_ENABLE_TEST_MODE
+        if (c->test_state) {
+            if (req->has_god_mode || req->has_no_encounter || req->has_auto_kill || req->has_speed_mult) {
+                c->test_state->cfg.enabled = 1;
+            }
+            if (req->has_god_mode) c->test_state->cfg.god_mode = req->god_mode ? 1 : 0;
+            if (req->has_no_encounter) c->test_state->cfg.no_encounter = req->no_encounter ? 1 : 0;
+            if (req->has_auto_kill) c->test_state->cfg.auto_instant_kill = req->auto_kill ? 1 : 0;
+            if (req->has_speed_mult) {
+                int sp = req->speed_mult;
+                if (sp < 1) sp = 1; if (sp > 3) sp = 3;
+                c->test_state->cfg.speed_mult = sp;
+            }
+            c->test_state->tex_dirty = 1;
+        }
+#endif
+        if (req->has_noclip && c->noclip_mode) *c->noclip_mode = req->noclip ? 1 : 0;
+        if (req->has_heal_all && req->heal_all && c->ws) {
+            for (int p = 0; p < c->ws->party_member_count && p < 4; p++) {
+                if (c->ws->party_members[p].active) {
+                    c->ws->party_members[p].cur_hp = c->ws->party_members[p].eff_max_hp;
+                    c->ws->party_members[p].cur_mp = c->ws->party_members[p].eff_max_mp;
+                }
+            }
+        }
+        if (req->has_add_money && c->ws) {
+            c->ws->money += req->add_money;
+            if (c->ws->money < 0) c->ws->money = 0;
+        }
+        if (req->has_level_up && req->level_up && c->ws && c->ws->db) {
+            for (int p = 0; p < c->ws->party_member_count && p < 4; p++) {
+                if (c->ws->party_members[p].active) {
+                    pal_party_level_up_slot(c->ws->db, &c->ws->party_members[p]);
+                    c->ws->party_members[p].cur_hp = c->ws->party_members[p].eff_max_hp;
+                    c->ws->party_members[p].cur_mp = c->ws->party_members[p].eff_max_mp;
+                }
+            }
+        }
+        if (req->has_flag_id && req->has_flag_val && c->ws) {
+            if (req->flag_id < 0 || req->flag_id >= PAL_STORY_FLAG_CAP) {
+                snprintf(err_buf, err_cap, "flag_id out of range");
+                return -1;
+            }
+            c->ws->story_flags[req->flag_id] = (uint8_t)(req->flag_val & 0xFF);
+        }
+        if (req->has_battle_id && req->battle_id > 0 && c->ws) {
+            c->ws->active_battle_id = req->battle_id;
+            *out_wait = PAL_MCP_WAIT_FRAMES;
+            c->wait_frames_rem = 3;
+        }
+        if (strcmp(req->action, "instant_kill_combat") == 0) {
+            if (*c->scene != PAL_SCENE_COMBAT || !c->cb) {
+                snprintf(err_buf, err_cap, "Not in combat");
+                return -1;
+            }
+            if (c->cb->phase < COMBAT_PHASE_VICTORY) {
+                for (int i = 0; i < c->cb->enemy_count; i++) {
+                    PalCombatEnemyUnit *eu = &c->cb->enemies[i];
+                    if (!eu->active || !eu->alive) continue;
+                    eu->cur_hp = 0;
+                    eu->alive = 0;
+                    eu->death_state = 2;
+                }
+                pal_combat_apply_victory_rewards(c->cb, c->ws);
+                c->cb->round_active = 0;
+                c->cb->anim_count = 0;
+                c->cb->fx_active_count = 0;
+                c->cb->other_open = 0;
+                c->cb->sub_mode = 0;
+                c->cb->post_anim_phase = COMBAT_PHASE_VICTORY;
+                c->cb->phase = COMBAT_PHASE_VICTORY;
+                c->cb->dirty = 1;
+            }
+        }
+        if (c->camp_menu) c->camp_menu->dirty = 1;
+        if (c->cb) c->cb->dirty = 1;
+        return 0;
+    }
+
+    if (strcmp(req->cmd, "teleport") == 0) {
+        if (!allow_qa) {
+            snprintf(err_buf, err_cap, "Teleport MCP tool is disabled in settings (mcp_allow_qa_tools=0)");
+            return -1;
+        }
+        if (!req->has_map_id || req->map_id <= 0) {
+            snprintf(err_buf, err_cap, "teleport requires positive map_id");
+            return -1;
+        }
+        PalLoadedMap next_map = {0};
+        if (vfs_load_lmf_map_by_id(c->cfg->game_dir, (uint32_t)req->map_id, c->renderer, c->scale_mode, &next_map) != 0) {
+            snprintf(err_buf, err_cap, "Failed to load map_id %d", req->map_id);
+            return -1;
+        }
+        free_loaded_map(c->map);
+        *c->map = next_map;
+        pal_talk_vm_free(c->talk_vm);
+        if (c->camp_menu) c->camp_menu->open = 0;
+        if (c->shop_menu) c->shop_menu->open = 0;
+        *c->scene = PAL_SCENE_FIELD;
+        if (req->has_tx && req->has_ty) {
+            *c->pending_spawn_override = 1;
+            *c->spawn_override_tx = req->tx;
+            *c->spawn_override_ty = req->ty;
+            *c->spawn_override_dir = mcp_parse_dir(req->dir, 1);
+        } else {
+            *c->pending_spawn_override = 0;
+        }
+        *c->need_setup_loaded_map = 1;
+        *out_wait = PAL_MCP_WAIT_FRAMES;
+        c->wait_frames_rem = 3;
+        return 0;
+    }
+
+    snprintf(err_buf, err_cap, "Unsupported MCP bridge cmd: %s", req->cmd);
+    return -1;
+}
+
+static int pal_mcp_cb_check_wait(void *ctx, PalMcpWaitKind kind, int param, char *reason_buf, size_t reason_cap) {
+    (void)param;
+    PalMcpBridgeCtx *c = (PalMcpBridgeCtx *)ctx;
+    if (!c) return 1;
+
+    switch (kind) {
+        case PAL_MCP_WAIT_FRAMES:
+            if (c->wait_frames_rem > 0) c->wait_frames_rem--;
+            if (c->wait_frames_rem <= 0) {
+                snprintf(reason_buf, reason_cap, "frames_elapsed");
+                return 1;
+            }
+            return 0;
+
+        case PAL_MCP_WAIT_MOVE:
+            if (c->scene && *c->scene == PAL_SCENE_COMBAT) {
+                snprintf(reason_buf, reason_cap, "encountered_combat");
+                return 1;
+            }
+            if (c->map && c->map->map_id != c->wait_start_map_id) {
+                snprintf(reason_buf, reason_cap, "map_changed");
+                return 1;
+            }
+            if (c->talk_vm && c->talk_vm->active) {
+                snprintf(reason_buf, reason_cap, "started_dialogue");
+                return 1;
+            }
+            if (c->astar_cursor && c->astar_count && *c->astar_cursor >= *c->astar_count) {
+                snprintf(reason_buf, reason_cap, "arrived");
+                return 1;
+            }
+            if (c->party) {
+                if (c->party[0].px == c->wait_prev_px && c->party[0].py == c->wait_prev_py) {
+                    c->wait_stall_frames++;
+                    if (c->wait_stall_frames >= 25) {
+                        *c->astar_count = 0;
+                        *c->astar_cursor = 0;
+                        snprintf(reason_buf, reason_cap, "blocked_or_stalled");
+                        return 1;
+                    }
+                } else {
+                    c->wait_prev_px = c->party[0].px;
+                    c->wait_prev_py = c->party[0].py;
+                    c->wait_stall_frames = 0;
+                }
+            }
+            return 0;
+
+        case PAL_MCP_WAIT_COMBAT:
+            if (!c->scene || *c->scene != PAL_SCENE_COMBAT) {
+                snprintf(reason_buf, reason_cap, "combat_exited");
+                return 1;
+            }
+            if (c->cb && c->cb->phase != COMBAT_PHASE_ANIMATE) {
+                snprintf(reason_buf, reason_cap,
+                         (c->cb->phase >= COMBAT_PHASE_VICTORY) ? "combat_ended" : "turn_ready");
+                return 1;
+            }
+            return 0;
+
+        default:
+            snprintf(reason_buf, reason_cap, "done");
+            return 1;
+    }
+}
+
+static void pal_mcp_cb_quit(void *ctx) {
+    PalMcpBridgeCtx *c = (PalMcpBridgeCtx *)ctx;
+    if (c && c->app_quit) *c->app_quit = 1;
+}
+
 static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, char *out_err, int32_t err_cap) {
     if (!cfg || cfg->game_dir[0] == '\0') {
         if (out_err) snprintf(out_err, (size_t)err_cap, "Missing game_dir");
@@ -19179,7 +20467,11 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     int prev_cpu_2x = g_pal_cpu_upscale_2x;
     int prev_text_scale = g_pal_text_scale;
     int prev_text_lang = g_pal_text_lang;
+    int prev_headless_mode = g_pal_headless_mode;
+    int prev_skip_videos = g_pal_skip_videos;
     int target_text_lang = (!is_self_test && cfg && cfg->text_language == 1) ? 1 : 0;
+    int target_headless_mode = (!is_self_test && cfg && cfg->headless_mode) ? 1 : 0;
+    int target_skip_videos = (!is_self_test && cfg && (cfg->skip_videos || cfg->headless_mode)) ? 1 : 0;
     int active_shader = (!is_self_test && cfg->shader_filter > 0 && cfg->shader_filter <= 2) ? cfg->shader_filter : PAL_SHADER_NONE;
     g_pal_hd_mode = (!is_self_test && (cfg->hd_mode != 0 || active_shader != PAL_SHADER_NONE)) ? 1 : 0;
     g_pal_cpu_upscale_2x = (g_pal_hd_mode && active_shader == PAL_SHADER_NONE) ? 1 : 0;
@@ -19188,7 +20480,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     int win_w = cfg->window_scale == 2 ? 1280 : 640;
     int win_h = cfg->window_scale == 2 ? 960 : 480;
     SDL_WindowFlags wflags = SDL_WINDOW_METAL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    if (is_self_test) wflags |= SDL_WINDOW_HIDDEN;
+    if (is_self_test || target_headless_mode) wflags |= SDL_WINDOW_HIDDEN;
     else if (cfg->window_scale == 0) wflags |= SDL_WINDOW_FULLSCREEN;
 
     const char *win_title = (target_text_lang == 1)
@@ -19239,7 +20531,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     }
 
     SDL_SetRenderLogicalPresentation(renderer, 640, 480, SDL_LOGICAL_PRESENTATION_LETTERBOX);
-    SDL_SetRenderVSync(renderer, cfg->vsync_enabled ? 1 : 0);
+    SDL_SetRenderVSync(renderer, (!target_headless_mode && cfg->vsync_enabled) ? 1 : 0);
     SDL_ScaleMode scale_mode = (g_pal_cpu_upscale_2x || (active_shader == PAL_SHADER_NONE && !cfg->nearest_filter))
                                  ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
 
@@ -19265,6 +20557,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     }
 
     g_pal_text_lang = target_text_lang;
+    g_pal_headless_mode = target_headless_mode;
+    g_pal_skip_videos = target_skip_videos;
 
     /* Title Screen .act VM Nodes (all_sys.act id=10000 sub 0x5a..0x5d) */
     PalActSpriteNode title_bg = {.base_x = 0.0f, .base_y = 0.0f};
@@ -20259,9 +21553,34 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     sc_lang_ok = (conv_ok && tex_ok && tsw_sc_ok) ? 1 : 0;
                 }
 
-                ui_restore_ok = (tsw_ui_ok && school_ok && parchment_ok && settle_ok && camp_nav_ok && load_ui_ok && sc_lang_ok) ? 1 : 0;
-                printf("UIRestore: ok=%d tsw=%d school=%d parchment=%d settle=%d camp_nav=%d load_ui=%d sc_lang=%d\n",
-                       ui_restore_ok, tsw_ui_ok, school_ok, parchment_ok, settle_ok, camp_nav_ok, load_ui_ok, sc_lang_ok);
+                int mcp_bridge_ok = 0;
+                {
+                    char sock_path[128];
+                    snprintf(sock_path, sizeof(sock_path), "/tmp/newpal-mcp-selftest-%d.sock", (int)getpid());
+                    PalMcpBridge test_mcp = {0};
+                    int init_rc = pal_mcp_init(&test_mcp, sock_path, 1);
+                    struct stat sst;
+                    int perm_ok = (init_rc == 0 && stat(sock_path, &sst) == 0 && ((sst.st_mode & 0777) == 0600));
+                    PalMcpReq parsed = {0};
+                    int parse_ok = (pal_mcp_parse_req_json(
+                        "{\"id\":42,\"cmd\":\"move_to\",\"tx\":12,\"ty\":34,\"wait\":true,\"dir\":\"right\",\"str_arg\":\"line1\\n\\\"q\\\"\"}",
+                        &parsed) == 0 && parsed.id == 42 && strcmp(parsed.cmd, "move_to") == 0 &&
+                        parsed.has_tx && parsed.tx == 12 && parsed.has_ty && parsed.ty == 34 &&
+                        parsed.has_wait && parsed.wait == 1 && strcmp(parsed.dir, "right") == 0 &&
+                        strstr(parsed.str_arg, "\"q\"") != NULL);
+                    PalJsonBuf jb;
+                    pal_jbuf_init(&jb);
+                    pal_jbuf_append_json_str(&jb, "test\n\"quote\"\\slash");
+                    int jbuf_ok = (jb.data && strcmp(jb.data, "\"test\\n\\\"quote\\\"\\\\slash\"") == 0);
+                    pal_jbuf_free(&jb);
+                    pal_mcp_shutdown(&test_mcp);
+                    int cleanup_ok = (lstat(sock_path, &sst) != 0);
+                    mcp_bridge_ok = (perm_ok && parse_ok && jbuf_ok && cleanup_ok) ? 1 : 0;
+                }
+
+                ui_restore_ok = (tsw_ui_ok && school_ok && parchment_ok && settle_ok && camp_nav_ok && load_ui_ok && sc_lang_ok && mcp_bridge_ok) ? 1 : 0;
+                printf("UIRestore: ok=%d tsw=%d school=%d parchment=%d settle=%d camp_nav=%d load_ui=%d sc_lang=%d mcp_bridge=%d\n",
+                       ui_restore_ok, tsw_ui_ok, school_ok, parchment_ok, settle_ok, camp_nav_ok, load_ui_ok, sc_lang_ok, mcp_bridge_ok);
             }
 
             ui_hit_ok = ch_ok && cb_init_ok && idle_static_ok && cmd_hit && other_hit && (cmd_sfx == 2u) && (en_hit == 0) && vfx_ext_ok && gameplay_regress_ok && ui_restore_ok;
@@ -20393,6 +21712,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         g_pal_cpu_upscale_2x = prev_cpu_2x;
         g_pal_text_scale = prev_text_scale;
         g_pal_text_lang = prev_text_lang;
+        g_pal_headless_mode = prev_headless_mode;
+        g_pal_skip_videos = prev_skip_videos;
         return all_ok ? 0 : -1;
     }
 
@@ -20509,6 +21830,42 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
 #endif
     int astar_tx[512] = {0}, astar_ty[512] = {0};
     int astar_count = 0, astar_cursor = 0;
+    int need_setup_loaded_map = 0;
+
+    int activate_btn = -1;
+    int request_return_title = 0;
+    int has_synth_mouse = 0;
+    float synth_mouse_x = 0.0f;
+    float synth_mouse_y = 0.0f;
+    SDL_Texture *capture_rt = NULL;
+    int capture_rt_scale = 0;
+
+    PalMcpBridge mcp_bridge = {0};
+    PalMcpHostOps mcp_ops = {0};
+    PalMcpBridgeCtx mcp_ctx = {
+        cfg, window, renderer, scale_mode, &scene, &map, party, map_npcs, &map_npc_actor_cnt,
+        astar_tx, astar_ty, &astar_count, &astar_cursor, &interact_target_npc_idx,
+        &camp_menu, &shop_menu, &load_overlay, &combat_state, world_state, &talk_vm,
+        &show_dialogue, &selected_btn, &activate_btn, &request_return_title, &requested_load_slot,
+        &need_setup_loaded_map, &pending_spawn_override, &spawn_override_tx, &spawn_override_ty,
+        &spawn_override_dir, &pending_fade_in_ms, &noclip_mode, &app_quit,
+        &has_synth_mouse, &synth_mouse_x, &synth_mouse_y,
+        (cfg->mcp_allow_qa_tools != 0) ? 1 : 0, &test_state, &sfx_pool, &runtime_mute, &runtime_sfx_vol,
+        0u, 0, 0, 0, 0
+    };
+    mcp_ops.ctx = &mcp_ctx;
+    mcp_ops.build_state_json = pal_mcp_cb_state;
+    mcp_ops.build_map_entities_json = pal_mcp_cb_map_entities;
+    mcp_ops.build_inventory_saves_json = pal_mcp_cb_inventory_saves;
+    mcp_ops.build_flags_json = pal_mcp_cb_flags;
+    mcp_ops.exec_command = pal_mcp_cb_exec;
+    mcp_ops.check_wait = pal_mcp_cb_check_wait;
+    mcp_ops.request_quit = pal_mcp_cb_quit;
+    if (!is_self_test && cfg->mcp_enabled) {
+        if (pal_mcp_init(&mcp_bridge, cfg->mcp_socket_path, cfg->mcp_allow_qa_tools) == 0) {
+            pal_mcp_bind_active(&mcp_bridge);
+        }
+    }
 
     SDL_Texture *map_banner_tex = NULL;
     int map_banner_w = 0, map_banner_h = 0;
@@ -20549,7 +21906,6 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     }
 
     /* Inline macro-like state reset block via helper lambda pattern avoided -> simple local helper flag */
-    int need_setup_loaded_map = 0;
     int next_map_preserve_env_flags = 0;
     int pending_ending_title = 0;
 
@@ -20564,6 +21920,12 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         Uint64 frame_now_ns = SDL_GetTicksNS();
         float frame_dt = (frame_now_ns >= m8_clock_ns) ? (float)(frame_now_ns - m8_clock_ns) / 1e9f : 0.016f;
         if (frame_dt > 0.1f) frame_dt = 0.1f;
+        int active_sim = (astar_cursor < astar_count) || talk_vm.active ||
+                         (scene == PAL_SCENE_COMBAT && combat_state.phase == COMBAT_PHASE_ANIMATE) ||
+                         mcp_bridge.has_pending || need_setup_loaded_map;
+        if (g_pal_headless_mode) {
+            frame_dt = active_sim ? 0.018f : 0.008f;
+        }
         m8_clock_ns = frame_now_ns;
         total_time_sec += frame_dt;
 
@@ -20681,8 +22043,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             shop_menu.hover_row = hr;
         }
 
-        int activate_btn = -1;
-        int request_return_title = 0;
+        activate_btn = -1;
+        request_return_title = 0;
         typedef struct {
             SDL_Keycode key;
             SDL_Keymod mod;
@@ -20692,8 +22054,16 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         PalQueuedAction actions[16];
         int action_cnt = 0;
 
+        pal_mcp_tick(&mcp_bridge, &mcp_ops, SDL_GetTicks());
+        if (app_quit) break;
+
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
+            if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN && has_synth_mouse) {
+                mouse_lx = synth_mouse_x;
+                mouse_ly = synth_mouse_y;
+                has_synth_mouse = 0;
+            }
             if (ev.type == SDL_EVENT_QUIT ||
                 (ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && ev.window.windowID == SDL_GetWindowID(window))) {
                 app_quit = 1;
@@ -22365,6 +23735,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             SDL_SetRenderTarget(renderer, NULL);
             SDL_SetRenderScale(renderer, 1.0f, 1.0f);
         }
+        int cap_scale = 1;
+        int do_cap = (!is_self_test) ? pal_mcp_capture_requested(&mcp_bridge, &cap_scale) : 0;
+        if (g_pal_headless_mode) pending_fade_in_ms = 0;
         if (pending_fade_in_ms > 0) {
             int fade_ms = pending_fade_in_ms;
             pending_fade_in_ms = 0;
@@ -22377,6 +23750,29 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
         } else {
             int win_out_w = 1280, win_out_h = 960;
             SDL_GetCurrentRenderOutputSize(renderer, &win_out_w, &win_out_h);
+            if (do_cap) {
+                int cap_w = 640 * cap_scale;
+                int cap_h = 480 * cap_scale;
+                if (!capture_rt || capture_rt_scale != cap_scale) {
+                    if (capture_rt) SDL_DestroyTexture(capture_rt);
+                    capture_rt = SDL_CreateTexture(
+                        renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_TARGET, cap_w, cap_h
+                    );
+                    if (capture_rt) {
+                        SDL_SetTextureScaleMode(capture_rt, SDL_SCALEMODE_LINEAR);
+                        SDL_SetTextureBlendMode(capture_rt, SDL_BLENDMODE_NONE);
+                        capture_rt_scale = cap_scale;
+                    }
+                }
+                if (capture_rt) {
+                    SDL_SetRenderTarget(renderer, capture_rt);
+                    SDL_SetRenderScale(renderer, (float)cap_scale, (float)cap_scale);
+                    win_out_w = cap_w;
+                    win_out_h = cap_h;
+                } else {
+                    do_cap = 0;
+                }
+            }
             if (scene_rt) {
                 SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
                 SDL_RenderClear(renderer);
@@ -22543,10 +23939,61 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             pal_draw_game_cursor(renderer, &menu_cursor, mouse_lx, mouse_ly);
         }
 
-            SDL_RenderPresent(renderer);
+        if (do_cap) {
+            SDL_Surface *cap_surf = SDL_RenderReadPixels(renderer, NULL);
+            const uint8_t *rgba_ptr = NULL;
+            SDL_Surface *conv_surf = NULL;
+            uint8_t *packed_buf = NULL;
+            int cw = 640 * cap_scale, ch = 480 * cap_scale;
+            if (cap_surf) {
+                cw = cap_surf->w;
+                ch = cap_surf->h;
+                SDL_Surface *src_s = cap_surf;
+                if (cap_surf->format != SDL_PIXELFORMAT_RGBA32) {
+                    conv_surf = SDL_ConvertSurface(cap_surf, SDL_PIXELFORMAT_RGBA32);
+                    if (conv_surf) src_s = conv_surf;
+                }
+                if (src_s && src_s->pixels) {
+                    if (src_s->pitch == cw * 4) {
+                        rgba_ptr = (const uint8_t *)src_s->pixels;
+                    } else {
+                        packed_buf = (uint8_t *)malloc((size_t)cw * (size_t)ch * 4u);
+                        if (packed_buf) {
+                            for (int y = 0; y < ch; y++) {
+                                memcpy(packed_buf + (size_t)y * (size_t)cw * 4u,
+                                       (const uint8_t *)src_s->pixels + (size_t)y * (size_t)src_s->pitch,
+                                       (size_t)cw * 4u);
+                            }
+                            rgba_ptr = packed_buf;
+                        }
+                    }
+                }
+            }
+            pal_mcp_submit_capture_rgba(&mcp_bridge, rgba_ptr, cw, ch, &mcp_ops);
+            free(packed_buf);
+            if (conv_surf) SDL_DestroySurface(conv_surf);
+            if (cap_surf) SDL_DestroySurface(cap_surf);
+            SDL_SetRenderTarget(renderer, NULL);
+            SDL_SetRenderScale(renderer, 1.0f, 1.0f);
+            if (!g_pal_headless_mode && capture_rt) {
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                SDL_RenderClear(renderer);
+                SDL_RenderTexture(renderer, capture_rt, NULL, NULL);
+            }
+        }
+
+            if (!g_pal_headless_mode) {
+                SDL_RenderPresent(renderer);
+            }
+        }
+        if (g_pal_headless_mode) {
+            SDL_Delay(active_sim ? 2 : 6);
         }
     }
 
+    if (capture_rt) SDL_DestroyTexture(capture_rt);
+    pal_mcp_unbind_active(&mcp_bridge);
+    pal_mcp_shutdown(&mcp_bridge);
     SDL_ShowCursor();
     pal_gamepad_destroy(&gamepad);
     pal_gpu_filter_destroy(&gpu_filter);
@@ -22587,6 +24034,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     g_pal_cpu_upscale_2x = prev_cpu_2x;
     g_pal_text_scale = prev_text_scale;
     g_pal_text_lang = prev_text_lang;
+    g_pal_headless_mode = prev_headless_mode;
+    g_pal_skip_videos = prev_skip_videos;
     return 0;
 }
 

@@ -391,6 +391,60 @@
         "zh-Hans": { "stringUnit": { "state": "translated", "value": "运行时在内存中动态转换全套剧情、菜单、物品仙术与界面贴图文字，不改动原版游戏资源或存档文件。" } }
       }
     },
+    "settings.mcp_section": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "AI / MCP Control Interface" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI / MCP 控制接口" } }
+      }
+    },
+    "settings.mcp_enable": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Enable Local MCP Control Socket" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启用本地 MCP 控制接口" } }
+      }
+    },
+    "settings.mcp_headless": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Headless Launch (No Visible Window)" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无头模式启动（后台隐身运行，供 AI 高速测试）" } }
+      }
+    },
+    "settings.mcp_allow_qa": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Allow MCP Teleport & QA Test Tools" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "允许 MCP 调用瞬移与 QA 测试作弊工具" } }
+      }
+    },
+    "settings.mcp_socket_label": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Unix Socket:" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本地 Socket：" } }
+      }
+    },
+    "settings.mcp_copy_config": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Copy MCP Client Config JSON" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "一键复制 MCP 客户端配置 JSON" } }
+      }
+    },
+    "settings.mcp_copied": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Copied MCP Config JSON!" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已复制 MCP 配置 JSON" } }
+      }
+    },
+    "settings.mcp_note": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Built-in MCP server (NewPal --mcp-server) requires zero external dependencies and connects safely over a user-only Unix socket." } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "内建标准 MCP 服务端（NewPal --mcp-server），无需安装 Python/Node 即可通过安全本地 Socket 让 AI 游玩与测试。" } }
+      }
+    },
+    "launch.stop_headless": {
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Stop Background Headless Engine" } },
+        "zh-Hans": { "stringUnit": { "state": "translated", "value": "停止后台无头引擎" } }
+      }
+    },
     "test_mode.hotkeys_hint": {
       "localizations": {
         "en": { "stringUnit": { "state": "translated", "value": "Hotkeys: [~]/[F11] Toolbox · [K]/[F4] Instant Kill · [F2] God · [F3] No-Encounter · [F5] Full Heal · [F6] +50k Gold · [F7] Level Up · [F8] Speed · [F9] NoClip · [F10] Skip Wait" } },

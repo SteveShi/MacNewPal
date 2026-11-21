@@ -74,6 +74,11 @@ typedef struct {
     float master_volume;     /* 0.0f .. 1.0f */
     int32_t mute_audio;      /* 0 or 1 */
     int32_t text_language;   /* 0 = Traditional Chinese (Original), 1 = Simplified Chinese */
+    int32_t mcp_enabled;     /* 0 = disabled, 1 = enable local Unix socket MCP bridge */
+    int32_t mcp_allow_qa_tools; /* 1 = allow teleport / test cheats / flag writes over MCP */
+    int32_t headless_mode;   /* 1 = hidden SDL window + fast frame stepping + skip .bik/fades */
+    int32_t skip_videos;     /* 1 = auto-skip .bik playback */
+    char mcp_socket_path[256]; /* Empty = default "/tmp/newpal-mcp.sock" */
 #if PAL_ENABLE_TEST_MODE
     PalTestConfig test_cfg;
 #endif

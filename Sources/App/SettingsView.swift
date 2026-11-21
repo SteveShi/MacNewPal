@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsView: View {
@@ -11,6 +12,10 @@ struct SettingsView: View {
     @AppStorage("masterVolume") private var masterVolume: Double = 0.85
     @AppStorage("muteAudio") private var muteAudio: Bool = false
     @AppStorage("gameLanguage") private var gameLanguage: Int = 0
+    @AppStorage("mcpEnabled") private var mcpEnabled: Bool = true
+    @AppStorage("mcpHeadlessLaunch") private var mcpHeadlessLaunch: Bool = false
+    @AppStorage("mcpAllowQaTools") private var mcpAllowQaTools: Bool = true
+    @State private var copiedMcpConfig: Bool = false
 
     let store: PalLauncherStore
 
@@ -95,6 +100,37 @@ struct SettingsView: View {
 #if PAL_ENABLE_TEST_MODE
             TestModeSettingsSection()
 #endif
+            Section("settings.mcp_section") {
+                Toggle("settings.mcp_enable", isOn: $mcpEnabled)
+                Toggle("settings.mcp_headless", isOn: $mcpHeadlessLaunch)
+                    .disabled(!mcpEnabled)
+                Toggle("settings.mcp_allow_qa", isOn: $mcpAllowQaTools)
+                    .disabled(!mcpEnabled)
+
+                HStack {
+                    Text("settings.mcp_socket_label")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("/tmp/newpal-mcp.sock")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+
+                HStack {
+                    Button(copiedMcpConfig ? "settings.mcp_copied" : "settings.mcp_copy_config") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(store.mcpConfigSnippet(), forType: .string)
+                        copiedMcpConfig = true
+                    }
+                    Spacer()
+                }
+
+                Text("settings.mcp_note")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if let val = store.validation {
                 vfsMetricsSection(val)
             }

@@ -21,6 +21,7 @@
 | **M6** | 全量战斗还原：160 位异常状态掩码（毒伤 DOT 与 `3063`/`3074` 免疫转化、封魔/混乱/昏睡）、四人合体技、同伴倒下怒气加成、原版 `GFight` 公式与 AI、怪物死亡演出及可选 2x 高清模式 | ✅ 已完成 |
 | **M7** | 结局后日谈与 Talk 虚拟机闭环（`0x60`/`0xC2`/`0xC4`/`0xC8` 双遍分支直达 `talk 1439 -> Video/notice.bik` 与拔剑切换）及只读 BYOD 目录 `Application Support` 存档回退 | ✅ 已完成 |
 | **M8** | 重制级音画与操作升级：SDL3 Metal GPU 后处理着色器（`xBRZ` 与 `CRT-Royale` MSL）、视网膜级 CoreText UI 分层叠加、BGM 平滑淡入淡出与压低及完整 SDL3 手柄支持（`PalGamepad`） | ✅ 已完成 |
+| **M9** | MCP 协议支持与 AI 自动化游玩：原生内置 stdio 模型上下文协议（`--mcp-server`），提供 16 项结构化工具、无头超高速仿真与全八章主线自动化通关测试跑道 | ✅ 已完成 |
 
 ---
 
@@ -58,6 +59,32 @@
      - `Tools/pal_unpack.py`：生成目录清单、LZO1X/ARLE `.tsw` 导图、35 操作码 `.act` 脚本解码、`all.snd` WAV 导出及 `MSF3` 地图渲染。
      - `Tools/pal_db_unpack.py`：`0x7F` TLV 数据库导出（含全部 88 个 `GFight` 战斗指令注释）、Talk 字节码解码及 `maps.dat` / `namex.dat` / `path1..10.dat` 解析。
      - `Tools/_lzo_accel.c`：供离线工具加速使用的 C 语言 LZO1X 解压库。
+
+---
+
+## 首次运行与安全提示（未签名应用 Gatekeeper 说明）
+
+由于本项目为开源自建发布版，未购买 Apple 开发者计划证书进行官方公证（采用 Ad-hoc 本地签名）。macOS 的 Gatekeeper 安全机制在首次打开应用时可能会弹出拦截警告（例如：*“无法打开‘NewPal’，因为 Apple 无法检查其是否包含恶意软件”* 或 *“‘NewPal’已损坏，无法打开”*）。
+
+请按以下方式之一正常启动：
+
+### 推荐方法：右键（Control + 单击）打开
+1. 将 `NewPal.app` 拖入 `/Applications`（应用程序）文件夹；
+2. 在 Finder 中找到 `NewPal.app`，**按住 Control 键并单击（或鼠标右键单击）**图标；
+3. 在弹出的快捷菜单中选择 **“打开” (Open)**；
+4. 在随后弹出的确认对话框中，点击 **“打开”** 即可正常启动，此后即可双击直接运行。
+
+### 备用方法一：系统设置中允许打开
+1. 双击被系统拦截后，打开 **“系统设置” (System Settings)**；
+2. 进入 **“隐私与安全性” (Privacy & Security)**；
+3. 向下滚动至 **“安全性” (Security)** 区域，会看到 *“已阻止使用‘NewPal’，因为来自身份不明的开发者”*；
+4. 点击旁边的 **“仍要打开” (Open Anyway)** 并验证系统密码即可。
+
+### 备用方法二：终端移除隔离属性 (Quarantine)
+若系统提示“已损坏，无法打开，你应该将它移到废纸篓”，请打开“终端” (Terminal) 执行以下命令移除 macOS 隔离标记：
+```bash
+xattr -cr /Applications/NewPal.app
+```
 
 ---
 
@@ -104,6 +131,26 @@ xcodebuild -project NewPal.xcodeproj -scheme NewPal -configuration Release -deri
 ```
 
 指向有效的 `PalGame` 目录时，自检将输出 `Validation: 23/23 (is_valid=1)`、`Renderer: metal`、FFmpeg Bink/BGM 探测、UI 与角色 `.act` VM 步进、`MSF3` + `maps.dat` + A* 寻路探测（`MapM2[1]`、`MapM2[2]`、`MapM2[501]`）、`TalkM3`（8 卷共 `7394/7394` 条脚本无错解码，传送 `6001`/`6007`、宝箱 `7012` 与剧情 `104`/`105` 状态推进）、`DbM4`（`0x7F` 数据表：`9` 角色、`252` 道具、`66` 仙术、`410` 升级记录，`h2000` 穿脱装备/道具/仙术/升级推演与 `0x309` 物品脚本解析 `5150 -> 3254 皮帽`）、`CombatShopSaveM5`（`160` 怪物、`265` 遇敌区域、`1056` 战斗编队、`2801` 对战 `羅剎鬼婆` 结算升级、`58001` 商店交易、`Save/0.sav` 读取与临时 `Save/99.sav` 往返校验）、CoreText 富文本渲染与实时解码诊断信息，并以 `[SelfTest] ALL CHECKS PASSED.` 与退出码 `0` 结束。
+
+### 模型上下文协议（MCP）AI 自动化游玩与测试服务
+NewPal 原生内置标准 JSON-RPC 2.0 stdio MCP 服务端，供各类 AI 编码与自主代理直接控制游戏、寻路探索与自动化测试：
+```json
+{
+  "mcpServers": {
+    "newpal": {
+      "command": "/Applications/NewPal.app/Contents/MacOS/NewPal",
+      "args": ["--mcp-server"]
+    }
+  }
+}
+```
+
+### 独立分发 DMG 镜像一键打包
+如需将编译产物与所有外部动态链接库完全内置打包为开箱即用的 `.dmg` 磁盘镜像（含自动重写 `@rpath`、清除 Homebrew 依赖泄漏与 Ad-hoc 签名）：
+```bash
+./Tools/package_dmg.py
+```
+生成文件位于：`build/NewPal-1.0.0.dmg`。
 
 ---
 

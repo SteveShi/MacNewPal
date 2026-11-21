@@ -43,11 +43,23 @@ final class PalLauncherStore {
     var validation: ValidationSummaryModel?
     var lastErrorMessage: String = ""
     var isRunningEngine: Bool = false
+    var isRunningHeadless: Bool = false
 
     private var activeScopedURL: URL?
+    private var headlessProcess: Process?
+    private var terminateObserver: NSObjectProtocol?
 
     init() {
         refreshRenderBackendStatus()
+        terminateObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.stopHeadlessEngine()
+            }
+        }
     }
 
     func refreshRenderBackendStatus() {
@@ -165,10 +177,59 @@ final class PalLauncherStore {
         shaderFilter: Int,
         masterVolume: Double,
         muteAudio: Bool,
-        textLanguage: Int = 0
+        textLanguage: Int = 0,
+        mcpEnabled: Bool = true,
+        mcpAllowQaTools: Bool = true,
+        mcpHeadlessLaunch: Bool = false,
+        mcpSocketPath: String = "/tmp/newpal-mcp.sock"
     ) {
         guard validation?.isValid == true, !isRunningEngine else { return }
         lastErrorMessage = ""
+
+        if mcpEnabled && mcpHeadlessLaunch {
+            let exePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: exePath)
+            var cliArgs = [
+                "--play", gameDir,
+                "--headless",
+                "--mcp-socket", mcpSocketPath,
+                "--lang", textLanguage == 1 ? "sc" : "tc",
+                "--scale", "\(windowScale)",
+                "--hd", hdMode ? "1" : "0",
+                "--shader", "\(shaderFilter)",
+                "--allow-qa", mcpAllowQaTools ? "1" : "0",
+                "--skip-videos",
+                "--mute"
+            ]
+#if PAL_ENABLE_TEST_MODE
+            if TestModeDefaults.currentConfig().enabled != 0 {
+                cliArgs.append("--test-mode")
+            }
+#endif
+            proc.arguments = cliArgs
+            proc.standardInput = FileHandle.nullDevice
+            proc.terminationHandler = { [weak self] _ in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.headlessProcess = nil
+                    self.isRunningHeadless = false
+                    self.isRunningEngine = false
+                }
+            }
+            do {
+                try proc.run()
+                headlessProcess = proc
+                isRunningHeadless = true
+                isRunningEngine = true
+            } catch {
+                lastErrorMessage = error.localizedDescription
+                isRunningHeadless = false
+                isRunningEngine = false
+            }
+            return
+        }
+
         isRunningEngine = true
 
         var cfg = PalLaunchConfig()
@@ -183,6 +244,11 @@ final class PalLauncherStore {
         cfg.master_volume = Float(min(max(masterVolume, 0.0), 1.0))
         cfg.mute_audio = muteAudio ? 1 : 0
         cfg.text_language = Int32(textLanguage)
+        cfg.mcp_enabled = mcpEnabled ? 1 : 0
+        cfg.mcp_allow_qa_tools = mcpAllowQaTools ? 1 : 0
+        cfg.headless_mode = 0
+        cfg.skip_videos = 0
+        Self.writeCString(mcpSocketPath, into: &cfg.mcp_socket_path)
 #if PAL_ENABLE_TEST_MODE
         cfg.test_cfg = TestModeDefaults.currentConfig()
 #endif
@@ -195,6 +261,33 @@ final class PalLauncherStore {
             let endIdx = errBuf.firstIndex(of: 0) ?? errBuf.count
             lastErrorMessage = String(decoding: errBuf.prefix(endIdx).map { UInt8(bitPattern: $0) }, as: UTF8.self)
         }
+    }
+
+    func stopHeadlessEngine() {
+        guard let proc = headlessProcess else {
+            isRunningHeadless = false
+            return
+        }
+        if proc.isRunning {
+            proc.terminate()
+        }
+        headlessProcess = nil
+        isRunningHeadless = false
+        isRunningEngine = false
+    }
+
+    func mcpConfigSnippet() -> String {
+        let exePath = Bundle.main.executablePath ?? "/Applications/NewPal.app/Contents/MacOS/NewPal"
+        return """
+        {
+          "mcpServers": {
+            "newpal": {
+              "command": "\(exePath)",
+              "args": ["--mcp-server"]
+            }
+          }
+        }
+        """
     }
 
     private static func stringFromTuple<T>(_ tuple: T) -> String {

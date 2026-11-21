@@ -21,6 +21,7 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 | **M6** | Full Combat Fidelity: 160-Bit Status Masks (Poison DOT + `3063`/`3074` Immunity/Healing, Seal/Confuse/Sleep), 4-Hero Combos (`合體技`), Ally-Down Fury, Authentic `GFight` Formulas & AI, Monster Death Animation & Optional 2x HD Mode | ✅ Completed |
 | **M7** | Endgame & Talk VM Closure (`0x60`/`0xC2`/`0xC4`/`0xC8` two-pass `talk 1439 -> Video/notice.bik` epilogue & Sword Pose transitions) + Read-Only BYOD `Application Support` Save Fallback | ✅ Completed |
 | **M8** | Remaster Polish: SDL3 Metal GPU Shaders (`xBRZ` & `CRT-Royale` MSL), Retina-Crisp CoreText UI Pass, Smooth BGM Crossfade & Ducking, and Full SDL3 Gamepad Support (`PalGamepad`) | ✅ Completed |
+| **M9** | MCP Support & Autonomous Testing: Built-in stdio Model Context Protocol (`--mcp-server`) with 16 tools, headless fast simulation, and full 8-chapter automated speedrun runner | ✅ Completed |
 
 ---
 
@@ -58,6 +59,32 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
      - `Tools/pal_unpack.py`: Manifest generator, LZO1X/ARLE `.tsw` PNG exporter, 35-opcode `.act` script parser, `all.snd` WAV exporter, and `MSF3` `.lmf` map renderer.
      - `Tools/pal_db_unpack.py`: `0x7F` TLV database dumper (annotating all `88` `GFight` opcodes), Talk bytecode parser, `maps.dat` / `namex.dat` / `path1..10.dat` inspector.
      - `Tools/_lzo_accel.c`: Standalone C LZO1X shared library accelerator for Python tools.
+
+---
+
+## First Launch & Gatekeeper Notice (Unsigned App)
+
+Because NewPal is an open-source community release built without an Apple Developer ID certificate (using ad-hoc code-signing), macOS Gatekeeper may display a security prompt on first launch (e.g. *"Apple cannot verify NewPal for malicious software"* or *"NewPal is damaged and cannot be opened"*).
+
+Please use one of the following standard methods to launch the app:
+
+### Recommended: Right-Click (Control + Click) Open
+1. After dragging `NewPal.app` into `/Applications`;
+2. Locate `NewPal.app` in Finder, **hold the Control key and click (or right-click)** the icon;
+3. Select **"Open"** from the context menu;
+4. In the confirmation dialog, click **"Open"**. The app will remember this approval and open normally on subsequent double-clicks.
+
+### Alternative 1: Privacy & Security Settings
+1. Attempt to open the app once (getting the prompt), then open **System Settings**;
+2. Navigate to **Privacy & Security**;
+3. Scroll down to the **Security** section where it says *"NewPal was blocked from use because it is not from an identified developer"*;
+4. Click **"Open Anyway"** and authenticate with your password or Touch ID.
+
+### Alternative 2: Terminal Quarantine Removal
+If macOS displays an alert saying the application is "damaged and cannot be opened", open **Terminal** and strip the quarantine extended attribute:
+```bash
+xattr -cr /Applications/NewPal.app
+```
 
 ---
 
@@ -104,6 +131,27 @@ xcodebuild -project NewPal.xcodeproj -scheme NewPal -configuration Release -deri
 ```
 
 A valid `PalGame` directory reports `Validation: 23/23 (is_valid=1)`, `Renderer: metal`, verified FFmpeg Bink/BGM probes, UI and character `.act` VM stepping, `MSF3` + `maps.dat` + A* probes (`MapM2[1]`, `MapM2[2]`, `MapM2[501]`), `TalkM3` (`8` banks, `7394/7394` clean scripts, portals `6001`/`6007`, chest `7012`, cutscenes `104`/`105`), `DbM4` (`0x7F` databases: `9` heroes, `252` items, `66` magics, `410` level rows, `h2000` equip/item/magic/level-up progression, and `0x309` script item lookup `5150 -> 3254 皮帽`), `CombatShopSaveM5` (`160` monsters, `265` zones, `1056` fight scripts, formation `2801` battle simulation against `羅剎鬼婆`, shop `58001` transaction, `Save/0.sav` parsing & ephemeral `Save/99.sav` round-trip), CoreText rich-text metrics, decoded map/sprite/action/audio/hero diagnostics, and `[SelfTest] ALL CHECKS PASSED.` with exit code `0`.
+
+### Model Context Protocol (MCP) Server for AI Playtesting
+NewPal includes a built-in JSON-RPC 2.0 stdio MCP server for autonomous AI playtesting, navigation, and debugging:
+```bash
+# Add to your MCP client configuration (Claude Desktop / Antigravity / Cursor / Codex)
+{
+  "mcpServers": {
+    "newpal": {
+      "command": "/Applications/NewPal.app/Contents/MacOS/NewPal",
+      "args": ["--mcp-server"]
+    }
+  }
+}
+```
+
+### Standalone DMG Distribution Packaging
+To create a standalone, relocatable `.dmg` with bundled dylibs, ad-hoc codesigning, and custom volume icon:
+```bash
+./Tools/package_dmg.py
+```
+Output DMG: `build/NewPal-1.0.0.dmg`.
 
 ---
 

@@ -12,6 +12,9 @@ struct ContentView: View {
     @AppStorage("masterVolume") private var masterVolume: Double = 0.85
     @AppStorage("muteAudio") private var muteAudio: Bool = false
     @AppStorage("gameLanguage") private var gameLanguage: Int = 0
+    @AppStorage("mcpEnabled") private var mcpEnabled: Bool = true
+    @AppStorage("mcpHeadlessLaunch") private var mcpHeadlessLaunch: Bool = false
+    @AppStorage("mcpAllowQaTools") private var mcpAllowQaTools: Bool = true
 
     let store: PalLauncherStore
 
@@ -195,27 +198,44 @@ struct ContentView: View {
 
                     Spacer(minLength: 16)
 
-                    Button {
-                        store.launchEngine(
-                            gameDir: gameDataPath,
-                            windowScale: windowScale,
-                            vsyncEnabled: vsyncEnabled,
-                            nearestFilter: nearestFilter,
-                            hdMode: hdMode,
-                            shaderFilter: shaderFilter,
-                            masterVolume: masterVolume,
-                            muteAudio: muteAudio,
-                            textLanguage: gameLanguage
-                        )
-                    } label: {
-                        Label("launch.button", systemImage: "play.fill")
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
+                    if store.isRunningHeadless {
+                        Button(role: .destructive) {
+                            store.stopHeadlessEngine()
+                        } label: {
+                            Label("launch.stop_headless", systemImage: "stop.fill")
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        .controlSize(.large)
+                        .fixedSize()
+                    } else {
+                        Button {
+                            store.launchEngine(
+                                gameDir: gameDataPath,
+                                windowScale: windowScale,
+                                vsyncEnabled: vsyncEnabled,
+                                nearestFilter: nearestFilter,
+                                hdMode: hdMode,
+                                shaderFilter: shaderFilter,
+                                masterVolume: masterVolume,
+                                muteAudio: muteAudio,
+                                textLanguage: gameLanguage,
+                                mcpEnabled: mcpEnabled,
+                                mcpAllowQaTools: mcpAllowQaTools,
+                                mcpHeadlessLaunch: mcpHeadlessLaunch
+                            )
+                        } label: {
+                            Label("launch.button", systemImage: "play.fill")
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .fixedSize()
+                        .disabled(store.validation?.isValid != true || store.isRunningEngine)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .fixedSize()
-                    .disabled(store.validation?.isValid != true || store.isRunningEngine)
                 }
 
                 if !store.lastErrorMessage.isEmpty {
