@@ -6999,14 +6999,15 @@ static void pal_world_party_attach_obj(
 static void pal_world_party_detach_obj(
     PalTalkWorldState *ws, const char *game_dir, PalFieldActor *party,
     PalFieldActor *npcs, int *io_npc_cnt, int npc_cap, uint32_t cur_map_id,
-    uint16_t obj_id, uint16_t act_id, uint16_t sub_state, uint16_t talk_id,
-    int16_t tx, int16_t ty, uint16_t flags
+    uint16_t obj_id, uint16_t act_id, uint16_t sub_state, uint16_t dir,
+    uint16_t talk_id, uint16_t ai_script_id, uint16_t flags
 ) {
     if (!ws) return;
     int npc_cnt = io_npc_cnt ? *io_npc_cnt : 0;
     int prev_px = party ? party[0].px : 0;
     int prev_py = party ? party[0].py : 0;
     int prev_dir = party ? party[0].dir : 1;
+    int eff_dir = (dir <= 7u) ? (int)(dir & 7u) : (prev_dir & 7);
     int32_t hid = pal_obj_to_hero_id(obj_id);
     if (hid > 0) {
         int pidx = pal_world_find_party_member(ws, hid);
@@ -7036,14 +7037,16 @@ static void pal_world_party_detach_obj(
     if (obj_id < PAL_OBJ_CAP) {
         ws->npc_act_override[obj_id] = act_id;
         ws->npc_sub_override[obj_id] = (uint16_t)(sub_state + 1u);
+        ws->npc_dir_override[obj_id] = (int8_t)(eff_dir + 1);
         if (talk_id != 0xFFFFu) ws->npc_talk_override[obj_id] = talk_id;
+        ws->npc_ai_override[obj_id] = (ai_script_id == 0u) ? 0xFFFFu : ai_script_id;
         ws->npc_flags_has[obj_id] = 1u;
         ws->npc_flags_val[obj_id] = flags;
         ws->npc_visibility_override[obj_id] = (flags & 0x8000u) ? 1u : 2u;
-        if (cur_map_id > 0u && (tx != 0 || ty != 0 || prev_px != 0 || prev_py != 0)) {
+        if (cur_map_id > 0u && (prev_px != 0 || prev_py != 0)) {
             ws->npc_pos_map[obj_id] = (uint16_t)cur_map_id;
-            ws->npc_pos_tx[obj_id] = (tx != 0 || ty != 0) ? tx : (int16_t)(prev_px >> 4);
-            ws->npc_pos_ty[obj_id] = (tx != 0 || ty != 0) ? ty : (int16_t)(prev_py >> 4);
+            ws->npc_pos_tx[obj_id] = (int16_t)(prev_px >> 4);
+            ws->npc_pos_ty[obj_id] = (int16_t)(prev_py >> 4);
         }
     }
     int found = 0;
@@ -7053,16 +7056,14 @@ static void pal_world_party_detach_obj(
             found = 1;
             if (act_id > 0u) npcs[n].act_id = act_id;
             npcs[n].orig_sub_state = sub_state;
+            npcs[n].dir = eff_dir;
             if (talk_id != 0xFFFFu) npcs[n].talk_id = talk_id;
+            npcs[n].ai_script_id = ai_script_id;
             npcs[n].npc_flags = flags;
             npcs[n].active = (flags & 0x8000u) ? 1 : 0;
-            if (tx != 0 || ty != 0) {
-                npcs[n].px = (int)tx << 4;
-                npcs[n].py = (int)ty << 4;
-            } else if (prev_px != 0 || prev_py != 0) {
+            if (prev_px != 0 || prev_py != 0) {
                 npcs[n].px = prev_px;
                 npcs[n].py = prev_py;
-                npcs[n].dir = prev_dir;
             }
             if (npcs[n].active && game_dir) {
                 field_actor_set_sub(&npcs[n], game_dir, npcs[n].act_id,
@@ -7081,16 +7082,14 @@ static void pal_world_party_detach_obj(
             if (act_id > 0u) na->act_id = act_id;
             else if (na->act_id == 0u && hid > 0) na->act_id = pal_hero_field_act_id(hid);
             na->orig_sub_state = sub_state;
+            na->dir = eff_dir;
             if (talk_id != 0xFFFFu) na->talk_id = talk_id;
+            na->ai_script_id = ai_script_id;
             na->npc_flags = flags;
             na->active = 1;
-            if (tx != 0 || ty != 0) {
-                na->px = (int)tx << 4;
-                na->py = (int)ty << 4;
-            } else if (prev_px != 0 || prev_py != 0) {
+            if (prev_px != 0 || prev_py != 0) {
                 na->px = prev_px;
                 na->py = prev_py;
-                na->dir = prev_dir;
             }
             if (game_dir && na->act_id > 0u) {
                 field_actor_set_sub(na, game_dir, na->act_id, (int)na->orig_sub_state + (na->dir & 7), 1);
@@ -7250,6 +7249,34 @@ static void talk_hide_portrait(PalTalkVM *vm, uint16_t act_id, uint16_t sub) {
     }
 }
 
+static int pal_npc_is_touch_event(const PalFieldActor *a) {
+    if (!a || !a->active || a->talk_id == 0u) return 0;
+    if (a->act_id == 701u) return 0; /* Map-entry cutscene handled separately */
+    if ((a->npc_flags & 0x2000u) != 0u && (a->talk_id >= 5001u || a->sight > 0)) return 0;
+    if ((a->npc_flags & 0x20u) != 0u) return 1;
+    if (a->act_id == 700u && (a->npc_flags & 0x2000u) != 0u) return 1;
+    return 0;
+}
+
+static int pal_npc_touch_hit_px(const PalFieldActor *a, int ppx, int ppy, int foot_w, int pad_px) {
+    if (!a) return 0;
+    if (a->act_id == 700u && a->vm_ok && a->vm.hitbox_w > 0 && a->vm.hitbox_h > 0) {
+        int ax0 = a->px - pad_px;
+        int ay0 = a->py - pad_px;
+        int ax1 = a->px + a->vm.hitbox_w * 16 + pad_px;
+        int ay1 = a->py + a->vm.hitbox_h * 16 + pad_px;
+        int px0 = ppx;
+        int py0 = ppy;
+        int px1 = ppx + (foot_w > 0 ? foot_w : 2) * 16;
+        int py1 = ppy + 16;
+        return (px0 < ax1 && px1 > ax0 && py0 < ay1 && py1 > ay0) ? 1 : 0;
+    }
+    int r = ((a->act_id == 700u) ? 48 : 32) + pad_px;
+    int dx = a->px - ppx;
+    int dy = a->py - ppy;
+    return (dx * dx + dy * dy <= r * r) ? 1 : 0;
+}
+
 static void pal_init_npc_actor_from_def(
     PalFieldActor *a, const PalMapNpcDef *nd, const PalTalkWorldState *ws,
     const char *game_dir, uint32_t map_id
@@ -7276,8 +7303,8 @@ static void pal_init_npc_actor_from_def(
                            ? (uint32_t)ws->npc_act_override[oid]
                            : (uint32_t)nd->act_id;
     int eff_dir = (ws && oid < PAL_OBJ_CAP && ws->npc_dir_override[oid] > 0)
-                      ? ((int)(ws->npc_dir_override[oid] - 1) & 7)
-                      : (int)(nd->dir & 7u);
+                      ? (eff_act == 700u ? (int)(ws->npc_dir_override[oid] - 1) : ((int)(ws->npc_dir_override[oid] - 1) & 7))
+                      : (eff_act == 700u ? (int)nd->dir : (int)(nd->dir & 7u));
     a->act_id = eff_act;
     a->dir = eff_dir;
     a->backup_act_id = eff_act;
@@ -7745,8 +7772,12 @@ static void pal_talk_vm_step_ex(
                     if (obj < PAL_OBJ_CAP) ws->npc_visibility_override[obj] = vis ? 1u : 2u;
                     if (a) a->active = suppress_dup ? 0 : vis;
                 }
-                if (vis && a && a->active && a->act_id == 700u && (a->npc_flags & 0x20u) != 0u &&
-                    a->talk_id > 0u && a->obj_id != vm->trigger_obj_id && ws) {
+                if (vis && a && a->active && a->act_id > 0u && !a->vm_ok && game_dir) {
+                    int sub_idx = (int)a->orig_sub_state + (a->act_id == 700u ? a->dir : (a->dir & 7));
+                    field_actor_set_sub(a, game_dir, a->act_id, sub_idx, 1);
+                }
+                if (vis && a && a->act_id == 700u && pal_npc_is_touch_event(a) &&
+                    a->obj_id != vm->trigger_obj_id && ws) {
                     ws->auto_trig_recheck = 1;
                 }
                 vm->ip += ilen;
@@ -7796,7 +7827,11 @@ static void pal_talk_vm_step_ex(
                     if (mid != 0xFFFFu && mid > 0u && (uint32_t)mid != cur_map_id) {
                         ws->npc_ai_override[obj] = 0xFFFFu;
                     }
-                    if (raw_dir != 0xFFFFu) ws->npc_dir_override[obj] = (int8_t)((raw_dir & 7u) + 1u);
+                    if (raw_dir != 0xFFFFu) {
+                        uint32_t chk_act = (raw_act != 0xFFFFu && raw_act > 0u) ? raw_act : (gd ? gd->act_id : 0u);
+                        int32_t dval = (chk_act == 700u && raw_dir < 126u) ? (int32_t)raw_dir : (int32_t)(raw_dir & 7u);
+                        ws->npc_dir_override[obj] = (int8_t)(dval + 1);
+                    }
                     if (raw_act != 0xFFFFu) ws->npc_act_override[obj] = raw_act;
                     if (raw_sub != 0xFFFFu) {
                         ws->npc_sub_override[obj] = (uint16_t)(raw_sub + 1u);
@@ -7821,13 +7856,14 @@ static void pal_talk_vm_step_ex(
                         a->script_moving = 0;
                         if (raw_act != 0xFFFFu && raw_act > 0u) a->act_id = raw_act;
                         if (raw_sub != 0xFFFFu) a->orig_sub_state = raw_sub;
-                        if (raw_dir != 0xFFFFu) a->dir = (int)(raw_dir & 7u);
+                        if (raw_dir != 0xFFFFu) a->dir = (a->act_id == 700u) ? (int)raw_dir : (int)(raw_dir & 7u);
                         if (a->act_id > 0u && (was_active || (a->npc_flags & 0x8000u))) {
-                            field_actor_set_sub(a, game_dir, a->act_id, (int)a->orig_sub_state + (a->dir & 7), 1);
+                            int sub_idx = (int)a->orig_sub_state + (a->act_id == 700u ? a->dir : (a->dir & 7));
+                            field_actor_set_sub(a, game_dir, a->act_id, sub_idx, 1);
                             if (!was_active) a->active = 0;
                         }
-                        if (a->active && a->act_id == 700u && (a->npc_flags & 0x20u) != 0u &&
-                            a->talk_id > 0u && a->obj_id != vm->trigger_obj_id && ws) {
+                        if (a->act_id == 700u && pal_npc_is_touch_event(a) &&
+                            a->obj_id != vm->trigger_obj_id && ws) {
                             ws->auto_trig_recheck = 1;
                         }
                     } else if (a && is_p) {
@@ -7944,7 +7980,7 @@ static void pal_talk_vm_step_ex(
                 PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, NULL);
                 if (a) {
                     a->talk_id = tid;
-                    if (tid > 0u && a->active && a->act_id == 700u && (a->npc_flags & 0x20u) != 0u &&
+                    if (tid > 0u && a->act_id == 700u && pal_npc_is_touch_event(a) &&
                         a->obj_id != vm->trigger_obj_id && ws) {
                         ws->auto_trig_recheck = 1;
                     }
@@ -8468,16 +8504,16 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x42u: { /* Detach party follower [obj, act, sub, talk, tx, ty, flags] */
+            case 0x42u: { /* Detach party follower [obj, act, sub, dir, talk_id, ai_script_id, flags] */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 uint16_t aid = rd_u16(ins + 4u);
                 uint16_t sub = rd_u16(ins + 6u);
-                uint16_t tid = rd_u16(ins + 8u);
-                int16_t tx = (int16_t)rd_u16(ins + 10u);
-                int16_t ty = (int16_t)rd_u16(ins + 12u);
+                uint16_t dir = rd_u16(ins + 8u);
+                uint16_t tid = rd_u16(ins + 10u);
+                uint16_t ai_id = rd_u16(ins + 12u);
                 uint16_t fl = rd_u16(ins + 14u);
                 pal_world_party_detach_obj(ws, game_dir, party, npcs, &npc_cnt, npc_cap, cur_map_id,
-                                           obj, aid, sub, tid, tx, ty, fl);
+                                           obj, aid, sub, dir, tid, ai_id, fl);
                 if (io_npc_cnt) *io_npc_cnt = npc_cnt;
                 vm->ip += ilen;
                 break;
@@ -9205,9 +9241,11 @@ int32_t pal_talk_vm_probe_m3(const char *game_dir, PalTalkM3ProbeInfo *out_info)
                     while (ws_reg->party_members[1].lv < 7) {
                         if (pal_party_level_up_slot(db_reg, &ws_reg->party_members[1]) != 0) break;
                     }
-                    pal_world_party_detach_obj(ws_reg, game_dir, NULL, NULL, NULL, 0, 1u, 2u, 2u, 0u, 100u, 10, 12, 0x8000u);
+                    pal_world_party_detach_obj(ws_reg, game_dir, NULL, NULL, NULL, 0, 1u, 2u, 2u, 0u, 2u, 100u, 0u, 0x8000u);
                     int detached_ok = (ws_reg->party_member_count == 1 &&
                                        ws_reg->saved_heroes[1].lv == 7 &&
+                                       ws_reg->npc_dir_override[2] == 3 &&
+                                       ws_reg->npc_talk_override[2] == 100u &&
                                        ws_reg->npc_visibility_override[2] == 1u);
                     if (detached_ok) {
                         pal_world_party_attach_obj(ws_reg, game_dir, NULL, NULL, 0, 2u);
@@ -18287,9 +18325,18 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
             tparty[0].px = 160;
             tparty[0].py = 240;
             tparty[0].dir = 2;
+            tparty[2].px = 192;
+            tparty[2].py = 256;
+            tparty[2].dir = 1;
             int pre_cnt = tcnt;
-            pal_world_party_detach_obj(ws, NULL, tparty, tnpcs, &tcnt, 8, 1u, 3u, 3u, 0u, 200u, 11, 22, 0x8000u);
-            int synth_ok = (tcnt == pre_cnt + 1 && tnpcs[tcnt - 1].obj_id == 3u && tnpcs[tcnt - 1].active == 1);
+            pal_world_party_detach_obj(ws, NULL, tparty, tnpcs, &tcnt, 8, 1u, 3u, 3u, 0u, 2u, 99u, 0u, 0x8000u);
+            int synth_ok = (tcnt == pre_cnt + 1 &&
+                            tnpcs[tcnt - 1].obj_id == 3u &&
+                            tnpcs[tcnt - 1].active == 1 &&
+                            tnpcs[tcnt - 1].px == 192 &&
+                            tnpcs[tcnt - 1].py == 256 &&
+                            tnpcs[tcnt - 1].dir == 2 &&
+                            tnpcs[tcnt - 1].talk_id == 99u);
 
             PalTalkVM ce_vm = {0};
             uint8_t ce_chunk[6] = {0xCEu, 0x00u, 0x03u, 0x00u, 0xFFu, 0xFFu};
@@ -18843,7 +18890,11 @@ static void pal_npc_ai_step(
                 if (obj < PAL_OBJ_CAP && obj != 0xFFF0u) {
                     ws->npc_visibility_override[obj] = (op == 28) ? 1u : 2u;
                 }
-                if (op == 28 && tgt && tgt->active && tgt->act_id == 700u && (tgt->npc_flags & 0x20u) != 0u && tgt->talk_id > 0u) {
+                if (op == 28 && tgt && tgt->active && tgt->act_id > 0u && !tgt->vm_ok && game_dir) {
+                    int sub_idx = (int)tgt->orig_sub_state + (tgt->act_id == 700u ? tgt->dir : (tgt->dir & 7));
+                    field_actor_set_sub(tgt, game_dir, tgt->act_id, sub_idx, 1);
+                }
+                if (op == 28 && tgt && tgt->act_id == 700u && pal_npc_is_touch_event(tgt)) {
                     ws->auto_trig_recheck = 1;
                 }
                 a->ai_pc += 2;
@@ -20116,41 +20167,50 @@ static int pal_mcp_cb_exec(
                         if (vis && q) {
                             static const int kBfsDx[8] = { 0,  0, -1, 1, -1,  1, -1,  1};
                             static const int kBfsDy[8] = {-1,  1,  0, 0, -1,  1,  1, -1};
-                            int qh = 0, qt = 0;
-                            int sidx = bfs_sy * W + bfs_sx;
-                            vis[sidx] = 1;
-                            q[qt++] = sidx;
-                            while (qh < qt) {
-                                int cur = q[qh++];
-                                int cx = cur % W;
-                                int cy = cur / W;
-                                if (!found_walk &&
-                                    pal_map_trigger_at_px(c->map, cx << 4, cy << 4, 2) == (uint8_t)req->trigger_id) {
-                                    found_walk = 1;
-                                    goal_tx = cx;
-                                    goal_ty = cy;
-                                    break;
-                                }
-                                if (!found_adj &&
-                                    pal_map_adjacent_trigger_id(c->map, cx << 4, cy << 4, 2, (uint8_t)req->trigger_id)) {
-                                    found_adj = 1;
-                                    adj_tx = cx;
-                                    adj_ty = cy;
-                                }
-                                for (int d = 0; d < 8; d++) {
-                                    int nx = cx + kBfsDx[d];
-                                    int ny = cy + kBfsDy[d];
-                                    if (!pal_map_can_stand_tile(c->map, nx, ny, 2)) continue;
-                                    if (kBfsDx[d] != 0 && kBfsDy[d] != 0) {
-                                        if (!pal_map_can_stand_tile(c->map, cx + kBfsDx[d], cy, 2) ||
-                                            !pal_map_can_stand_tile(c->map, cx, cy + kBfsDy[d], 2)) {
-                                            continue;
-                                        }
+                            /* Pass 0: avoid crossing other triggers (prevents detouring through wrong doorways).
+                               Pass 1: fallback if target is only reachable across an intermediate cutscene trigger. */
+                            for (int pass = 0; pass < 2 && !found_walk && !found_adj; pass++) {
+                                memset(vis, 0, (size_t)N);
+                                int qh = 0, qt = 0;
+                                int sidx = bfs_sy * W + bfs_sx;
+                                vis[sidx] = 1;
+                                q[qt++] = sidx;
+                                while (qh < qt) {
+                                    int cur = q[qh++];
+                                    int cx = cur % W;
+                                    int cy = cur / W;
+                                    if (!found_walk &&
+                                        pal_map_trigger_at_px(c->map, cx << 4, cy << 4, 2) == (uint8_t)req->trigger_id) {
+                                        found_walk = 1;
+                                        goal_tx = cx;
+                                        goal_ty = cy;
+                                        break;
                                     }
-                                    int nidx = ny * W + nx;
-                                    if (vis[nidx]) continue;
-                                    vis[nidx] = 1;
-                                    q[qt++] = nidx;
+                                    if (!found_adj &&
+                                        pal_map_adjacent_trigger_id(c->map, cx << 4, cy << 4, 2, (uint8_t)req->trigger_id)) {
+                                        found_adj = 1;
+                                        adj_tx = cx;
+                                        adj_ty = cy;
+                                    }
+                                    for (int d = 0; d < 8; d++) {
+                                        int nx = cx + kBfsDx[d];
+                                        int ny = cy + kBfsDy[d];
+                                        if (!pal_map_can_stand_tile(c->map, nx, ny, 2)) continue;
+                                        if (kBfsDx[d] != 0 && kBfsDy[d] != 0) {
+                                            if (!pal_map_can_stand_tile(c->map, cx + kBfsDx[d], cy, 2) ||
+                                                !pal_map_can_stand_tile(c->map, cx, cy + kBfsDy[d], 2)) {
+                                                continue;
+                                            }
+                                        }
+                                        if (pass == 0) {
+                                            uint8_t ntr = pal_map_trigger_at_px(c->map, nx << 4, ny << 4, 2);
+                                            if (ntr != 0u && ntr != (uint8_t)req->trigger_id) continue;
+                                        }
+                                        int nidx = ny * W + nx;
+                                        if (vis[nidx]) continue;
+                                        vis[nidx] = 1;
+                                        q[qt++] = nidx;
+                                    }
                                 }
                             }
                         }
@@ -20208,7 +20268,7 @@ static int pal_mcp_cb_exec(
         if (*c->astar_count <= 0) {
             if (trig_target != 0u && pal_map_adjacent_trigger_id(c->map, c->party[0].px, c->party[0].py, 2, trig_target)) {
                 *out_wait = PAL_MCP_WAIT_FRAMES;
-                c->wait_frames_rem = 3;
+                c->wait_frames_rem = 6;
                 return 0;
             }
             if (goal_tx != ptx || goal_ty != pty) {
@@ -23581,11 +23641,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         int still_near = 0;
                         for (int i = 0; i < map_npc_actor_cnt; i++) {
                             if (map_npcs[i].active && map_npcs[i].obj_id == last_touch_npc_obj) {
-                                int tr = (map_npcs[i].act_id == 700u) ? 48 : 32;
-                                int clear_r = tr + 16;
-                                int tdx = map_npcs[i].px - party[0].px;
-                                int tdy = map_npcs[i].py - party[0].py;
-                                if (tdx * tdx + tdy * tdy <= clear_r * clear_r) still_near = 1;
+                                if (pal_npc_touch_hit_px(&map_npcs[i], party[0].px, party[0].py, foot_w, 16)) {
+                                    still_near = 1;
+                                }
                                 break;
                             }
                         }
@@ -23594,14 +23652,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     if (!talk_vm.active && world_state && talk_vm.pending_map_id < 0 &&
                         world_state->active_battle_id <= 0 && world_state->active_shop_id < 58000) {
                         for (int i = 0; i < map_npc_actor_cnt; i++) {
-                            if (!map_npcs[i].active || (map_npcs[i].npc_flags & 0x20u) == 0u ||
-                                map_npcs[i].talk_id == 0u || map_npcs[i].obj_id == last_touch_npc_obj) continue;
-                            if ((map_npcs[i].npc_flags & 0x2000u) != 0u && map_npcs[i].talk_id >= 5001u) continue;
-                            if (map_npcs[i].act_id == 701u) continue;
-                            int touch_r = (map_npcs[i].act_id == 700u) ? 48 : 32;
-                            int tdx = map_npcs[i].px - party[0].px;
-                            int tdy = map_npcs[i].py - party[0].py;
-                            if (tdx * tdx + tdy * tdy <= touch_r * touch_r) {
+                            if (!pal_npc_is_touch_event(&map_npcs[i]) || map_npcs[i].obj_id == last_touch_npc_obj) continue;
+                            int pad_px = (map_npcs[i].act_id == 700u) ? 8 : 0;
+                            if (pal_npc_touch_hit_px(&map_npcs[i], party[0].px, party[0].py, foot_w, pad_px)) {
                                 last_touch_npc_obj = map_npcs[i].obj_id;
                                 if (pal_talk_vm_start(&talk_vm, cfg->game_dir, (int32_t)map_npcs[i].talk_id, map_npcs[i].obj_id) == 0) {
                                     show_dialogue = 0;
@@ -23679,9 +23732,12 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     field_actor_set_sub(&party[0], cfg->game_dir, lead_act, lbase + party[0].dir, moved ? 1 : 0);
 
                     static const int kLagTicks[4] = {0, 8, 16, 24};
+                    int follow_spd = pal_test_speed_mult(&test_state);
+                    if (follow_spd < 1) follow_spd = 1;
                     for (int p = 1; p < 4; p++) {
                         if (party_follow_enabled) {
-                            int lag = kLagTicks[p];
+                            int lag = (kLagTicks[p] + follow_spd - 1) / follow_spd;
+                            if (lag < 2) lag = 2;
                             int fdx = trail_x[lag] - party[p].px;
                             int fdy = trail_y[lag] - party[p].py;
                             int fmoved = (fdx != 0 || fdy != 0);
@@ -23923,17 +23979,18 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 world_state->active_shop_id < 58000) {
                 map_auto_trig_checked = 1;
                 if (world_state->auto_trig_recheck) world_state->auto_trig_recheck = 0;
+                int entry_fw = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 2;
                 for (int i = 0; i < map_npc_actor_cnt; i++) {
-                    if (!map_npcs[i].active || (map_npcs[i].npc_flags & 0x20u) == 0u || map_npcs[i].talk_id == 0u) continue;
+                    if (!map_npcs[i].active || map_npcs[i].talk_id == 0u) continue;
                     int should_auto = 0;
-                    if (!recheck_only_zone && map_npcs[i].act_id == 701u &&
+                    if (!recheck_only_zone && map_npcs[i].act_id == 701u && (map_npcs[i].npc_flags & 0x20u) != 0u &&
                         (!world_state || map_npcs[i].obj_id >= PAL_OBJ_CAP ||
                          world_state->npc_talk_override[map_npcs[i].obj_id] == 0u)) {
                         should_auto = 1;
-                    } else if (map_npcs[i].act_id == 700u) {
-                        int adx = map_npcs[i].px - party[0].px;
-                        int ady = map_npcs[i].py - party[0].py;
-                        if (adx * adx + ady * ady <= 72 * 72) should_auto = 1;
+                    } else if (map_npcs[i].act_id == 700u && pal_npc_is_touch_event(&map_npcs[i]) &&
+                               map_npcs[i].obj_id != last_touch_npc_obj &&
+                               pal_npc_touch_hit_px(&map_npcs[i], party[0].px, party[0].py, entry_fw, 16)) {
+                        should_auto = 1;
                     }
                     if (!should_auto) continue;
                     if (pal_talk_vm_start(&talk_vm, cfg->game_dir, (int32_t)map_npcs[i].talk_id, map_npcs[i].obj_id) == 0) {
@@ -24015,13 +24072,10 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             }
             if (prev_talk_active && !talk_vm.active && talk_vm.pending_map_id < 0 &&
                 !talk_vm.paused_for_battle && (!world_state || world_state->active_battle_id <= 0)) {
+                int land_fw = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 2;
                 for (int i = 0; i < map_npc_actor_cnt; i++) {
-                    if (!map_npcs[i].active || (map_npcs[i].npc_flags & 0x20u) == 0u || map_npcs[i].talk_id == 0u) continue;
-                    if (map_npcs[i].act_id == 700u || map_npcs[i].act_id == 701u) continue;
-                    if ((map_npcs[i].npc_flags & 0x2000u) != 0u && map_npcs[i].talk_id >= 5001u) continue;
-                    int ldx = map_npcs[i].px - party[0].px;
-                    int ldy = map_npcs[i].py - party[0].py;
-                    if (ldx * ldx + ldy * ldy <= 40 * 40) {
+                    if (!pal_npc_is_touch_event(&map_npcs[i])) continue;
+                    if (pal_npc_touch_hit_px(&map_npcs[i], party[0].px, party[0].py, land_fw, 8)) {
                         last_touch_npc_obj = map_npcs[i].obj_id;
                         break;
                     }
