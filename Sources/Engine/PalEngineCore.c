@@ -1849,7 +1849,7 @@ static int vfs_load_lmf_map_by_id(
 
 static int pal_map_can_stand_tile(const PalLoadedMap *m, int tx, int ty, int foot_w) {
     if (!m || m->w_tiles <= 0 || m->h_tiles <= 0) return 0;
-    if (foot_w < 1) foot_w = 2;
+    if (foot_w < 1) foot_w = 1;
     if (tx < 0 || ty < 0 || tx + foot_w > m->w_tiles || ty >= m->h_tiles) return 0;
     if (!m->walk_grid) return 1;
     for (int dx = 0; dx < foot_w; dx++) {
@@ -1862,7 +1862,7 @@ static int pal_map_can_stand_tile(const PalLoadedMap *m, int tx, int ty, int foo
 
 static int pal_map_can_stand_px(const PalLoadedMap *m, int px, int py, int foot_w, int noclip) {
     if (!m || m->w_px <= 0 || m->h_px <= 0) return 0;
-    if (foot_w < 1) foot_w = 2;
+    if (foot_w < 1) foot_w = 1;
     int fw_px = foot_w * 16;
     if (px < 0 || py < 0 || px + fw_px > m->w_px || py + 16 > m->h_px) return 0;
     if (noclip || !m->walk_grid) return 1;
@@ -1888,7 +1888,7 @@ static int pal_field_can_step_px(
 ) {
     if (pal_map_can_stand_px(m, cand_px, cand_py, foot_w, noclip)) return 1;
     if (noclip || !m || !m->walk_grid) return 1;
-    if (foot_w < 1) foot_w = 2;
+    if (foot_w < 1) foot_w = 1;
     if (cand_px < 0 || cand_py < 0 || cand_px + foot_w * 16 > m->w_px || cand_py + 16 > m->h_px) return 0;
     if (pal_map_can_stand_px(m, cur_px, cur_py, foot_w, 0)) return 0;
     /* When standing on a blocked tile (e.g., scripted lotus landing), allow moving strictly closer to dry land. */
@@ -1907,7 +1907,7 @@ static int pal_field_can_step_px(
 
 static uint8_t pal_map_trigger_at_px(const PalLoadedMap *m, int px, int py, int foot_w) {
     if (!m || !m->walk_grid || m->w_tiles <= 0 || m->h_tiles <= 0) return 0;
-    if (foot_w < 1) foot_w = 2;
+    if (foot_w < 1) foot_w = 1;
     int fw_px = foot_w * 16;
     int tx0 = px >> 4;
     int tx1 = (px + fw_px - 1) >> 4;
@@ -1928,7 +1928,7 @@ static uint8_t pal_map_trigger_at_px(const PalLoadedMap *m, int px, int py, int 
 
 static int pal_map_adjacent_trigger_id(const PalLoadedMap *m, int px, int py, int foot_w, uint8_t target_tid) {
     if (!m || !m->walk_grid || m->w_tiles <= 0 || m->h_tiles <= 0 || target_tid == 0u) return 0;
-    if (foot_w < 1) foot_w = 2;
+    if (foot_w < 1) foot_w = 1;
     int fw_px = foot_w * 16;
     int tx0 = (px >> 4) - 1;
     int tx1 = ((px + fw_px - 1) >> 4) + 1;
@@ -2177,7 +2177,7 @@ int32_t pal_map_probe_m2(const char *game_dir, int32_t map_id, PalMapM2ProbeInfo
                 }
                 for (int d = 0; d < 4; d++) {
                     int nx = cx + kBDx[d], ny = cy + kBDy[d];
-                    if (!pal_map_can_stand_tile(&m, nx, ny, 2)) continue;
+                    if (!pal_map_can_stand_tile(&m, nx, ny, 1)) continue;
                     int nidx = ny * m.w_tiles + nx;
                     if (!vis[nidx]) {
                         vis[nidx] = 1;
@@ -7267,7 +7267,7 @@ static int pal_npc_touch_hit_px(const PalFieldActor *a, int ppx, int ppy, int fo
         int ay1 = a->py + a->vm.hitbox_h * 16 + pad_px;
         int px0 = ppx;
         int py0 = ppy;
-        int px1 = ppx + (foot_w > 0 ? foot_w : 2) * 16;
+        int px1 = ppx + (foot_w > 0 ? foot_w : 1) * 16;
         int py1 = ppy + 16;
         return (px0 < ax1 && px1 > ax0 && py0 < ay1 && py1 > ay0) ? 1 : 0;
     }
@@ -7808,6 +7808,7 @@ static void pal_talk_vm_step_ex(
                 uint16_t raw_dir = rd_u16(ins + 16u);
                 uint16_t eff_mid = (mid != 0xFFFFu && mid > 0u) ? mid : (uint16_t)cur_map_id;
                 const PalMapNpcDef *gd = ws->db ? pal_db_find_global_npc(ws->db, obj, eff_mid) : NULL;
+                int party_pos = (party != NULL && (raw_tx == 0xFFFFu || raw_ty == 0xFFFFu));
                 int16_t tx = (raw_tx != 0xFFFFu) ? (int16_t)raw_tx
                              : ((mid == 0xFFFFu && party) ? (int16_t)(party[0].px >> 4)
                              : (obj < PAL_OBJ_CAP && ws->npc_pos_map[obj] > 0u ? ws->npc_pos_tx[obj]
@@ -7816,8 +7817,8 @@ static void pal_talk_vm_step_ex(
                              : ((mid == 0xFFFFu && party) ? (int16_t)(party[0].py >> 4)
                              : (obj < PAL_OBJ_CAP && ws->npc_pos_map[obj] > 0u ? ws->npc_pos_ty[obj]
                              : (gd ? (int16_t)gd->ty : 0)));
-                int has_map_or_pos = (mid != 0xFFFFu || raw_tx != 0xFFFFu || raw_ty != 0xFFFFu);
-                int apply_pos = (raw_tx != 0xFFFFu || raw_ty != 0xFFFFu || (mid != 0xFFFFu && party != NULL));
+                int has_map_or_pos = (mid != 0xFFFFu || raw_tx != 0xFFFFu || raw_ty != 0xFFFFu || party_pos);
+                int apply_pos = (raw_tx != 0xFFFFu || raw_ty != 0xFFFFu || party_pos);
                 if (obj < PAL_OBJ_CAP && eff_mid > 0u) {
                     if (has_map_or_pos) {
                         ws->npc_pos_map[obj] = eff_mid;
@@ -13048,11 +13049,11 @@ static void combat_resolve_script_target(
         *io_tgt_is_hero = def_tgt_is_hero;
         *io_tgt_idx = def_tgt_idx;
         *io_tgt_aoe = (def_tgt_idx < 0) ? 1 : 0;
-    } else if (raw_tgt == 0x7EFF1015u || raw_tgt == 0x7EFF1016u) {
-        *io_tgt_is_hero = 1;
+    } else if (raw_tgt == 0x7EFF1016u) {
+        *io_tgt_is_hero = caster_is_hero ? 1 : 0;
         *io_tgt_aoe = 1;
-    } else if (raw_tgt == 0x7EFF1017u) {
-        *io_tgt_is_hero = 0;
+    } else if (raw_tgt == 0x7EFF1015u || raw_tgt == 0x7EFF1017u) {
+        *io_tgt_is_hero = caster_is_hero ? 0 : 1;
         *io_tgt_aoe = 1;
     } else if (raw_tgt >= 0x7EFF1028u && raw_tgt <= 0x7EFF102Bu) {
         static const int32_t kComboHeroMap[4] = { 2001, 2002, 2000, 2003 }; /* 0x28=靈兒, 0x29=月如, 0x2A=逍遙, 0x2B=阿奴 */
@@ -16812,7 +16813,8 @@ static void camp_dispatch_talk_if_any(
     PalFieldActor *party, PalFieldActor *npcs, int *npc_cnt, int npc_cap,
     PalTalkVM *talk_vm, int *show_dialogue, int32_t pending_talk
 ) {
-    if (pending_talk > 0 && talk_vm && !talk_vm->active) {
+    if (pending_talk > 0 && talk_vm) {
+        if (talk_vm->active) pal_talk_vm_free(talk_vm);
         if (pal_talk_vm_start(talk_vm, game_dir, pending_talk, 0u) == 0) {
             if (show_dialogue) *show_dialogue = 0;
             pal_talk_vm_step_ex(talk_vm, ws, game_dir, cur_map_id, party, npcs, npc_cnt, npc_cap, 0);
@@ -18606,7 +18608,7 @@ static int pal_npc_step_toward(
     int dx = target_px - a->px;
     int dy = target_py - a->py;
     if (abs(dx) <= 4 && abs(dy) <= 4) {
-        if (!map || pal_map_can_stand_px(map, target_px, target_py, 2, 0)) {
+        if (!map || pal_map_can_stand_px(map, target_px, target_py, 1, 0)) {
             a->px = target_px;
             a->py = target_py;
         }
@@ -18618,27 +18620,27 @@ static int pal_npc_step_toward(
     int ndir = dir_from_delta(dx, dy, a->dir);
     int nx = a->px + mdx, ny = a->py + mdy;
     int moved = 0;
-    if (!map || pal_map_can_stand_px(map, nx, ny, 2, 0)) {
+    if (!map || pal_map_can_stand_px(map, nx, ny, 1, 0)) {
         a->px = nx; a->py = ny; moved = 1;
     } else if (map && (abs(dx) > 24 || abs(dy) > 24)) {
         int path_tx[16], path_ty[16];
         int plen = pal_map_find_path_astar(map, a->px >> 4, a->py >> 4, target_px >> 4, target_py >> 4,
-                                           2, path_tx, path_ty, 16);
+                                           1, path_tx, path_ty, 16);
         if (plen > 0) {
             int wdx = (path_tx[0] << 4) - a->px;
             int wdy = (path_ty[0] << 4) - a->py;
             int wmx = (wdx > 0) ? (wdx < step_px ? wdx : step_px) : (-wdx < step_px ? wdx : -step_px);
             int wmy = (wdy > 0) ? (wdy < step_px ? wdy : step_px) : (-wdy < step_px ? wdy : -step_px);
-            if (pal_map_can_stand_px(map, a->px + wmx, a->py + wmy, 2, 0)) {
+            if (pal_map_can_stand_px(map, a->px + wmx, a->py + wmy, 1, 0)) {
                 ndir = dir_from_delta(wdx, wdy, a->dir);
                 a->px += wmx; a->py += wmy; moved = 1;
             }
         }
     }
     if (!moved && map) {
-        if (mdx != 0 && pal_map_can_stand_px(map, a->px + mdx, a->py, 2, 0)) {
+        if (mdx != 0 && pal_map_can_stand_px(map, a->px + mdx, a->py, 1, 0)) {
             a->px += mdx; moved = 1;
-        } else if (mdy != 0 && pal_map_can_stand_px(map, a->px, a->py + mdy, 2, 0)) {
+        } else if (mdy != 0 && pal_map_can_stand_px(map, a->px, a->py + mdy, 1, 0)) {
             a->py += mdy; moved = 1;
         }
     }
@@ -18697,6 +18699,10 @@ static void pal_npc_ai_step(
             return;
         }
         uint16_t op = rd_u16(code + pos);
+        if (a->obj_id == 2278u) {
+            static int s_deer_log = 0;
+            if (s_deer_log++ < 50) fprintf(stderr, "[DEER_AI] pc=%d op=%u (0x%x)\n", a->ai_pc, (unsigned)op, (unsigned)op);
+        }
         #define AI_HAS_W(k) (pos + (int64_t)((k) + 1) * 2 <= (int64_t)clen)
         #define AI_U16(k)   rd_u16(code + pos + (int64_t)(k) * 2)
         #define AI_U32(k)   rd_u32(code + pos + (int64_t)(k) * 2)
@@ -18761,7 +18767,7 @@ static void pal_npc_ai_step(
                     return;
                 }
                 int st = pal_npc_step_toward(a, NULL, game_dir, (int)a->ai_target_tx << 4, (int)a->ai_target_ty << 4, 2);
-                if (st == 1 || a->ai_stall_ticks >= 12) {
+                if (st == 1 || a->ai_stall_ticks >= 12 || (AI_HAS_W(1) && AI_U16(1) == 0u)) {
                     a->ai_stall_ticks = 0;
                     a->ai_pc += 1;
                 }
@@ -18940,7 +18946,7 @@ static void pal_npc_ai_step(
                 int home_px = (int)a->home_tx << 4;
                 int home_py = (int)a->home_ty << 4;
                 if (abs(nx - home_px) <= 80 && abs(ny - home_py) <= 80 &&
-                    (!map || pal_map_can_stand_px(map, nx, ny, 2, 0))) {
+                    (!map || pal_map_can_stand_px(map, nx, ny, 1, 0))) {
                     a->px = nx;
                     a->py = ny;
                     a->dir = d;
@@ -18992,8 +18998,10 @@ static void pal_npc_ai_step(
                     a->ai_pc += wcnt;
                     break;
                 }
+                a->ai_target_tx = (int16_t)((tgt->px + ox) >> 4);
+                a->ai_target_ty = (int16_t)((tgt->py + oy) >> 4);
                 int st = pal_npc_step_toward(a, map, game_dir, tgt->px + ox, tgt->py + oy, 3);
-                if (st == 1 || a->ai_stall_ticks >= 10) {
+                if (st == 1 || a->ai_stall_ticks >= 10 || (AI_HAS_W(wcnt) && AI_U16(wcnt) == 8u)) {
                     a->ai_stall_ticks = 0;
                     a->ai_pc += wcnt;
                 }
@@ -19038,10 +19046,19 @@ static void pal_npc_ai_step(
                         int64_t dx = (int64_t)tgt->px - (int64_t)a->px;
                         int64_t dy = (int64_t)tgt->py - (int64_t)a->py;
                         in_range = (dx * dx + dy * dy <= (int64_t)dist_px * (int64_t)dist_px) ? 1 : 0;
+                        if (obj == 216u) {
+                            fprintf(stderr, "[AI_TRAP_CHECK] deer=(%d,%d) trap=(%d,%d) dist_px=%d in_range=%d\n",
+                                    a->px >> 4, a->py >> 4, tgt->px >> 4, tgt->py >> 4, dist_px, in_range);
+                        }
+                    } else if (obj == 216u) {
+                        fprintf(stderr, "[AI_TRAP_CHECK] tgt=%p active=%d\n", (void*)tgt, tgt ? tgt->active : 0);
                     }
                 }
                 int take = (op == 37) ? in_range : !in_range;
-                if (take) AI_JUMP(toff);
+                if (take) {
+                    if (obj == 216u) fprintf(stderr, "[AI_TRAP_TRIGGERED] JUMPING to %u\n", toff);
+                    AI_JUMP(toff);
+                }
                 else a->ai_pc += 5;
                 break;
             }
@@ -19889,7 +19906,7 @@ static void pal_mcp_cb_map_entities(void *ctx, int radius, PalJsonBuf *out) {
             char row[64];
             int rw = 0;
             for (int tx = x0; tx <= x1 && rw + 1 < (int)sizeof(row); tx++) {
-                char ch = pal_map_can_stand_tile(c->map, tx, ty, 2) ? '.' : '#';
+                char ch = pal_map_can_stand_tile(c->map, tx, ty, 1) ? '.' : '#';
                 if (c->map->walk_grid) {
                     uint8_t tr = (uint8_t)(c->map->walk_grid[(size_t)ty * (size_t)c->map->w_tiles + (size_t)tx] & 0xFFu);
                     if (tr != 0) ch = 'T';
@@ -20180,14 +20197,14 @@ static int pal_mcp_cb_exec(
                                     int cx = cur % W;
                                     int cy = cur / W;
                                     if (!found_walk &&
-                                        pal_map_trigger_at_px(c->map, cx << 4, cy << 4, 2) == (uint8_t)req->trigger_id) {
+                                        pal_map_trigger_at_px(c->map, cx << 4, cy << 4, 1) == (uint8_t)req->trigger_id) {
                                         found_walk = 1;
                                         goal_tx = cx;
                                         goal_ty = cy;
                                         break;
                                     }
                                     if (!found_adj &&
-                                        pal_map_adjacent_trigger_id(c->map, cx << 4, cy << 4, 2, (uint8_t)req->trigger_id)) {
+                                        pal_map_adjacent_trigger_id(c->map, cx << 4, cy << 4, 1, (uint8_t)req->trigger_id)) {
                                         found_adj = 1;
                                         adj_tx = cx;
                                         adj_ty = cy;
@@ -20195,15 +20212,15 @@ static int pal_mcp_cb_exec(
                                     for (int d = 0; d < 8; d++) {
                                         int nx = cx + kBfsDx[d];
                                         int ny = cy + kBfsDy[d];
-                                        if (!pal_map_can_stand_tile(c->map, nx, ny, 2)) continue;
+                                        if (!pal_map_can_stand_tile(c->map, nx, ny, 1)) continue;
                                         if (kBfsDx[d] != 0 && kBfsDy[d] != 0) {
-                                            if (!pal_map_can_stand_tile(c->map, cx + kBfsDx[d], cy, 2) ||
-                                                !pal_map_can_stand_tile(c->map, cx, cy + kBfsDy[d], 2)) {
+                                            if (!pal_map_can_stand_tile(c->map, cx + kBfsDx[d], cy, 1) ||
+                                                !pal_map_can_stand_tile(c->map, cx, cy + kBfsDy[d], 1)) {
                                                 continue;
                                             }
                                         }
                                         if (pass == 0) {
-                                            uint8_t ntr = pal_map_trigger_at_px(c->map, nx << 4, ny << 4, 2);
+                                            uint8_t ntr = pal_map_trigger_at_px(c->map, nx << 4, ny << 4, 1);
                                             if (ntr != 0u && ntr != (uint8_t)req->trigger_id) continue;
                                         }
                                         int nidx = ny * W + nx;
@@ -20262,11 +20279,11 @@ static int pal_mcp_cb_exec(
 
         *c->interact_target_npc_idx = npc_idx;
         if (c->interact_target_trig_id) *c->interact_target_trig_id = trig_target;
-        *c->astar_count = pal_map_find_path_astar(c->map, ptx, pty, goal_tx, goal_ty, 2, c->astar_tx, c->astar_ty, 512);
+        *c->astar_count = pal_map_find_path_astar(c->map, ptx, pty, goal_tx, goal_ty, 1, c->astar_tx, c->astar_ty, 512);
         *c->astar_cursor = 0;
 
         if (*c->astar_count <= 0) {
-            if (trig_target != 0u && pal_map_adjacent_trigger_id(c->map, c->party[0].px, c->party[0].py, 2, trig_target)) {
+            if (trig_target != 0u && pal_map_adjacent_trigger_id(c->map, c->party[0].px, c->party[0].py, 1, trig_target)) {
                 *out_wait = PAL_MCP_WAIT_FRAMES;
                 c->wait_frames_rem = 6;
                 return 0;
@@ -20530,6 +20547,12 @@ static int pal_mcp_cb_exec(
                 *out_wait = PAL_MCP_WAIT_FRAMES;
                 c->wait_frames_rem = 2;
             }
+        } else if (strcmp(req->action, "add_item") == 0) {
+            if (req->has_item_id && req->item_id > 0 && c->ws) {
+                int32_t qty = req->has_qty ? req->qty : 1;
+                pal_world_add_item(c->ws, (uint16_t)req->item_id, qty);
+                snprintf(msg, sizeof(msg), "Added item %u (qty %d)", (unsigned)req->item_id, qty);
+            }
         } else if (strcmp(req->action, "equip_item") == 0) {
             int hi = req->has_hero_idx ? req->hero_idx : 0;
             if (pal_party_equip_item(c->ws, hi, (uint16_t)req->item_id, msg, sizeof(msg)) != 0) {
@@ -20702,6 +20725,10 @@ static int pal_mcp_cb_exec(
                 return -1;
             }
             c->ws->story_flags[req->flag_id] = (uint8_t)(req->flag_val & 0xFF);
+        }
+        if (req->has_item_id && req->item_id > 0 && c->ws) {
+            int32_t qty = req->has_qty ? req->qty : 1;
+            pal_world_add_item(c->ws, (uint16_t)req->item_id, qty);
         }
         if (req->has_battle_id && req->battle_id > 0 && c->ws) {
             c->ws->active_battle_id = req->battle_id;
@@ -23554,7 +23581,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 }
 
                 int moved = astar_snapped;
-                int foot_w = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 2;
+                int foot_w = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 1;
                 int bump_nx = party[0].px + move_dx;
                 int bump_ny = party[0].py + move_dy;
                 if (move_dx != 0 || move_dy != 0) {
@@ -23979,7 +24006,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 world_state->active_shop_id < 58000) {
                 map_auto_trig_checked = 1;
                 if (world_state->auto_trig_recheck) world_state->auto_trig_recheck = 0;
-                int entry_fw = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 2;
+                int entry_fw = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 1;
                 for (int i = 0; i < map_npc_actor_cnt; i++) {
                     if (!map_npcs[i].active || map_npcs[i].talk_id == 0u) continue;
                     int should_auto = 0;
@@ -24072,7 +24099,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             }
             if (prev_talk_active && !talk_vm.active && talk_vm.pending_map_id < 0 &&
                 !talk_vm.paused_for_battle && (!world_state || world_state->active_battle_id <= 0)) {
-                int land_fw = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 2;
+                int land_fw = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 1;
                 for (int i = 0; i < map_npc_actor_cnt; i++) {
                     if (!pal_npc_is_touch_event(&map_npcs[i])) continue;
                     if (pal_npc_touch_hit_px(&map_npcs[i], party[0].px, party[0].py, land_fw, 8)) {
