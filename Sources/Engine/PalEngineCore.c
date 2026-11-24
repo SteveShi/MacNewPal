@@ -20628,7 +20628,7 @@ static int pal_mcp_cb_exec(
     }
 
     if (strcmp(req->cmd, "choose_dialogue") == 0) {
-        if (*c->scene != PAL_SCENE_FIELD || !c->talk_vm->active || !c->talk_vm->waiting_input || c->talk_vm->choice_count <= 0) {
+        if (!c->talk_vm->active || !c->talk_vm->waiting_input || c->talk_vm->choice_count <= 0) {
             snprintf(err_buf, err_cap, "No dialogue choice menu is active");
             return -1;
         }
@@ -20883,6 +20883,14 @@ static int pal_mcp_cb_exec(
             if (k == SDLK_UNKNOWN) {
                 snprintf(err_buf, err_cap, "Unsupported key name: %s", req->str_arg);
                 return -1;
+            }
+            if (c->talk_vm && c->talk_vm->active && c->talk_vm->waiting_input &&
+                (k == SDLK_SPACE || k == SDLK_RETURN || k == SDLK_E || k == SDLK_ESCAPE)) {
+                pal_talk_vm_advance_input_ex(c->talk_vm, c->ws, c->cfg->game_dir, c->map->map_id,
+                                             c->party, c->map_npcs, c->io_npc_cnt, 128);
+                *out_wait = PAL_MCP_WAIT_FRAMES;
+                c->wait_frames_rem = 2;
+                return 0;
             }
             mcp_push_key(c->window, k);
             if (!req->has_wait || req->wait) {
@@ -23120,6 +23128,32 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         scene = PAL_SCENE_TITLE;
                         play_ui_sfx(cfg->game_dir, 1u, &sfx_pool, runtime_sfx_vol, runtime_mute);
                     }
+                } else if (talk_vm.active && talk_vm.waiting_input) {
+                    if (talk_vm.choice_count > 0 &&
+                        (key == SDLK_UP || key == SDLK_W || key == SDLK_LEFT || key == SDLK_A)) {
+                        talk_vm.choice_selected = (talk_vm.choice_selected + talk_vm.choice_count - 1) % talk_vm.choice_count;
+                        talk_vm.dlg_dirty = 1;
+                        play_ui_sfx(cfg->game_dir, 1, &sfx_pool, runtime_sfx_vol, runtime_mute);
+                    } else if (talk_vm.choice_count > 0 &&
+                               (key == SDLK_DOWN || key == SDLK_S || key == SDLK_RIGHT || key == SDLK_D)) {
+                        talk_vm.choice_selected = (talk_vm.choice_selected + 1) % talk_vm.choice_count;
+                        talk_vm.dlg_dirty = 1;
+                        play_ui_sfx(cfg->game_dir, 1, &sfx_pool, runtime_sfx_vol, runtime_mute);
+                    } else if (talk_vm.choice_count > 0 && key >= SDLK_1 && key <= SDLK_8) {
+                        int idx = (int)(key - SDLK_1);
+                        if (idx < talk_vm.choice_count) {
+                            talk_vm.choice_selected = idx;
+                            play_ui_sfx(cfg->game_dir, 2, &sfx_pool, runtime_sfx_vol, runtime_mute);
+                            if (world_state) {
+                                pal_talk_vm_advance_input_ex(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, &map_npc_actor_cnt, 128);
+                            }
+                        }
+                    } else if (key == SDLK_SPACE || key == SDLK_RETURN || key == SDLK_E) {
+                        play_ui_sfx(cfg->game_dir, 2, &sfx_pool, runtime_sfx_vol, runtime_mute);
+                        if (world_state) {
+                            pal_talk_vm_advance_input_ex(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, &map_npc_actor_cnt, 128);
+                        }
+                    }
                 } else if (scene == PAL_SCENE_COMBAT) {
                     if (combat_state.phase >= COMBAT_PHASE_VICTORY) {
                         if (key == SDLK_RETURN || key == SDLK_SPACE || key == SDLK_E || key == SDLK_ESCAPE) {
@@ -23316,32 +23350,6 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                                (map.map_id == 532u || map.map_id == 533u) &&
                                (key == SDLK_SPACE || key == SDLK_RETURN || key == SDLK_ESCAPE)) {
                         talk_vm.wait_ticks = 1;
-                    } else if (talk_vm.active && talk_vm.waiting_input) {
-                        if (talk_vm.choice_count > 0 &&
-                            (key == SDLK_UP || key == SDLK_W || key == SDLK_LEFT || key == SDLK_A)) {
-                            talk_vm.choice_selected = (talk_vm.choice_selected + talk_vm.choice_count - 1) % talk_vm.choice_count;
-                            talk_vm.dlg_dirty = 1;
-                            play_ui_sfx(cfg->game_dir, 1, &sfx_pool, runtime_sfx_vol, runtime_mute);
-                        } else if (talk_vm.choice_count > 0 &&
-                                   (key == SDLK_DOWN || key == SDLK_S || key == SDLK_RIGHT || key == SDLK_D)) {
-                            talk_vm.choice_selected = (talk_vm.choice_selected + 1) % talk_vm.choice_count;
-                            talk_vm.dlg_dirty = 1;
-                            play_ui_sfx(cfg->game_dir, 1, &sfx_pool, runtime_sfx_vol, runtime_mute);
-                        } else if (talk_vm.choice_count > 0 && key >= SDLK_1 && key <= SDLK_8) {
-                            int idx = (int)(key - SDLK_1);
-                            if (idx < talk_vm.choice_count) {
-                                talk_vm.choice_selected = idx;
-                                play_ui_sfx(cfg->game_dir, 2, &sfx_pool, runtime_sfx_vol, runtime_mute);
-                                if (world_state) {
-                                    pal_talk_vm_advance_input_ex(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, &map_npc_actor_cnt, 128);
-                                }
-                            }
-                        } else if (key == SDLK_SPACE || key == SDLK_RETURN || key == SDLK_E) {
-                            play_ui_sfx(cfg->game_dir, 2, &sfx_pool, runtime_sfx_vol, runtime_mute);
-                            if (world_state) {
-                                pal_talk_vm_advance_input_ex(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, &map_npc_actor_cnt, 128);
-                            }
-                        }
                     } else if ((key == SDLK_SPACE || key == SDLK_RETURN || key == SDLK_E) && !talk_vm.active) {
                         int nidx = talk_find_interact_npc(&map, &party[0], map_npcs, map_npc_actor_cnt);
                         if (nidx >= 0) {

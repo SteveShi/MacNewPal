@@ -5,7 +5,7 @@ category: concept
 status: active
 tags: [combat, map, msf3, gfight, swd2k]
 created: "2026-11-23T12:56:39"
-updated: "2026-11-24T23:54:20"
+updated: "2026-11-25T01:24:49"
 ---
 
 <!-- compiled_truth -->
@@ -56,4 +56,10 @@ updated: "2026-11-24T23:54:20"
   kind: decision
   summary: "沉淀第四回实机战斗数值机制：腾云符6回合时效、忘魂花迷魂香控制链、未中毒服用毒龙胆当场毙命规则"
   source: Sources/Engine/PalEngineCore.c / Save/7.sav
+  affects: [combat-and-map-engine-fidelity]
+
+- time: 2026-11-25T01:24:49
+  kind: decision
+  summary: "沉淀第五回实机数值与测试模式升级验证：glevel.dat属性成长、林月如/李逍遥元灵归心术与乾坤一掷解锁、F7一键升级与炼蛊皿永续法宝合成机制"
+  source: Sources/Engine/PalEngineCore.c / Sources/Engine/PalTestMode.c / Save/8.sav
   affects: [combat-and-map-engine-fidelity]

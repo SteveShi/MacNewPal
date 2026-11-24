@@ -5,7 +5,7 @@ category: concept
 status: active
 tags: [talk-vm, script, save, endgame, swd2k]
 created: "2026-11-23T12:56:39"
-updated: "2026-11-24T14:28:00"
+updated: "2026-11-25T01:24:56"
 ---
 
 <!-- compiled_truth -->
@@ -74,4 +74,10 @@ updated: "2026-11-24T14:28:00"
   kind: decision
   summary: "沉淀第三章深度走查根因修复：gitem.dat 脚本 77777 全量 32 组迷宫脱出表、引路蜂无效使用退还与双用途道具（土靈珠等）野外使用优先于装备"
   source: Sources/Engine/PalEngineCore.c / Palgame.exe 0x4482a8-0x4484b5
+  affects: [talk-vm-and-world-state-closure]
+
+- time: 2026-11-25T01:24:56
+  kind: decision
+  summary: "沉淀第五回主线终局贯通闭环：黑蜘蛛森林Map 594触碰触发器NPC 589（talk 621）切入Map 548毒娘子决战、酒剑仙飞剑破除妖法夺雷灵珠、彩依化蝶殉情与御剑飞抵蜀山仙剑派Map 187，并固化第五回通关存档Save/8.sav"
+  source: Sources/Engine/PalEngineCore.c / maps.dat / talk1.dat / Save/8.sav
   affects: [talk-vm-and-world-state-closure]
