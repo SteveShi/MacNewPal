@@ -5,7 +5,7 @@ category: decision
 status: active
 tags: [mcp, testing, automation, headless, playthrough]
 created: "2026-11-23T12:56:39"
-updated: "2026-11-23T12:57:42"
+updated: "2026-11-24T14:28:00"
 ---
 
 <!-- compiled_truth -->
@@ -57,4 +57,10 @@ updated: "2026-11-23T12:57:42"
   kind: decision
   summary: "记录原生 MCP 桥接协议、16 工具集、无头模式与 v1.0.0 全 8 章通关验证结果"
   source: Sources/App/PalMcpServer.swift / Sources/Engine/PalMcpBridge.c / commit 46fbdd0
+  affects: [mcp-native-server-and-headless-playtest]
+
+- time: 2026-11-24T14:28:00
+  kind: evidence
+  summary: "完成零作弊全流程第三章（白河村→玉佛寺→黑水镇/将军冢/血池底击败赤鬼王→鬼阴山/鬼阴坛触发石长老必败战与赵灵儿离队→鬼阴山麓抵达 Map 121 扬州城郊外），里程碑存档写入 Save/6.sav"
+  source: Save/6.sav / ch3_walkthrough_report.md
   affects: [mcp-native-server-and-headless-playtest]

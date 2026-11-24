@@ -5,7 +5,7 @@ category: concept
 status: active
 tags: [talk-vm, script, save, endgame, swd2k]
 created: "2026-11-23T12:56:39"
-updated: "2026-11-23T16:26:08"
+updated: "2026-11-24T14:28:00"
 ---
 
 <!-- compiled_truth -->
@@ -32,8 +32,10 @@ updated: "2026-11-23T16:26:08"
 4. **倍速队伍跟随与寻路不变量**：
    - 队伍跟随延迟帧数 `kLagTicks` 按 `speed_mult` 等比缩放（`ceil(kLagTicks[p] / speed_mult)`，最小 `2` 帧），确保倍速下跟随者与领队保持原版物理像素间距，避免 `OP 0xCC` 距离校验（如隐龙窟石门开锁）误判超距。
    - `move_to(trigger_id)` 采用两阶段 BFS：Pass 0 绕行非目标触发器格子（防止相邻多门布局如林家后院误踩旁门），仅当目标必须经由中间过场触发器到达时回退至 Pass 1 无避让 BFS。
-5. **`0x7F` 脚本联动与 `0x309` 分发**：
+5. **`0x7F` 脚本联动、迷宫脱出表与双用途道具分发**：
    - 物品/法术字段脚本、奖赏脚本（`gmagic.dat` `5001..5319`）与商店列表（`58000+`）通过统一 `0x7F` 执行器与 `0x309` 指令桥接；`pal_camp_use_item_direct` + `camp_dispatch_talk_if_any` 支持任务/剧情道具（如破天鎚、包袱、手卷、石鑰匙）触发 Talk 脚本。
+   - **真实 32 组迷宫脱出表（`gitem.dat` 脚本 `77777`）**：逆向 `Palgame.exe` (`0x4482a8–0x4484b5`) 确认原版并非读取 `maps.dat` slot 21（仅残留 2 组轩辕剑/DOMO 旧表），而是在 `gitem.dat` 脚本 `77777`（`0x7F30201E 0 <5000..5319> <val>`）定义全 32 组脱出区（含第 5 组血池 `224..228 -> Map 88 (45, 13)`）。`pal_db_load_file` 现优先解析 `gitem.dat` 脚本 `77777`（上限 `PAL_MAX_DUNGEON_EXITS = 64`），`OP 0x1B (raw_mid == 1000)` 支持原版 `flag 1620` 特判（`354..401 -> 404/405`）与 `引路蜂 (3901)` 非迷宫误用自动退还（`pending_escape_refund_item`）。
+   - **双用途道具野外使用优先**：MCP `manage_party(action="use_item")` 必须先检查 `pal_item_can_use_in_field` 再检查 `pal_item_equip_slot`，确保五灵珠（如 `土靈珠 3071`）、`木劍`、`純陽劍` 等可装备且具备野外脚本的道具触发野外功能而非静默装备。
    - 已修复野外物品触发 Talk 脚本的 `0x7F102046` 分发（commit `1999c9b`）及 `OP 0x34` 昼夜/色调渐变解码（commit `863b769`）。
 6. **首尾主线闭环（不可破坏的不变量）**：
    - **开场 (`talk_id=100`, `talk1.dat`)**：`Map 532 (open)` → `Map 533` → `Video/begin.bik` → `Map 501 (羅剎峰)` → `Map 502 (羅剎洞外)`，梦境李逍遥 (`hero 2009`) 单人开局；需避免梦境双主角重复与前置启动空等（commit `1999c9b`、`863b769`）。
@@ -66,4 +68,10 @@ updated: "2026-11-23T16:26:08"
   kind: decision
   summary: "沉淀第二章深度走查确认的 ACT 700 HW 碰撞盒 + 0x2000 剧情拌线、OP 0x42 真实 7 字布局与倍速跟随/两阶段避让 BFS 不变量"
   source: Sources/Engine/PalEngineCore.c / commit dac0853
+  affects: [talk-vm-and-world-state-closure]
+
+- time: 2026-11-24T14:28:00
+  kind: decision
+  summary: "沉淀第三章深度走查根因修复：gitem.dat 脚本 77777 全量 32 组迷宫脱出表、引路蜂无效使用退还与双用途道具（土靈珠等）野外使用优先于装备"
+  source: Sources/Engine/PalEngineCore.c / Palgame.exe 0x4482a8-0x4484b5
   affects: [talk-vm-and-world-state-closure]
