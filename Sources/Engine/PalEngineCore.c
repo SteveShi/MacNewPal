@@ -6370,7 +6370,82 @@ static int pal_world_item_qty(const PalTalkWorldState *ws, uint16_t item_id) {
 }
 
 static int pal_item_is_reusable(const PalItemRecord *it) {
-    return (it && it->target_flag == 65535) ? 1 : 0;
+    if (!it) return 0;
+    if (it->id == 3905 || it->id == 3906 || it->id == 3063) return 1; /* 紫金葫蘆、煉蠱皿、五毒珠為永續法寶 */
+    return (it->target_flag == 65535) ? 1 : 0;
+}
+
+static int pal_item_use_alchemy(PalTalkWorldState *ws, uint16_t item_id, char *out_msg, size_t msg_cap) {
+    if (!ws || !ws->db) return -1;
+    if (item_id == 3906u) {
+        /* 煉蠱皿：煉化蠱卵與蟲蠱 */
+        int egg_total = 0;
+        int first_egg_slot = -1;
+        int second_egg_slot = -1;
+        for (int i = 0; i < ws->inventory_count; i++) {
+            uint16_t id = ws->inventory_ids[i];
+            if ((id >= 3651u && id <= 3663u) || id == 3601u) {
+                if (first_egg_slot < 0 && ws->inventory_qty[i] > 0) {
+                    first_egg_slot = i;
+                } else if (second_egg_slot < 0 && ws->inventory_qty[i] > 0) {
+                    second_egg_slot = i;
+                }
+                egg_total += ws->inventory_qty[i];
+            }
+        }
+        if (egg_total < 2) {
+            if (out_msg) snprintf(out_msg, msg_cap, "沒有可煉的蠱物。（煉蠱皿需至少兩只蟲蠱或蠱卵）");
+            return 0;
+        }
+
+        /* 消耗兩枚蠱卵/基礎蠱 */
+        if (first_egg_slot >= 0) {
+            uint16_t id1 = ws->inventory_ids[first_egg_slot];
+            pal_world_add_item(ws, id1, -1);
+        }
+        for (int i = 0; i < ws->inventory_count; i++) {
+            uint16_t id = ws->inventory_ids[i];
+            if (((id >= 3651u && id <= 3663u) || id == 3601u) && ws->inventory_qty[i] > 0) {
+                pal_world_add_item(ws, id, -1);
+                break;
+            }
+        }
+
+        /* 經典煉蠱產出：40% 冰蠶蠱(3605) / 40% 火蠶蠱(3606) / 15% 食妖蟲(3609) / 5% 隱蠱(3626) */
+        static uint32_t s_alchemy_rng = 0x82A10915u;
+        s_alchemy_rng = s_alchemy_rng * 1664525u + 1013904223u;
+        uint32_t r = (s_alchemy_rng >> 16) % 100u;
+        uint16_t prod_id = 3605u;
+        if (r < 40) prod_id = 3605u;
+        else if (r < 80) prod_id = 3606u;
+        else if (r < 95) prod_id = 3609u;
+        else prod_id = 3626u;
+
+        pal_world_add_item(ws, prod_id, 1);
+        const PalItemRecord *it_prod = pal_db_find_item(ws->db, (int32_t)prod_id);
+        const char *pname = it_prod ? it_prod->name_utf8 : "靈蠱";
+        if (out_msg) {
+            snprintf(out_msg, msg_cap, "「煉蠱皿」靈光流轉，成功煉化出「%s」！", pname);
+        }
+        return 0;
+    } else if (item_id == 3905u) {
+        /* 紫金葫蘆：收妖煉丹 */
+        if (!pal_test_runtime_god_mode()) {
+            if (out_msg) snprintf(out_msg, msg_cap, "靈葫值不夠！（需在戰鬥中配合靈葫咒吸收怪物靈氣）");
+            return 0;
+        }
+        static uint32_t s_gourd_rng = 0x317F4028u;
+        s_gourd_rng = s_gourd_rng * 1664525u + 1013904223u;
+        uint16_t prod_id = ((s_gourd_rng >> 16) % 2 == 0) ? 4405u : 4306u;
+        pal_world_add_item(ws, prod_id, 1);
+        const PalItemRecord *it_prod = pal_db_find_item(ws->db, (int32_t)prod_id);
+        const char *pname = it_prod ? it_prod->name_utf8 : "仙丹";
+        if (out_msg) {
+            snprintf(out_msg, msg_cap, "「紫金葫蘆」紫霞升騰，成功煉製出「%s」！", pname);
+        }
+        return 0;
+    }
+    return -1;
 }
 
 static int pal_party_use_field_item(PalTalkWorldState *ws, int target_idx, uint16_t item_id, char *out_msg, size_t msg_cap) {
@@ -6384,6 +6459,9 @@ static int pal_party_use_field_item(PalTalkWorldState *ws, int target_idx, uint1
     if (qty <= 0) {
         if (out_msg) snprintf(out_msg, msg_cap, "「%s」數量不足。", it->name_utf8);
         return -1;
+    }
+    if (item_id == 3905u || item_id == 3906u) {
+        return pal_item_use_alchemy(ws, item_id, out_msg, msg_cap);
     }
     if (pal_party_apply_field_script(ws, target_idx, it->field_script, PAL_DB_KIND_ITEM) != 0) {
         if (out_msg) snprintf(out_msg, msg_cap, "「%s」無法在此時使用。", it->name_utf8);
@@ -6441,6 +6519,7 @@ static int pal_script_can_use_in_field(const PalGameDatabase *db, int32_t script
 
 static int pal_item_can_use_in_field(const PalGameDatabase *db, uint16_t item_id) {
     if (!db) return 0;
+    if (item_id == 3905u || item_id == 3906u) return 1; /* 紫金葫蘆、煉蠱皿 */
     if (pal_item_resolve_field_talk_id(db, item_id, NULL)) return 1;
     const PalItemRecord *it = pal_db_find_item(db, (int32_t)item_id);
     if (!it || it->field_script <= 0 || it->field_script == 61439 || it->field_script == 65535) return 0;
@@ -6536,6 +6615,9 @@ static int pal_camp_use_item_direct(
     if (qty <= 0) {
         if (out_msg) snprintf(out_msg, msg_cap, "「%s」數量不足。", it->name_utf8);
         return -1;
+    }
+    if (item_id == 3905u || item_id == 3906u) {
+        return pal_item_use_alchemy(ws, item_id, out_msg, msg_cap);
     }
     int32_t talk_id = 0;
     int script_ok = pal_camp_exec_item_script(ws, target_idx, it->field_script, PAL_DB_KIND_MAGIC, &talk_id, 0);
@@ -16122,6 +16204,7 @@ static int camp_magic_needs_single_hero_target(const PalGameDatabase *db, uint16
 
 static int camp_item_needs_single_hero_target(const PalGameDatabase *db, uint16_t item_id) {
     if (!db) return 0;
+    if (item_id == 3905u || item_id == 3906u) return 0;
     if (pal_item_resolve_field_talk_id(db, item_id, NULL)) return 0;
     const PalItemRecord *it = pal_db_find_item(db, (int32_t)item_id);
     if (!it || it->field_script <= 0 || it->field_script == 61439) return 0;
@@ -19524,16 +19607,24 @@ static void pal_test_bridge_add_money(void *ctx, int32_t delta) {
     if (c->camp_menu) c->camp_menu->dirty = 1;
 }
 
-static void pal_test_bridge_level_up(void *ctx) {
+static void pal_test_bridge_level_up_count(void *ctx, int count) {
     PalTestBridgeCtx *c = (PalTestBridgeCtx *)ctx;
-    if (!c || !c->ws) return;
+    if (!c || !c->ws || count <= 0) return;
     for (int p = 0; p < c->ws->party_member_count && p < 4; p++) {
         if (c->ws->party_members[p].active) {
-            pal_party_level_up_member(c->ws, p);
+            for (int k = 0; k < count; k++) {
+                if (pal_party_level_up_member(c->ws, p) != 0) break;
+            }
+            c->ws->party_members[p].cur_hp = c->ws->party_members[p].eff_max_hp;
+            c->ws->party_members[p].cur_mp = c->ws->party_members[p].eff_max_mp;
         }
     }
     if (c->camp_menu) c->camp_menu->dirty = 1;
     if (c->cb) c->cb->dirty = 1;
+}
+
+static void pal_test_bridge_level_up(void *ctx) {
+    pal_test_bridge_level_up_count(ctx, 1);
 }
 
 static void pal_test_bridge_supply_items(void *ctx) {
@@ -20874,12 +20965,34 @@ static int pal_mcp_cb_exec(
             c->ws->money += req->add_money;
             if (c->ws->money < 0) c->ws->money = 0;
         }
-        if (req->has_level_up && req->level_up && c->ws && c->ws->db) {
-            for (int p = 0; p < c->ws->party_member_count && p < 4; p++) {
-                if (c->ws->party_members[p].active) {
-                    pal_party_level_up_slot(c->ws->db, &c->ws->party_members[p]);
-                    c->ws->party_members[p].cur_hp = c->ws->party_members[p].eff_max_hp;
-                    c->ws->party_members[p].cur_mp = c->ws->party_members[p].eff_max_mp;
+        if (c->ws && c->ws->db) {
+            if (req->has_target_level && req->target_level > 0) {
+                int32_t tgt_lv = req->target_level;
+                if (tgt_lv > 99) tgt_lv = 99;
+                for (int p = 0; p < c->ws->party_member_count && p < 4; p++) {
+                    if (c->ws->party_members[p].active) {
+                        while (c->ws->party_members[p].lv < tgt_lv) {
+                            if (pal_party_level_up_slot(c->ws->db, &c->ws->party_members[p]) != 0) break;
+                        }
+                        c->ws->party_members[p].cur_hp = c->ws->party_members[p].eff_max_hp;
+                        c->ws->party_members[p].cur_mp = c->ws->party_members[p].eff_max_mp;
+                    }
+                }
+            } else {
+                int32_t lv_cnt = 0;
+                if (req->has_level_up_count && req->level_up_count > 0) lv_cnt = req->level_up_count;
+                else if (req->has_level_up && req->level_up) lv_cnt = 1;
+                if (lv_cnt > 0) {
+                    if (lv_cnt > 99) lv_cnt = 99;
+                    for (int p = 0; p < c->ws->party_member_count && p < 4; p++) {
+                        if (c->ws->party_members[p].active) {
+                            for (int k = 0; k < lv_cnt; k++) {
+                                if (pal_party_level_up_slot(c->ws->db, &c->ws->party_members[p]) != 0) break;
+                            }
+                            c->ws->party_members[p].cur_hp = c->ws->party_members[p].eff_max_hp;
+                            c->ws->party_members[p].cur_mp = c->ws->party_members[p].eff_max_mp;
+                        }
+                    }
                 }
             }
         }
@@ -22408,6 +22521,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
     test_ops.heal_party = pal_test_bridge_heal_party;
     test_ops.add_money = pal_test_bridge_add_money;
     test_ops.level_up_party = pal_test_bridge_level_up;
+    test_ops.level_up_party_count = pal_test_bridge_level_up_count;
     test_ops.supply_test_items = pal_test_bridge_supply_items;
     test_ops.instant_kill_combat = pal_test_bridge_instant_kill;
     test_ops.is_in_combat = pal_test_bridge_is_in_combat;

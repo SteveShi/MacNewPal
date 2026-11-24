@@ -49,6 +49,7 @@ typedef struct {
     void (*heal_party)(void *ctx);
     void (*add_money)(void *ctx, int32_t delta);
     void (*level_up_party)(void *ctx);
+    void (*level_up_party_count)(void *ctx, int count);
     void (*supply_test_items)(void *ctx);
     void (*instant_kill_combat)(void *ctx);
     int  (*is_in_combat)(void *ctx);

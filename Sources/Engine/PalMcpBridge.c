@@ -225,6 +225,12 @@ static void assign_req_int(PalMcpReq *r, const char *key, int64_t val) {
     else if (strcmp(key, "y") == 0) { r->y = (int32_t)val; r->has_y = 1; }
     else if (strcmp(key, "speed_mult") == 0) { r->speed_mult = (int32_t)val; r->has_speed_mult = 1; }
     else if (strcmp(key, "add_money") == 0) { r->add_money = (int32_t)val; r->has_add_money = 1; }
+    else if (strcmp(key, "level_up") == 0) {
+        if (val > 0) { r->level_up_count = (int32_t)val; r->has_level_up_count = 1; r->level_up = 1; r->has_level_up = 1; }
+        else { r->level_up = 0; r->has_level_up = 1; }
+    }
+    else if (strcmp(key, "level_up_count") == 0) { r->level_up_count = (int32_t)val; r->has_level_up_count = 1; }
+    else if (strcmp(key, "target_level") == 0) { r->target_level = (int32_t)val; r->has_target_level = 1; }
     else if (strcmp(key, "dir") == 0) { snprintf(r->dir, sizeof(r->dir), "%lld", (long long)val); r->has_dir = 1; }
 }
 

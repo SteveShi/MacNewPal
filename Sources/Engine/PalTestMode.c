@@ -130,8 +130,9 @@ typedef enum {
     TEST_ACT_QUICK_LOAD = 12
 } PalTestActionId;
 
-static void pal_test_exec_action(PalTestState *ts, const PalTestHostOps *ops, int action_idx) {
+static void pal_test_exec_action_count(PalTestState *ts, const PalTestHostOps *ops, int action_idx, int count) {
     if (!ts || !ops || !ts->cfg.enabled) return;
+    if (count <= 0) count = 1;
     uint32_t sfx = 2u;
     switch (action_idx) {
         case TEST_ACT_GOD:
@@ -172,8 +173,20 @@ static void pal_test_exec_action(PalTestState *ts, const PalTestHostOps *ops, in
             pal_test_set_feedback(ts, "測試金錢已增加 +50,000 文！");
             break;
         case TEST_ACT_LEVEL_UP:
-            if (ops->level_up_party) ops->level_up_party(ops->ctx);
-            pal_test_set_feedback(ts, "在隊全員已提升 1 級並更新屬性與仙術！");
+            if (ops->level_up_party_count) {
+                ops->level_up_party_count(ops->ctx, count);
+            } else if (ops->level_up_party) {
+                for (int i = 0; i < count; i++) ops->level_up_party(ops->ctx);
+            }
+            {
+                char msg[96];
+                if (count == 1) {
+                    snprintf(msg, sizeof(msg), "在隊全員已提升 1 級並更新屬性與仙術！");
+                } else {
+                    snprintf(msg, sizeof(msg), "在隊全員已一鍵提升 %d 級並更新屬性與仙術！", count);
+                }
+                pal_test_set_feedback(ts, msg);
+            }
             break;
         case TEST_ACT_SUPPLY_ITEMS:
             if (ops->supply_test_items) ops->supply_test_items(ops->ctx);
@@ -213,6 +226,10 @@ static void pal_test_exec_action(PalTestState *ts, const PalTestHostOps *ops, in
     }
     if (ops->play_sfx) ops->play_sfx(ops->ctx, sfx);
     ts->tex_dirty = 1;
+}
+
+static void pal_test_exec_action(PalTestState *ts, const PalTestHostOps *ops, int action_idx) {
+    pal_test_exec_action_count(ts, ops, action_idx, 1);
 }
 
 int pal_test_handle_key(
@@ -263,13 +280,17 @@ int pal_test_handle_key(
     }
 
     /* Direct global QA hotkeys (work without opening panel) */
+    int lv_cnt = 1;
+    if ((mod & SDL_KMOD_CTRL) != 0) lv_cnt = 10;
+    else if ((mod & SDL_KMOD_SHIFT) != 0) lv_cnt = 5;
+
     if (key == SDLK_F2) { pal_test_exec_action(ts, ops, TEST_ACT_GOD); return 1; }
     if (key == SDLK_F3) { pal_test_exec_action(ts, ops, TEST_ACT_NO_ENCOUNTER); return 1; }
     if (key == SDLK_F4) { pal_test_exec_action(ts, ops, TEST_ACT_INSTANT_KILL); return 1; }
     if (key == SDLK_K && scene_is_combat) { pal_test_exec_action(ts, ops, TEST_ACT_INSTANT_KILL); return 1; }
     if (key == SDLK_F5) { pal_test_exec_action(ts, ops, TEST_ACT_HEAL_PARTY); return 1; }
     if (key == SDLK_F6) { pal_test_exec_action(ts, ops, TEST_ACT_ADD_MONEY); return 1; }
-    if (key == SDLK_F7) { pal_test_exec_action(ts, ops, TEST_ACT_LEVEL_UP); return 1; }
+    if (key == SDLK_F7) { pal_test_exec_action_count(ts, ops, TEST_ACT_LEVEL_UP, lv_cnt); return 1; }
     if (key == SDLK_F8) { pal_test_exec_action(ts, ops, TEST_ACT_SPEED_CYCLE); return 1; }
     if (key == SDLK_F9) { pal_test_exec_action(ts, ops, TEST_ACT_NOCLIP); return 1; }
     if (key == SDLK_F10) { pal_test_exec_action(ts, ops, TEST_ACT_SKIP_WAIT); return 1; }
@@ -277,7 +298,12 @@ int pal_test_handle_key(
     /* When toolbox panel is open, absorb navigation/shortcut keys cleanly. */
     if (ts->panel_open && !block_digit_hotkeys) {
         if (key >= SDLK_1 && key <= SDLK_9) {
-            pal_test_exec_action(ts, ops, (int)(key - SDLK_1));
+            int act = (int)(key - SDLK_1);
+            if (act == TEST_ACT_LEVEL_UP) {
+                pal_test_exec_action_count(ts, ops, act, lv_cnt);
+            } else {
+                pal_test_exec_action(ts, ops, act);
+            }
             return 1;
         }
         if (key == SDLK_0) { pal_test_exec_action(ts, ops, TEST_ACT_NOCLIP); return 1; }
@@ -463,7 +489,7 @@ static void pal_test_rebuild_textures(
              ts->cfg.auto_instant_kill ? "%C3[開啟]" : "%C0[關閉]");
     snprintf(rows[4], sizeof(rows[4]), "%%C5[5 / F5]  全隊滿血滿藍 + 淨化異常狀態    %%C6[執行]");
     snprintf(rows[5], sizeof(rows[5]), "%%C5[6 / F6]  獲得測試金錢 (+50,000 文)      %%C6[執行]");
-    snprintf(rows[6], sizeof(rows[6]), "%%C5[7 / F7]  在隊全員立即升級 (+1 級)       %%C6[執行]");
+    snprintf(rows[6], sizeof(rows[6]), "%%C5[7 / F7]  在隊全員一鍵升級 (+1 級 / Shift:+5)    %%C6[執行]");
     snprintf(rows[7], sizeof(rows[7]), "%%C5[8]      補給測試物資 (藥／香／果／鏢)  %%C6[執行]");
     snprintf(rows[8], sizeof(rows[8]), "%%C5[9 / F8]  大圖移動倍速                  %%C3[%d×]",
              ts->cfg.speed_mult);

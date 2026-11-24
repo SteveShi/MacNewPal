@@ -52,6 +52,7 @@ typedef struct {
 
     int32_t wait;
     int32_t god_mode, no_encounter, auto_kill, speed_mult, noclip, skip_wait, heal_all, level_up;
+    int32_t level_up_count, target_level;
     int32_t add_money;
 
     int32_t has_tx, has_ty, has_map_id, has_dir, has_steps;
@@ -60,7 +61,7 @@ typedef struct {
     int32_t has_scale, has_radius, has_flag_id, has_flag_end, has_flag_val;
     int32_t has_frames, has_battle_id, has_wait, has_timeout_ms;
     int32_t has_god_mode, has_no_encounter, has_auto_kill, has_speed_mult, has_noclip, has_skip_wait;
-    int32_t has_heal_all, has_level_up, has_add_money, has_x, has_y;
+    int32_t has_heal_all, has_level_up, has_level_up_count, has_target_level, has_add_money, has_x, has_y;
 } PalMcpReq;
 
 int pal_mcp_parse_req_json(const char *json_line, PalMcpReq *out_req);
