@@ -5,7 +5,7 @@ category: decision
 status: active
 tags: [mcp, testing, automation, headless, playthrough]
 created: "2026-11-23T12:56:39"
-updated: "2026-11-24T14:28:00"
+updated: "2026-11-25T06:23:58"
 ---
 
 <!-- compiled_truth -->
@@ -63,4 +63,10 @@ updated: "2026-11-24T14:28:00"
   kind: evidence
   summary: "完成零作弊全流程第三章（白河村→玉佛寺→黑水镇/将军冢/血池底击败赤鬼王→鬼阴山/鬼阴坛触发石长老必败战与赵灵儿离队→鬼阴山麓抵达 Map 121 扬州城郊外），里程碑存档写入 Save/6.sav"
   source: Save/6.sav / ch3_walkthrough_report.md
+  affects: [mcp-native-server-and-headless-playtest]
+
+- time: 2026-11-25T06:23:58
+  kind: evidence
+  summary: "完成第六章全流程无头验收（蜀山仙剑派→锁链桥→锁妖塔1-11层→剑柱重逢灵儿并击败镇狱明王→七星盘龙柱全毁与月如牺牲→圣姑家内 Map 241 醒来，李逍遥 Lv 24 解锁天剑），里程碑存档写入 Save/9.sav"
+  source: Save/9.sav / ch6_walkthrough_report.md
   affects: [mcp-native-server-and-headless-playtest]
