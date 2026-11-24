@@ -2154,7 +2154,7 @@ int32_t pal_map_probe_m2(const char *game_dir, int32_t map_id, PalMapM2ProbeInfo
     int sx = m.w_tiles > 2 ? m.w_tiles / 2 : 1;
     int sy = m.h_tiles > 2 ? m.h_tiles / 2 : 1;
     int max_r = m.w_tiles > m.h_tiles ? m.w_tiles : m.h_tiles;
-    if (pal_map_nearest_walkable(&m, &sx, &sy, 2, max_r) && m.w_tiles > 0 && m.h_tiles > 0) {
+    if (pal_map_nearest_walkable(&m, &sx, &sy, 1, max_r) && m.w_tiles > 0 && m.h_tiles > 0) {
         int N = m.w_tiles * m.h_tiles;
         uint8_t *vis = (uint8_t *)calloc((size_t)N, 1);
         int32_t *q = (int32_t *)malloc((size_t)N * sizeof(int32_t));
@@ -2190,7 +2190,7 @@ int32_t pal_map_probe_m2(const char *game_dir, int32_t map_id, PalMapM2ProbeInfo
         free(q);
         if (best_dist >= 4) {
             int path_tx[512], path_ty[512];
-            out_info->astar_path_steps = pal_map_find_path_astar(&m, sx, sy, gx, gy, 2, path_tx, path_ty, 512);
+            out_info->astar_path_steps = pal_map_find_path_astar(&m, sx, sy, gx, gy, 1, path_tx, path_ty, 512);
         }
     }
 
@@ -5267,7 +5267,7 @@ typedef struct {
     PalMapNpcDef def;
 } PalGlobalNpcEntry;
 
-#define PAL_MAX_DUNGEON_EXITS 32
+#define PAL_MAX_DUNGEON_EXITS 64
 
 typedef struct {
     uint16_t exit_map_id;
@@ -5387,6 +5387,7 @@ typedef struct {
     int32_t active_shop_id;
     int32_t active_battle_id;
     int32_t last_resolved_item_id;
+    uint16_t pending_escape_refund_item;
     int32_t combat_cooldown_ticks;
     int32_t shake_ticks;
     int32_t auto_trig_recheck;
@@ -5655,11 +5656,36 @@ static int pal_db_load_file(const char *game_dir, const char *filename, int kind
     memset(&cur_scr, 0, sizeof(cur_scr));
     int rec_kind = -1; /* -1=empty, 0=entity, 1=script */
     int32_t ent_id = 0;
+    uint16_t d_exit_vars[50][10];
+    uint8_t d_exit_seen[50];
+    memset(d_exit_vars, 0, sizeof(d_exit_vars));
+    memset(d_exit_seen, 0, sizeof(d_exit_seen));
+    int d_exit_any = 0;
 
     while (pos + 4 <= plen) {
         uint32_t tag = rd_u32(p + pos);
         pos += 4;
         if (tag == 0x7F00FFFFu) {
+            if (rec_kind == 1 && cur_scr.id == 77777 && d_exit_any) {
+                for (int g = 0; g < 50 && db->dungeon_exit_count < PAL_MAX_DUNGEON_EXITS; g++) {
+                    if (!d_exit_seen[g] || d_exit_vars[g][0] == 0u) continue;
+                    PalDungeonExitGroup grp = {0};
+                    grp.exit_map_id = d_exit_vars[g][0];
+                    grp.exit_tx = d_exit_vars[g][1];
+                    grp.exit_ty = d_exit_vars[g][2];
+                    for (int k = 3; k < 10; k++) {
+                        if (d_exit_vars[g][k] != 0u && grp.dungeon_count < 32) {
+                            grp.dungeon_maps[grp.dungeon_count++] = d_exit_vars[g][k];
+                        }
+                    }
+                    if (grp.dungeon_count > 0) {
+                        db->dungeon_exits[db->dungeon_exit_count++] = grp;
+                    }
+                }
+                memset(d_exit_vars, 0, sizeof(d_exit_vars));
+                memset(d_exit_seen, 0, sizeof(d_exit_seen));
+                d_exit_any = 0;
+            }
             if (rec_kind == 0 && ent_id != 0) {
                 if (kind == PAL_DB_KIND_HERO && db->hero_count < PAL_DB_MAX_HEROES) {
                     cur_ent.hero.id = ent_id;
@@ -5772,6 +5798,15 @@ static int pal_db_load_file(const char *game_dir, const char *filename, int kind
                     cur_ent.zone.default_formations[1] = scalars[1];
                     cur_ent.zone.default_formations[2] = scalars[2];
                 }
+            } else if (rec_kind == 1 && cur_scr.id == 77777 && tag == 0x7F30201Eu &&
+                       n_sc >= 3 && scalars[0] == 0 && scalars[1] >= 5000 && scalars[1] < 5500) {
+                /* Authentic dungeon exit table (vars 5000..5499: 50 groups x 10 fields: [exit_mid, tx, ty, map0..map6]) */
+                int idx = scalars[1] - 5000;
+                int grp = idx / 10;
+                int fld = idx % 10;
+                d_exit_vars[grp][fld] = (uint16_t)scalars[2];
+                d_exit_seen[grp] = 1u;
+                d_exit_any = 1;
             } else if (rec_kind == 1 && cur_scr.op_count < PAL_SCRIPT_MAX_OPS) {
                 PalScript7fOp *op = &cur_scr.ops[cur_scr.op_count++];
                 op->tag = tag;
@@ -6504,7 +6539,10 @@ static int pal_camp_use_item_direct(
     int script_ok = pal_camp_exec_item_script(ws, target_idx, it->field_script, PAL_DB_KIND_MAGIC, &talk_id, 0);
     if (script_ok || talk_id > 0) {
         /* Reusable artifacts (target_flag == 65535) are never decremented; failed uses refund via Talk 0x80. */
-        if (!pal_item_is_reusable(it)) pal_world_add_item(ws, item_id, -1);
+        if (!pal_item_is_reusable(it)) {
+            pal_world_add_item(ws, item_id, -1);
+            if (item_id == 3901u) ws->pending_escape_refund_item = 3901u;
+        }
         if (talk_id > 0) {
             if (out_talk_id) *out_talk_id = talk_id;
             if (out_close_camp) *out_close_camp = 1;
@@ -7652,7 +7690,12 @@ static void pal_talk_vm_step_ex(
                 uint16_t raw_mid = rd_u16(ins + 2u);
                 if (raw_mid == 1000u) {
                     uint16_t ex_mid = 0u, ex_tx = 0u, ex_ty = 0u;
-                    if (pal_db_resolve_dungeon_exit(ws->db, (uint16_t)cur_map_id, &ex_mid, &ex_tx, &ex_ty)) {
+                    int resolved = pal_db_resolve_dungeon_exit(ws->db, (uint16_t)cur_map_id, &ex_mid, &ex_tx, &ex_ty);
+                    if (resolved && cur_map_id >= 354u && cur_map_id <= 401u && (ex_mid == 404u || ex_mid == 405u)) {
+                        ex_mid = (ws->story_flags[1620] != 0u) ? 404u : 405u;
+                    }
+                    if (resolved && ex_mid != (uint16_t)cur_map_id) {
+                        ws->pending_escape_refund_item = 0u;
                         vm->pending_map_id = (int32_t)ex_mid;
                         vm->pending_tx = (int32_t)ex_tx;
                         vm->pending_ty = (int32_t)ex_ty;
@@ -7662,6 +7705,10 @@ static void pal_talk_vm_step_ex(
                         vm->ip += ilen;
                         if (!auto_advance_wait) return;
                         break;
+                    }
+                    if (ws->pending_escape_refund_item != 0u) {
+                        pal_world_add_item(ws, ws->pending_escape_refund_item, 1);
+                        ws->pending_escape_refund_item = 0u;
                     }
                     vm->pending_map_id = -1;
                     vm->ip += ilen;
@@ -9686,7 +9733,7 @@ static void talk_format_display_text(const PalTalkVM *vm, char *out_buf, size_t 
 static void pick_map_spawn_tile(const PalLoadedMap *m, int *out_tx, int *out_ty) {
     int cx = m->w_tiles > 2 ? m->w_tiles / 2 : 1;
     int cy = m->h_tiles > 2 ? m->h_tiles / 2 : 1;
-    if (pal_map_nearest_walkable(m, &cx, &cy, 2, m->w_tiles > m->h_tiles ? m->w_tiles : m->h_tiles)) {
+    if (pal_map_nearest_walkable(m, &cx, &cy, 1, m->w_tiles > m->h_tiles ? m->w_tiles : m->h_tiles)) {
         *out_tx = cx;
         *out_ty = cy;
         return;
@@ -18390,8 +18437,11 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
 
             uint16_t ex_m = 0, ex_tx = 0, ex_ty = 0;
             int d_ok = pal_db_resolve_dungeon_exit(db, 32u, &ex_m, &ex_tx, &ex_ty);
+            uint16_t bp_m = 0, bp_tx = 0, bp_ty = 0;
+            int bp_ok = pal_db_resolve_dungeon_exit(db, 228u, &bp_m, &bp_tx, &bp_ty);
             int nd_ok = pal_db_resolve_dungeon_exit(db, 1u, &ex_m, &ex_tx, &ex_ty);
-            int exit_ok = (d_ok == 1 && ex_m == 31u && ex_tx == 22u && ex_ty == 34u && nd_ok == 0);
+            int exit_ok = (d_ok == 1 && ex_m == 31u && ex_tx == 22u && ex_ty == 34u &&
+                           bp_ok == 1 && bp_m == 88u && bp_tx == 45u && bp_ty == 13u && nd_ok == 0);
 
             pal_party_init_hero_slot(db, &ws->party_members[0], 2000);
             int32_t bdef0 = ws->party_members[0].base_def;
@@ -20178,7 +20228,7 @@ static int pal_mcp_cb_exec(
                 }
                 if (any_trig) {
                     int bfs_sx = ptx, bfs_sy = pty;
-                    if (pal_map_nearest_walkable(c->map, &bfs_sx, &bfs_sy, 2, 6)) {
+                    if (pal_map_nearest_walkable(c->map, &bfs_sx, &bfs_sy, 1, 6)) {
                         uint8_t *vis = (uint8_t *)calloc((size_t)N, 1);
                         int32_t *q = (int32_t *)malloc((size_t)N * sizeof(int32_t));
                         if (vis && q) {
@@ -20530,7 +20580,7 @@ static int pal_mcp_cb_exec(
             int rc = -1;
             int close_camp = 0;
             int32_t pending_talk = 0;
-            if (pal_item_equip_slot((int32_t)iid) >= 0) {
+            if (!pal_item_can_use_in_field(c->ws->db, iid) && pal_item_equip_slot((int32_t)iid) >= 0) {
                 rc = pal_party_equip_item(c->ws, hi, iid, msg, sizeof(msg));
             } else {
                 rc = pal_camp_use_item_direct(c->ws, hi, iid, msg, sizeof(msg), &close_camp, &pending_talk);
@@ -22665,7 +22715,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                                 int goal_ty = map_npcs[hit_npc].py >> 4;
                                 astar_count = pal_map_find_path_astar(
                                     &map, party[0].px >> 4, party[0].py >> 4,
-                                    goal_tx, goal_ty, 2, astar_tx, astar_ty, 512
+                                    goal_tx, goal_ty, 1, astar_tx, astar_ty, 512
                                 );
                                 astar_cursor = 0;
                             }
@@ -22686,7 +22736,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             if (goal_ty < 0) goal_ty = 0;
                             astar_count = pal_map_find_path_astar(
                                 &map, party[0].px >> 4, party[0].py >> 4,
-                                goal_tx, goal_ty, 2, astar_tx, astar_ty, 512
+                                goal_tx, goal_ty, 1, astar_tx, astar_ty, 512
                             );
                             astar_cursor = 0;
                         }
@@ -23581,7 +23631,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 }
 
                 int moved = astar_snapped;
-                int foot_w = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 1;
+                int foot_w = 1;
                 int bump_nx = party[0].px + move_dx;
                 int bump_ny = party[0].py + move_dy;
                 if (move_dx != 0 || move_dy != 0) {
@@ -23988,7 +24038,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     map_banner_tex = create_richtext_texture(renderer, banner_msg, 20.0f, 360, &map_banner_w, &map_banner_h);
                     map_banner_timer = 3.0f;
                 }
-                active_trig_id = pal_map_trigger_at_px(&map, party[0].px, party[0].py, 2);
+                active_trig_id = pal_map_trigger_at_px(&map, party[0].px, party[0].py, 1);
                 last_stepped_trig_id = active_trig_id;
 
                 if (talk_vm.active) {
@@ -24006,7 +24056,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 world_state->active_shop_id < 58000) {
                 map_auto_trig_checked = 1;
                 if (world_state->auto_trig_recheck) world_state->auto_trig_recheck = 0;
-                int entry_fw = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 1;
+                int entry_fw = 1;
                 for (int i = 0; i < map_npc_actor_cnt; i++) {
                     if (!map_npcs[i].active || map_npcs[i].talk_id == 0u) continue;
                     int should_auto = 0;
@@ -24099,7 +24149,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             }
             if (prev_talk_active && !talk_vm.active && talk_vm.pending_map_id < 0 &&
                 !talk_vm.paused_for_battle && (!world_state || world_state->active_battle_id <= 0)) {
-                int land_fw = party[0].vm.hitbox_w > 0 ? party[0].vm.hitbox_w : 1;
+                int land_fw = 1;
                 for (int i = 0; i < map_npc_actor_cnt; i++) {
                     if (!pal_npc_is_touch_event(&map_npcs[i])) continue;
                     if (pal_npc_touch_hit_px(&map_npcs[i], party[0].px, party[0].py, land_fw, 8)) {
@@ -24258,7 +24308,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 }
                 /* Leader footprint hitbox */
                 SDL_SetRenderDrawColor(renderer, 40, 240, 120, 220);
-                SDL_FRect foot_r = {(float)party[0].px - cam_x, (float)party[0].py - cam_y, 32.0f, 16.0f};
+                SDL_FRect foot_r = {(float)party[0].px - cam_x, (float)party[0].py - cam_y, 16.0f, 16.0f};
                 SDL_RenderRect(renderer, &foot_r);
             }
 
