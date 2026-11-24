@@ -14420,6 +14420,27 @@ static void combat_begin_command_phase(PalCombatState *cb, PalTalkWorldState *ws
     }
 }
 
+static int combat_is_scripted_defeat_battle(int32_t formation_id) {
+    /* 2801 夢境羅剎鬼婆, 2812 林天南比武, 2819 石長老劇情必敗戰 */
+    return (formation_id == 2801 || formation_id == 2812 || formation_id == 2819) ? 1 : 0;
+}
+
+static void combat_enter_defeat_phase(PalCombatState *cb, PalTalkWorldState *ws) {
+    if (!cb || !ws) return;
+    cb->round_active = 0;
+    combat_cleanup_battle_end(cb, ws, 0);
+    snprintf(cb->log_text, sizeof(cb->log_text), "%s",
+             combat_is_scripted_defeat_battle(cb->formation_id)
+                 ? "戰敗……按 Enter 繼續劇情。"
+                 : "全軍覆沒……按 Enter 返回標題畫面。");
+    cb->toast_timer = 0.0f;
+    cb->defeat_stage = 0;
+    cb->post_anim_phase = COMBAT_PHASE_DEFEAT;
+    cb->phase = COMBAT_PHASE_DEFEAT;
+    cb->dirty = 1;
+    combat_sync_idle_poses(cb, ws);
+}
+
 static void combat_advance_next_turn(PalCombatState *cb, PalTalkWorldState *ws) {
     if (!cb || !ws) return;
     for (int e = 0; e < cb->enemy_count; e++) {
@@ -14448,15 +14469,7 @@ static void combat_advance_next_turn(PalCombatState *cb, PalTalkWorldState *ws) 
         return;
     }
     if (pal_combat_all_heroes_dead(ws) && !pal_test_runtime_god_mode()) {
-        cb->round_active = 0;
-        combat_cleanup_battle_end(cb, ws, 0);
-        snprintf(cb->log_text, sizeof(cb->log_text), "全軍覆沒……按 Enter 返回安全區域。");
-        cb->toast_timer = 0.0f;
-        cb->defeat_stage = 0;
-        cb->post_anim_phase = COMBAT_PHASE_DEFEAT;
-        cb->phase = COMBAT_PHASE_DEFEAT;
-        cb->dirty = 1;
-        combat_sync_idle_poses(cb, ws);
+        combat_enter_defeat_phase(cb, ws);
         return;
     }
 
@@ -14559,13 +14572,7 @@ static void combat_advance_next_turn(PalCombatState *cb, PalTalkWorldState *ws) 
         }
     }
     if (pal_combat_all_heroes_dead(ws) && !pal_test_runtime_god_mode()) {
-        combat_cleanup_battle_end(cb, ws, 0);
-        snprintf(cb->log_text, sizeof(cb->log_text), "全軍覆沒……按 Enter 返回安全區域。");
-        cb->toast_timer = 0.0f;
-        cb->post_anim_phase = COMBAT_PHASE_DEFEAT;
-        cb->phase = COMBAT_PHASE_DEFEAT;
-        cb->dirty = 1;
-        combat_sync_idle_poses(cb, ws);
+        combat_enter_defeat_phase(cb, ws);
         return;
     }
     cb->turn_no++;
@@ -19522,14 +19529,24 @@ static void combat_finish_to_field(
     PalTalkVM *talk_vm, PalLoadedMap *map, PalFieldActor *party, PalFieldActor *npcs, int *io_npc_cnt, int npc_cap,
     PalCampMenuState *camp_menu, PalBgmPlayer *bgm, PalSfxPool *sfx_pool,
     float bgm_vol, float sfx_vol, int runtime_mute,
-    PalSceneState *scene, int *pending_fade_in_ms, char *cur_bgm_playing, size_t bgm_cap, Uint64 *last_ns
+    PalSceneState *scene, int *pending_fade_in_ms, char *cur_bgm_playing, size_t bgm_cap, Uint64 *last_ns,
+    int *request_return_title
 ) {
     int npc_cnt = io_npc_cnt ? *io_npc_cnt : 0;
-    play_ui_sfx(cfg->game_dir, 2u, sfx_pool, sfx_vol, runtime_mute);
     int won = (combat_state->phase == COMBAT_PHASE_VICTORY) ? 1 : 0;
     int defeated = (combat_state->phase == COMBAT_PHASE_DEFEAT) ? 1 : 0;
     int fled = (combat_state->phase == COMBAT_PHASE_FLED) ? 1 : 0;
     combat_cleanup_battle_end(combat_state, world_state, won);
+    if (defeated && !combat_is_scripted_defeat_battle(combat_state->formation_id)) {
+        if (talk_vm) {
+            talk_vm->paused_for_battle = 0;
+            talk_vm->active = 0;
+        }
+        if (request_return_title) *request_return_title = 1;
+        if (last_ns) *last_ns = SDL_GetTicksNS();
+        return;
+    }
+    if (cfg) play_ui_sfx(cfg->game_dir, 2u, sfx_pool, sfx_vol, runtime_mute);
     if (!won && world_state) {
         for (int p = 0; p < world_state->party_member_count && p < 4; p++) {
             PalPartyMemberState *m = &world_state->party_members[p];
@@ -19545,15 +19562,17 @@ static void combat_finish_to_field(
     if (world_state) {
         world_state->combat_cooldown_ticks = (!won || fled) ? 90 : 30;
     }
-    *scene = PAL_SCENE_FIELD;
-    camp_menu->dirty = 1;
-    *pending_fade_in_ms = 140;
-    pal_bgm_set_duck(bgm, 1.0f);
-    const char *field_bgm = pal_resolve_map_bgm(world_state, map);
-    pal_bgm_play_track(bgm, cfg->game_dir, field_bgm, bgm_vol, runtime_mute);
-    snprintf(cur_bgm_playing, bgm_cap, "%s", field_bgm);
+    if (scene) *scene = PAL_SCENE_FIELD;
+    if (camp_menu) camp_menu->dirty = 1;
+    if (pending_fade_in_ms) *pending_fade_in_ms = 140;
+    if (bgm && cfg && map && cur_bgm_playing && bgm_cap > 0) {
+        pal_bgm_set_duck(bgm, 1.0f);
+        const char *field_bgm = pal_resolve_map_bgm(world_state, map);
+        pal_bgm_play_track(bgm, cfg->game_dir, field_bgm, bgm_vol, runtime_mute);
+        snprintf(cur_bgm_playing, bgm_cap, "%s", field_bgm);
+    }
 
-    if (talk_vm->active && talk_vm->paused_for_battle) {
+    if (talk_vm && talk_vm->active && talk_vm->paused_for_battle) {
         talk_vm->paused_for_battle = 0;
         if (world_state) world_state->story_flags[3001] = won ? 1u : 0u;
         if (won && talk_vm->talk_id >= 5001 && talk_vm->talk_id <= 5999) {
@@ -19563,9 +19582,11 @@ static void combat_finish_to_field(
                 world_state->npc_visibility_override[talk_vm->trigger_obj_id] = 2u;
             }
         }
-        pal_talk_vm_step_ex(talk_vm, world_state, cfg->game_dir, map->map_id, party, npcs, io_npc_cnt, npc_cap, 0);
+        if (cfg && map) {
+            pal_talk_vm_step_ex(talk_vm, world_state, cfg->game_dir, map->map_id, party, npcs, io_npc_cnt, npc_cap, 0);
+        }
     }
-    *last_ns = SDL_GetTicksNS();
+    if (last_ns) *last_ns = SDL_GetTicksNS();
 }
 
 #if PAL_ENABLE_TEST_MODE
@@ -22171,7 +22192,23 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         st_cb->defeat_stage = 0;
                         int d0 = combat_advance_settlement(st_cb, p2_ws, cfg->game_dir, NULL, 0.0f, 1);
                         int d1 = combat_advance_settlement(st_cb, p2_ws, cfg->game_dir, NULL, 0.0f, 1);
-                        int defeat_ok = (d0 == 0 && st_cb->defeat_stage == 1 && d1 == 1);
+                        st_cb->formation_id = 2834;
+                        PalTalkVM dvm = {0};
+                        dvm.active = 1;
+                        dvm.paused_for_battle = 1;
+                        int d_ret = 0;
+                        combat_finish_to_field(NULL, st_cb, p2_ws, &dvm, NULL, NULL, NULL, NULL, 0,
+                                               NULL, NULL, NULL, 0.0f, 0.0f, 1, NULL, NULL, NULL, 0, NULL, &d_ret);
+                        st_cb->formation_id = 2819;
+                        st_cb->phase = COMBAT_PHASE_DEFEAT;
+                        p2_ws->party_members[0].cur_hp = 0;
+                        dvm.active = 1;
+                        dvm.paused_for_battle = 1;
+                        int d_ret_scripted = 0;
+                        combat_finish_to_field(NULL, st_cb, p2_ws, &dvm, NULL, NULL, NULL, NULL, 0,
+                                               NULL, NULL, NULL, 0.0f, 0.0f, 1, NULL, NULL, NULL, 0, NULL, &d_ret_scripted);
+                        int defeat_ok = (d0 == 0 && st_cb->defeat_stage == 1 && d1 == 1 &&
+                                         d_ret == 1 && d_ret_scripted == 0 && p2_ws->party_members[0].cur_hp > 0);
                         settle_ok = (init_ok && saw_stage2 && done_vic && defeat_ok) ? 1 : 0;
                         combat_free_textures(st_cb);
                     }
@@ -22850,7 +22887,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             combat_finish_to_field(cfg, &combat_state, world_state, &talk_vm, &map, party, map_npcs,
                                                    &map_npc_actor_cnt, 128, &camp_menu, &bgm, &sfx_pool,
                                                    runtime_bgm_vol, runtime_sfx_vol, runtime_mute,
-                                                   &scene, &pending_fade_in_ms, cur_bgm_playing, sizeof(cur_bgm_playing), &last_ns);
+                                                   &scene, &pending_fade_in_ms, cur_bgm_playing, sizeof(cur_bgm_playing), &last_ns,
+                                                   &request_return_title);
                         }
                     } else if (combat_state.phase == COMBAT_PHASE_COMMAND && world_state) {
                         if (combat_state.other_open) {
@@ -22999,7 +23037,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             combat_finish_to_field(cfg, &combat_state, world_state, &talk_vm, &map, party, map_npcs,
                                                    &map_npc_actor_cnt, 128, &camp_menu, &bgm, &sfx_pool,
                                                    runtime_bgm_vol, runtime_sfx_vol, runtime_mute,
-                                                   &scene, &pending_fade_in_ms, cur_bgm_playing, sizeof(cur_bgm_playing), &last_ns);
+                                                   &scene, &pending_fade_in_ms, cur_bgm_playing, sizeof(cur_bgm_playing), &last_ns,
+                                                   &request_return_title);
                         }
                     } else if (combat_state.phase == COMBAT_PHASE_COMMAND && combat_state.other_open) {
                         combat_state.other_open = 0;
@@ -23172,7 +23211,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                                 combat_finish_to_field(cfg, &combat_state, world_state, &talk_vm, &map, party, map_npcs,
                                                        &map_npc_actor_cnt, 128, &camp_menu, &bgm, &sfx_pool,
                                                        runtime_bgm_vol, runtime_sfx_vol, runtime_mute,
-                                                       &scene, &pending_fade_in_ms, cur_bgm_playing, sizeof(cur_bgm_playing), &last_ns);
+                                                       &scene, &pending_fade_in_ms, cur_bgm_playing, sizeof(cur_bgm_playing), &last_ns,
+                                                       &request_return_title);
                             }
                         }
                     } else if (combat_state.phase == COMBAT_PHASE_COMMAND && world_state) {
