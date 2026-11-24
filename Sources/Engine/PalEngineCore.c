@@ -9097,11 +9097,17 @@ static void pal_talk_vm_step_ex(
                 if (ilen >= 6u) {
                     uint16_t aid = rd_u16(ins + 2u);
                     uint16_t sub = rd_u16(ins + 4u);
-                    for (int s = 0; s < PAL_MAX_OVERLAYS; s++) {
-                        if (vm->overlays[s].active && vm->overlays[s].act_id == aid &&
-                            (sub == 0xFFFFu || vm->overlays[s].sub_action == sub)) {
-                            memset(&vm->overlays[s], 0, sizeof(vm->overlays[s]));
+                    if (aid == 9012u) {
+                        vm->dlg_visible = 0;
+                        vm->dlg_dirty = 1;
+                    } else {
+                        for (int s = 0; s < PAL_MAX_OVERLAYS; s++) {
+                            if (vm->overlays[s].active && vm->overlays[s].act_id == aid &&
+                                (sub == 0xFFFFu || vm->overlays[s].sub_action == sub)) {
+                                memset(&vm->overlays[s], 0, sizeof(vm->overlays[s]));
+                            }
                         }
+                        talk_hide_portrait(vm, aid, sub);
                     }
                 }
                 vm->ip += ilen;
@@ -21491,11 +21497,14 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 if (vm_ok && mvm.fr_tsw_id > 0) mon_act_ok++;
             }
 
-            /* Synthetic Talk 0x3A + 0x310 overlay spawn/teardown check + real talk1:102 check */
+            /* Synthetic Talk 0x3A + 0x310 overlay/dialogue(9012) spawn/teardown check + real talk1:102 check */
             PalTalkVM tvm = {0};
             uint8_t syn_chunk[] = {
                 0x3Au, 0x00u, 0x40u, 0x01u, 0xF0u, 0x00u, 0x6Cu, 0x1Bu, 0x03u, 0x00u, /* 0x3A (320,240, 7020, 3) */
                 0x10u, 0x03u, 0x6Cu, 0x1Bu, 0x03u, 0x00u,                             /* 0x310 (7020, 3) */
+                0x7Du, 0x00u, 'o', 'k', '%', 'Q',                                     /* 0x7D timed dialogue */
+                0x10u, 0x03u, 0x34u, 0x23u, 0x00u, 0x00u,                             /* 0x310 (9012, 0) dismisses dlg_visible */
+                0x43u, 0x00u, 0x64u, 0x00u,                                           /* 0x43 (100ms) pauses VM while active */
                 0xFFu, 0xFFu
             };
             tvm.active = 1;
@@ -21505,12 +21514,13 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             if (tvm.chunk) {
                 memcpy(tvm.chunk, syn_chunk, sizeof(syn_chunk));
                 tvm.chunk_len = (uint32_t)sizeof(syn_chunk);
-                pal_talk_vm_step_ex(&tvm, p2_ws, cfg->game_dir, 1u, NULL, NULL, NULL, 0, 1);
+                pal_talk_vm_step_ex(&tvm, p2_ws, cfg->game_dir, 1u, NULL, NULL, NULL, 0, 0);
                 int ov_cleared = 1;
                 for (int o = 0; o < PAL_MAX_OVERLAYS; o++) {
                     if (tvm.overlays[o].active) ov_cleared = 0;
                 }
-                int syn_ok = (tvm.fx_overlays_spawned == 1 && ov_cleared == 1);
+                int syn_ok = (tvm.fx_overlays_spawned == 1 && ov_cleared == 1 &&
+                              tvm.dialogues_shown == 1 && tvm.dlg_visible == 0 && tvm.active == 1);
                 pal_talk_vm_free(&tvm);
 
                 PalTalkVM t102 = {0};

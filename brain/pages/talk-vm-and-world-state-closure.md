@@ -5,7 +5,7 @@ category: concept
 status: active
 tags: [talk-vm, script, save, endgame, swd2k]
 created: "2026-11-23T12:56:39"
-updated: "2026-11-25T01:24:56"
+updated: "2026-11-25T05:45:54"
 ---
 
 <!-- compiled_truth -->
@@ -80,4 +80,10 @@ updated: "2026-11-25T01:24:56"
   kind: decision
   summary: "沉淀第五回主线终局贯通闭环：黑蜘蛛森林Map 594触碰触发器NPC 589（talk 621）切入Map 548毒娘子决战、酒剑仙飞剑破除妖法夺雷灵珠、彩依化蝶殉情与御剑飞抵蜀山仙剑派Map 187，并固化第五回通关存档Save/8.sav"
   source: Sources/Engine/PalEngineCore.c / maps.dat / talk1.dat / Save/8.sav
+  affects: [talk-vm-and-world-state-closure]
+
+- time: 2026-11-25T05:45:54
+  kind: decision
+  summary: "根因修复 OP 0x310 (aid=9012) 未关闭自动对白框的问题：同步置 dlg_visible=0 并清理立绘，消除 0x8B+0x43 定时字幕在跨图/OP 0x34 转场期间残留"
+  source: "Sources/Engine/PalEngineCore.c / talk1..8.dat (2,444 sites)"
   affects: [talk-vm-and-world-state-closure]

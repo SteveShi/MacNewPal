@@ -1,6 +1,6 @@
 # Brain Index
 
-_Auto-generated. Last updated 2026-11-24T17:24:56.150Z._
+_Auto-generated. Last updated 2026-11-24T21:45:54.105Z._
 
 - [byod-clean-room-vfs](pages/byod-clean-room-vfs.md) — category: decision | tags: [architecture, byod, vfs, legal, save] | ## 决策结论
 - [c11-core-and-sdl3-metal-pipeline](pages/c11-core-and-sdl3-metal-pipeline.md) — category: decision | tags: [engine, c11, sdl3, metal, shader, coretext] | ## 决策结论
