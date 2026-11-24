@@ -5198,6 +5198,7 @@ typedef struct {
 
 typedef struct {
     int32_t id;            /* hero_id * 100 + target_lv */
+    int32_t max_lv;        /* prop[4] */
     int32_t next_exp;      /* prop[10] */
     int32_t d_max_hp;      /* prop[16] */
     int32_t heal_hp;       /* prop[17] */
@@ -5570,6 +5571,7 @@ static void pal_db_apply_entity_prop(int kind, void *rec, int32_t pid, int32_t v
     } else if (kind == PAL_DB_KIND_LEVEL) {
         PalLevelTemplate *lv = (PalLevelTemplate *)rec;
         switch (pid) {
+            case 4:  lv->max_lv = val; break;
             case 10: lv->next_exp = val; break;
             case 16: lv->d_max_hp = val; break;
             case 17: lv->heal_hp = val; break;
@@ -6604,15 +6606,16 @@ static int32_t pal_level_rand_jitter(uint32_t *io_rng, int32_t base_delta, int32
 
 static int pal_party_level_up_slot_rng(const PalGameDatabase *db, PalPartyMemberState *m, uint32_t *io_rng) {
     if (!db || !m || !m->active) return -1;
-    const PalHeroRecord *hr = pal_db_find_hero(db, m->hero_id);
-    int32_t max_lv = (hr && hr->start_lv > hr->lv && hr->start_lv <= 99) ? hr->start_lv : 99;
-    if (m->lv >= max_lv) return -1;
 
     int32_t target_lv = m->lv + 1;
     int32_t base_id = (m->hero_id == 2009) ? 2000 : m->hero_id;
     int32_t tpl_id = base_id * 100 + target_lv;
     const PalLevelTemplate *lt = pal_db_find_level(db, tpl_id);
     if (!lt) return -1;
+    /* glevel.dat prop[4] is the authoritative cap (99 for all playable templates 200002..200499);
+     * ghero.dat prop[4]=7 on Hero 2000 is only the initial Lv 1 record before glevel overrides it. */
+    int32_t max_lv = (lt->max_lv > 0 && lt->max_lv <= 99) ? lt->max_lv : 99;
+    if (m->lv >= max_lv) return -1;
 
     /* Carry over excess EXP past current level threshold. */
     int32_t prev_needed = (lt->next_exp > 0) ? lt->next_exp : m->next_exp;
@@ -9569,7 +9572,26 @@ int32_t pal_db_menu_probe_m4(const char *game_dir, PalDbM4ProbeInfo *out_info) {
     return out_info->ok ? 0 : -1;
 }
 
-static int talk_find_interact_npc(const PalFieldActor *leader, const PalFieldActor *npcs, int npc_cnt) {
+/* Objects sitting behind a counter, stone altar, or screen rim (e.g. Map 131 Purple-Gold Gourd
+ * at (63,42) behind the blocked altar ledge at ty=44..45) cannot be approached closer than ~66-72px.
+ * When a blocked tile separates leader and target, allow counter/altar reach up to 84px;
+ * otherwise keep standard open-floor reach (base_px). */
+static int pal_npc_interact_radius_px(const PalLoadedMap *map, const PalFieldActor *leader, const PalFieldActor *npc, int base_px) {
+    if (!map || !leader || !npc || !map->walk_grid) return base_px;
+    int dx = npc->px - leader->px;
+    int dy = npc->py - leader->py;
+    if (dx * dx + dy * dy <= base_px * base_px) return base_px;
+    for (int step = 1; step <= 4; step++) {
+        int sx = (leader->px + (dx * step) / 4) >> 4;
+        int sy = (leader->py + (dy * step) / 4) >> 4;
+        if (!pal_map_can_stand_tile(map, sx, sy, 1)) {
+            return (base_px < 84) ? 84 : base_px;
+        }
+    }
+    return base_px;
+}
+
+static int talk_find_interact_npc(const PalLoadedMap *map, const PalFieldActor *leader, const PalFieldActor *npcs, int npc_cnt) {
     if (!leader || !npcs) return -1;
     static const int kDirDx[8] = {0, 0, -1, 1, -1, 1, -1, 1};
     static const int kDirDy[8] = {-1, 1, 0, 0, -1, 1, 1, -1};
@@ -9578,7 +9600,7 @@ static int talk_find_interact_npc(const PalFieldActor *leader, const PalFieldAct
     int probe_y = leader->py + kDirDy[d] * 18;
 
     int best_idx = -1;
-    int best_score = 46 * 46;
+    int best_score = 96 * 96;
     for (int i = 0; i < npc_cnt; i++) {
         if (!npcs[i].active || npcs[i].talk_id == 0u) continue;
         int dx = npcs[i].px - probe_x;
@@ -9587,8 +9609,9 @@ static int talk_find_interact_npc(const PalFieldActor *leader, const PalFieldAct
         int ldx = npcs[i].px - leader->px;
         int ldy = npcs[i].py - leader->py;
         int ld2 = ldx * ldx + ldy * ldy;
+        int max_r = pal_npc_interact_radius_px(map, leader, &npcs[i], 46);
         int score = d2 < ld2 ? d2 : ld2;
-        if (ld2 <= 46 * 46 && score < best_score) {
+        if (ld2 <= max_r * max_r && score < best_score) {
             best_score = score;
             best_idx = i;
         }
@@ -10607,7 +10630,10 @@ static int pal_save_game_slot(
             uint8_t *hp = buf + 0x18u + (size_t)hslot * 0x228u;
             const PalPartyMemberState *m = &ws->party_members[i];
             const PalHeroRecord *hr = pal_db_find_hero(ws->db, m->hero_id);
-            wr_u32_le(hp + 0x00u, (uint32_t)(hr ? hr->start_lv : m->lv));
+            int32_t cap_base = (m->hero_id == 2009) ? 2000 : m->hero_id;
+            const PalLevelTemplate *lt_cap = (m->lv >= 2) ? pal_db_find_level(ws->db, cap_base * 100 + m->lv) : NULL;
+            int32_t save_max_lv = (lt_cap && lt_cap->max_lv > 0) ? lt_cap->max_lv : (hr ? hr->start_lv : m->lv);
+            wr_u32_le(hp + 0x00u, (uint32_t)save_max_lv);
             wr_u32_le(hp + 0x04u, (uint32_t)m->lv);
             wr_u32_le(hp + 0x08u, (uint32_t)m->next_exp);
             wr_u32_le(hp + 0x0Cu, (uint32_t)m->exp);
@@ -12742,9 +12768,8 @@ static int pal_combat_init(
                 eu->luck = mr->luck;
                 for (int r = 0; r < 6; r++) eu->res[r] = mr->res[r];
                 eu->monster_mag = mr->monster_mag;
-                int32_t gf4_id = 1000 + (mr->id / 10);
-                eu->ai_script = pal_db_find_script_kind(ws->db, gf4_id, PAL_DB_KIND_FIGHT)
-                                    ? gf4_id : mr->ai_script;
+                eu->ai_script = (mr->ai_script > 0 && pal_db_find_script(ws->db, mr->ai_script))
+                                    ? mr->ai_script : 0;
                 eu->death_script = mr->act_id;
                 eu->exp_reward = mr->exp_reward;
                 eu->gold_reward = mr->gold_reward;
@@ -12773,9 +12798,8 @@ static int pal_combat_init(
             eu->display_hp = eu->cur_hp;
             eu->atk = mr->atk > 0 ? mr->atk : 15;
             eu->spd = mr->spd > 0 ? mr->spd : 15;
-            int32_t gf4_id = 1000 + (mr->id / 10);
-            eu->ai_script = pal_db_find_script_kind(ws->db, gf4_id, PAL_DB_KIND_FIGHT)
-                                ? gf4_id : mr->ai_script;
+            eu->ai_script = (mr->ai_script > 0 && pal_db_find_script(ws->db, mr->ai_script))
+                                ? mr->ai_script : 0;
             eu->death_script = mr->act_id;
             eu->exp_reward = mr->exp_reward;
             eu->gold_reward = mr->gold_reward;
@@ -12838,7 +12862,8 @@ typedef struct {
     int32_t executed_script_id;
 } PalCombatExecSummary;
 
-static void combat_exec_fight_script(
+/* Returns 1 if script executed 0x7F002002 (RET to caller), 0 if script terminated. */
+static int combat_exec_fight_script(
     PalCombatState *cb, PalTalkWorldState *ws, int32_t script_id, int32_t prefer_kind,
     int caster_is_hero, int caster_idx, int init_tgt_is_hero, int init_tgt_idx, int allow_revive,
     PalCombatExecSummary *summary, int depth
@@ -13054,9 +13079,11 @@ static int combat_exec_branch_step(
     int32_t off = cond ? true_off : false_off;
     if (cond && off == 1 && *io_i + 2 < sc->op_count &&
         false_off == 2 && sc->ops[*io_i + 1].tag == 0x7F102001u && sc->ops[*io_i + 2].tag == 0x7F102001u) {
-        combat_exec_fight_script(cb, ws, sc->ops[*io_i + 1].args[0], prefer_kind,
-                                 caster_is_hero, caster_idx, cur_tgt_is_hero, cur_tgt_idx, allow_revive,
-                                 summary, depth + 1);
+        if (!combat_exec_fight_script(cb, ws, sc->ops[*io_i + 1].args[0], prefer_kind,
+                                      caster_is_hero, caster_idx, cur_tgt_is_hero, cur_tgt_idx, allow_revive,
+                                      summary, depth + 1)) {
+            return -2;
+        }
         *io_i += 2;
         return 1;
     }
@@ -13121,27 +13148,45 @@ static void combat_resolve_script_target(
     (void)cb;
 }
 
-static void combat_exec_fight_script(
+static int combat_exec_fight_script(
     PalCombatState *cb, PalTalkWorldState *ws, int32_t script_id, int32_t prefer_kind,
     int caster_is_hero, int caster_idx, int init_tgt_is_hero, int init_tgt_idx, int allow_revive,
     PalCombatExecSummary *summary, int depth
 ) {
-    if (!cb || !ws || !ws->db || !pal_dat_has_script(script_id) || depth > 8) return;
-    if (script_id == 718 || script_id == 719) return;
+    if (!cb || !ws || !ws->db || !pal_dat_has_script(script_id) || depth > 8) return 0;
+    if (script_id == 718 || script_id == 719) return 0;
     const PalScript7fRecord *sc = pal_db_find_script_kind(ws->db, script_id, prefer_kind);
     if (!sc) sc = pal_db_find_script(ws->db, script_id);
-    if (!sc) return;
+    if (!sc) return 0;
 
     int cur_tgt_is_hero = init_tgt_is_hero;
     int cur_tgt_idx = init_tgt_idx;
     int cur_tgt_aoe = (init_tgt_idx < 0) ? 1 : 0;
     int has_step_in_phase = 0;
     int caster_hidden = 0;
+    int32_t local_vars[16] = {0};
+    uint8_t local_var_set[16] = {0};
     if (summary && summary->executed_script_id == 0) summary->executed_script_id = script_id;
 
     for (int32_t i = 0; i < sc->op_count; i++) {
         const PalScript7fOp *op = &sc->ops[i];
-        if (op->tag == 0x7F002009u) {
+        if (op->tag == 0x7F002002u) {
+            return 1; /* Explicit subroutine RET: resume caller script */
+        } else if (op->tag == 0x7F10201Du && op->arg_count >= 1) {
+            int32_t slot = op->args[0];
+            if (slot >= 0 && slot < 16) {
+                local_vars[slot] = 0;
+                local_var_set[slot] = 0;
+            }
+        } else if (op->tag == 0x7F30201Eu && op->arg_count >= 3) {
+            int32_t vop = op->args[0];
+            int32_t slot = op->args[1];
+            int32_t rhs = op->args[2];
+            if (slot >= 0 && slot < 16 && vop == 6 && rhs > 0) {
+                local_vars[slot] = 1 + (int32_t)pal_combat_rand_n(cb, (uint32_t)rhs);
+                local_var_set[slot] = 1;
+            }
+        } else if (op->tag == 0x7F002009u) {
             if (summary && has_step_in_phase) {
                 summary->vfx_phase_cursor++;
                 has_step_in_phase = 0;
@@ -13164,14 +13209,24 @@ static void combat_exec_fight_script(
                 summary->combo_actor_mask |= (1 << cur_tgt_idx);
             }
         } else if (op->tag == 0x7F50201Fu && op->arg_count >= 5) {
-            /* Random chance branch: [2, mode(1/2=<, 3=>=), pct, true_off, false_off] */
-            int32_t mode = op->args[1];
-            int32_t pct = op->args[2];
-            int32_t r = (int32_t)pal_combat_rand_n(cb, 100u);
-            int cond = (mode == 3) ? (r >= pct) : (r < pct);
+            /* Register comparison (after 0x7F30201E roll) or standalone random chance branch. */
+            int32_t cmp = op->args[0];
+            int32_t slot = op->args[1];
+            int32_t thresh = op->args[2];
+            int cond = 0;
+            if (slot >= 0 && slot < 16 && local_var_set[slot]) {
+                int32_t v = local_vars[slot];
+                if (cmp == 1) cond = (v <= thresh);
+                else if (cmp == 2) cond = (v > thresh);
+                else cond = (v == thresh);
+            } else {
+                int32_t r = (int32_t)pal_combat_rand_n(cb, 100u);
+                cond = (slot == 3) ? (r >= thresh) : (r < thresh);
+            }
             int brc = combat_exec_branch_step(cb, ws, sc, &i, op->args[3], op->args[4], cond,
                                               prefer_kind, caster_is_hero, caster_idx,
                                               cur_tgt_is_hero, cur_tgt_idx, allow_revive, summary, depth);
+            if (brc == -2) return 0;
             if (brc < 0) break;
         } else if (op->tag == 0x7F40201Cu && op->arg_count >= 4) {
             /* Party slot / story bit branch; negative IDs gate popup portraits (skip cleanly). */
@@ -13267,17 +13322,36 @@ static void combat_exec_fight_script(
                 if (pidx >= 0) {
                     lhs = (pid == 17) ? ws->party_members[pidx].cur_hp : ws->party_members[pidx].cur_mp;
                 }
+            } else if (who > 0u && who < 2000u) {
+                int found_e = -1;
+                for (int ek = 0; ek < cb->enemy_count; ek++) {
+                    if (!cb->enemies[ek].active) continue;
+                    if (cb->enemies[ek].spawn_inst_id == (int32_t)who ||
+                        (cb->enemies[ek].mon_id / 10) == ((int32_t)who / 10)) {
+                        found_e = ek;
+                        break;
+                    }
+                }
+                if (found_e < 0 || !cb->enemies[found_e].alive || cb->enemies[found_e].cur_hp <= 0) {
+                    int32_t off = op->args[5];
+                    if (off > 1) i += (off - 1);
+                    else if (off <= 0) break;
+                    continue;
+                }
+                lhs = (pid == 17) ? cb->enemies[found_e].cur_hp : cb->enemies[found_e].lv;
             }
             int cond = (cmp_op == 1) ? (lhs < rhs) : (cmp_op == 2 ? (lhs > rhs) : (lhs == rhs));
             int32_t off = cond ? op->args[4] : op->args[5];
             if (off > 1) i += (off - 1);
             else if (off <= 0) break;
         } else if (op->tag == 0x7F102001u && op->arg_count >= 1) {
-            if (op->args[0] == 718 || op->args[0] == 719) return;
+            if (op->args[0] == 718 || op->args[0] == 719) return 0;
             if (summary && op->args[0] > 0) summary->executed_script_id = op->args[0];
-            combat_exec_fight_script(cb, ws, op->args[0], prefer_kind,
-                                     caster_is_hero, caster_idx, cur_tgt_is_hero, cur_tgt_idx, allow_revive,
-                                     summary, depth + 1);
+            if (!combat_exec_fight_script(cb, ws, op->args[0], prefer_kind,
+                                          caster_is_hero, caster_idx, cur_tgt_is_hero, cur_tgt_idx, allow_revive,
+                                          summary, depth + 1)) {
+                return 0; /* Sub-script terminated without 0x7F002002 RET -> stop caller too */
+            }
         } else if (op->tag == 0x7F102017u && op->arg_count >= 1) {
             /* Cancel timed script by ID */
             int32_t cancel_id = op->args[0];
@@ -13425,6 +13499,7 @@ static void combat_exec_fight_script(
             }
         }
     }
+    return 0;
 }
 
 /* End-of-battle rewards, 1/3 HP/MP dead-ally revival, 1/2 post-level-up recovery, and 修行 merge. */
@@ -14153,11 +14228,10 @@ static void pal_combat_execute_enemy_ai_ex(
     int hidx = alive_heroes[combat_next_rng(cb) % (uint32_t)n_alive];
     PalPartyMemberState *hero = &ws->party_members[hidx];
 
-    /* Execute GFight4 AI script (direct attack or conditional spell branch) */
-    int32_t gf4_sid = 1000 + (eu->mon_id / 10);
+    /* Execute real monster AI router script from gmon.dat prop[180] (lives in gitem/glevel and dispatches to GFight4) */
     int32_t ai_sid = eu->ai_script;
-    if (!pal_dat_has_script(ai_sid) || !pal_db_find_script_kind(ws->db, ai_sid, PAL_DB_KIND_FIGHT)) {
-        ai_sid = pal_db_find_script_kind(ws->db, gf4_sid, PAL_DB_KIND_FIGHT) ? gf4_sid : 0;
+    if (!pal_dat_has_script(ai_sid) || !pal_db_find_script(ws->db, ai_sid)) {
+        ai_sid = 0;
     }
 
     PalCombatExecSummary sum = {0};
@@ -18155,12 +18229,24 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         int throw_single_ok = (it3702 && it3702->throw_script == 371 && it3702->scope == 0 &&
                                qty3613 == 1 && !pal_world_has_item(ws, 3702u) && bt2.value >= 150);
 
-        /* 3) Level-up 2009 -> 200031 lookup, 999 cap, EXP carry-over */
+        /* 3) Level-up 2000 past Lv 7 (glevel prop[4]=99 overrides ghero prop[4]=7), 2009 -> 200031, 999 cap, EXP carry-over */
+        PalPartyMemberState lv2000_test = {0};
+        pal_party_init_hero_slot(db, &lv2000_test, 2000);
+        lv2000_test.lv = 7;
+        lv2000_test.next_exp = 715;
+        lv2000_test.exp = 3135;
+        int lv2000_ups = 0;
+        while (lv2000_test.next_exp > 0 && lv2000_test.exp >= lv2000_test.next_exp) {
+            if (pal_party_level_up_slot(db, &lv2000_test) != 0) break;
+            lv2000_ups++;
+        }
+        int lv2000_ok = (lv2000_ups == 3 && lv2000_test.lv == 10 && lv2000_test.exp == 365);
+
         PalPartyMemberState lv_test = {0};
         pal_party_init_hero_slot(db, &lv_test, 2009);
         lv_test.exp = lv_test.next_exp + 25;
         int32_t prev_lv = lv_test.lv;
-        int lv2009_ok = (pal_party_level_up_slot(db, &lv_test) == 0 && lv_test.lv == prev_lv + 1 && lv_test.exp == 25);
+        int lv2009_ok = (lv2000_ok && pal_party_level_up_slot(db, &lv_test) == 0 && lv_test.lv == prev_lv + 1 && lv_test.exp == 25);
         lv_test.base_max_hp = 995; lv_test.base_max_mp = 996; lv_test.lv = 32;
         pal_party_level_up_slot(db, &lv_test);
         int cap999_ok = (lv_test.base_max_hp == 999 && lv_test.base_max_mp == 999 &&
@@ -18328,26 +18414,50 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
                            (cbeat.vfx_act_id != 0u || cbeat.vfx_step_count > 0)) ? 1 : 0;
         }
 
-        /* 9) M6.3 GFight4 Enemy AI (1000 + mon_id/10), Real VFX Preservation, 0x7F102038 SFX Queue */
+        /* 9) M6.3 Real gmon.dat prop[180] Monster AI Router, Real VFX Preservation, 0x7F102038 SFX Queue & 634 紅食火蟾 */
         int m6_enemy_ai_ok = 0;
         {
             memset(ws, 0, sizeof(*ws));
             ws->db = db;
             pal_party_init_from_db(ws, db, 0);
-            pal_combat_init(cb, ws, game_dir, 2801); /* 664 羅剎鬼婆 -> GFight4 1066 */
-            PalCombatAnimBeat ebeat = {0};
-            pal_combat_execute_enemy_ai_ex(cb, ws, 0, &ebeat);
-            cb->anim_queue[0] = ebeat;
-            cb->anim_count = 1;
-            cb->anim_cursor = 0;
-            combat_activate_anim_beat(cb, ws, 0);
-            int sfx_queued = (cb->pending_sfx_head != cb->pending_sfx_tail);
-            m6_enemy_ai_ok = (cb->enemies[0].ai_script == 1066 &&
-                              ebeat.vfx_act_id == 7080u &&
-                              ebeat.sfx_count > 0 &&
-                              cb->fx_has_cur_beat &&
-                              cb->fx_cur_beat.vfx_act_id == 7080u &&
-                              sfx_queued) ? 1 : 0;
+            pal_combat_init(cb, ws, game_dir, 2801); /* 664 羅剎鬼婆 -> prop[180]=885 -> 1107/1108/1112 */
+            /* Pick an RNG seed that rolls <=40 on 885 so 1107 (VFX 7080 + SFX 327/18) executes deterministically */
+            int got_7080_sfx = 0;
+            for (uint32_t seed = 1u; seed <= 32u && !got_7080_sfx; seed++) {
+                pal_combat_init(cb, ws, game_dir, 2801);
+                cb->rng_state = seed;
+                PalCombatAnimBeat ebeat = {0};
+                pal_combat_execute_enemy_ai_ex(cb, ws, 0, &ebeat);
+                cb->anim_queue[0] = ebeat;
+                cb->anim_count = 1;
+                cb->anim_cursor = 0;
+                combat_activate_anim_beat(cb, ws, 0);
+                int sfx_queued = (cb->pending_sfx_head != cb->pending_sfx_tail);
+                if (cb->enemies[0].ai_script == 885 &&
+                    ebeat.vfx_act_id == 7080u &&
+                    ebeat.sfx_count > 0 &&
+                    cb->fx_has_cur_beat &&
+                    cb->fx_cur_beat.vfx_act_id == 7080u &&
+                    sfx_queued) {
+                    got_7080_sfx = 1;
+                }
+            }
+            /* Also verify 634 紅食火蟾 (Battle 2114) uses real prop[180]=882 -> 1099/1100/1101 (never wrong 1063!) */
+            pal_party_init_from_db(ws, db, 0);
+            pal_combat_init(cb, ws, game_dir, 2114);
+            int toad_ai_ok = (cb->enemy_count == 2 && cb->enemies[0].ai_script == 882) ? 1 : 0;
+            for (uint32_t seed = 1u; seed <= 16u && toad_ai_ok; seed++) {
+                cb->rng_state = seed;
+                PalCombatExecSummary tsum = {0};
+                combat_exec_fight_script(cb, ws, cb->enemies[0].ai_script, PAL_DB_KIND_FIGHT, 0, 0, 1, 0, 0, &tsum, 0);
+                if (tsum.executed_script_id != 1099 &&
+                    tsum.executed_script_id != 1100 &&
+                    tsum.executed_script_id != 1101) {
+                    toad_ai_ok = 0;
+                }
+                ws->party_members[0].cur_hp = ws->party_members[0].eff_max_hp;
+            }
+            m6_enemy_ai_ok = (got_7080_sfx && toad_ai_ok) ? 1 : 0;
         }
 
         /* 10) Story Triggers, Multi-Hero Objects, Field Items, Repel/BGM, & 6405 VFX Ordering */
@@ -19878,7 +19988,9 @@ static void pal_mcp_cb_map_entities(void *ctx, int radius, PalJsonBuf *out) {
             i, (unsigned)a->obj_id, a->act_id, ntx, nty, manhattan,
             (unsigned)a->talk_id, a->npc_flags,
             ((a->npc_flags & 0x20u) != 0u) ? "true" : "false",
-            (unsigned)a->aggro, (dist_sq <= 46 * 46) ? "true" : "false");
+            (unsigned)a->aggro,
+            (dist_sq <= pal_npc_interact_radius_px(c->map, c->party ? &c->party[0] : NULL, a, 46) *
+                        pal_npc_interact_radius_px(c->map, c->party ? &c->party[0] : NULL, a, 46)) ? "true" : "false");
         emitted_npc++;
     }
 
@@ -20193,7 +20305,8 @@ static int pal_mcp_cb_exec(
             }
             int dx = c->map_npcs[npc_idx].px - c->party[0].px;
             int dy = c->map_npcs[npc_idx].py - c->party[0].py;
-            if (dx * dx + dy * dy <= 46 * 46) {
+            int max_r = pal_npc_interact_radius_px(c->map, &c->party[0], &c->map_npcs[npc_idx], 46);
+            if (dx * dx + dy * dy <= max_r * max_r) {
                 *c->interact_target_npc_idx = -1;
                 if (c->interact_target_trig_id) *c->interact_target_trig_id = 0u;
                 *c->astar_count = 0;
@@ -20397,12 +20510,13 @@ static int pal_mcp_cb_exec(
                     if (c->map_npcs[i].active && (int32_t)c->map_npcs[i].obj_id == req->npc_obj_id) {
                         int dx = c->map_npcs[i].px - c->party[0].px;
                         int dy = c->map_npcs[i].py - c->party[0].py;
-                        if (dx * dx + dy * dy <= 56 * 56) nidx = i;
+                        int max_r = pal_npc_interact_radius_px(c->map, &c->party[0], &c->map_npcs[i], 56);
+                        if (dx * dx + dy * dy <= max_r * max_r) nidx = i;
                         break;
                     }
                 }
             } else {
-                nidx = talk_find_interact_npc(&c->party[0], c->map_npcs, npc_cnt);
+                nidx = talk_find_interact_npc(c->map, &c->party[0], c->map_npcs, npc_cnt);
             }
             if (nidx >= 0) {
                 *c->astar_count = 0; *c->astar_cursor = 0; *c->interact_target_npc_idx = -1;
@@ -23115,7 +23229,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             }
                         }
                     } else if ((key == SDLK_SPACE || key == SDLK_RETURN || key == SDLK_E) && !talk_vm.active) {
-                        int nidx = talk_find_interact_npc(&party[0], map_npcs, map_npc_actor_cnt);
+                        int nidx = talk_find_interact_npc(&map, &party[0], map_npcs, map_npc_actor_cnt);
                         if (nidx >= 0) {
                             astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
                             talk_begin_npc_interaction(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, &map_npc_actor_cnt, 128, nidx, &show_dialogue);
@@ -23771,12 +23885,13 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     if (tgt->active && tgt->talk_id > 0u) {
                         int dx = tgt->px - party[0].px;
                         int dy = tgt->py - party[0].py;
+                        int max_r = pal_npc_interact_radius_px(&map, &party[0], tgt, 52);
                         if (dx * dx + dy * dy <= 44 * 44 || astar_cursor >= astar_count) {
                             int hit_idx = interact_target_npc_idx;
                             interact_target_npc_idx = -1;
                             astar_count = 0;
                             astar_cursor = 0;
-                            if (dx * dx + dy * dy <= 52 * 52) {
+                            if (dx * dx + dy * dy <= max_r * max_r) {
                                 talk_begin_npc_interaction(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, &map_npc_actor_cnt, 128, hit_idx, &show_dialogue);
                             }
                         }

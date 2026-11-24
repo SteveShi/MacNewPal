@@ -5,7 +5,7 @@ category: concept
 status: active
 tags: [combat, map, msf3, gfight, swd2k]
 created: "2026-11-23T12:56:39"
-updated: "2026-11-23T15:29:36"
+updated: "2026-11-24T23:54:20"
 ---
 
 <!-- compiled_truth -->
@@ -50,4 +50,10 @@ updated: "2026-11-23T15:29:36"
   kind: decision
   summary: "补充像素触发包围盒、脚本阻挡落点脱困、A* 不可达直停与触发器可达性 BFS 规则"
   source: Sources/Engine/PalEngineCore.c / commit e07457d
+  affects: [combat-and-map-engine-fidelity]
+
+- time: 2026-11-24T23:54:20
+  kind: decision
+  summary: "沉淀第四回实机战斗数值机制：腾云符6回合时效、忘魂花迷魂香控制链、未中毒服用毒龙胆当场毙命规则"
+  source: Sources/Engine/PalEngineCore.c / Save/7.sav
   affects: [combat-and-map-engine-fidelity]
