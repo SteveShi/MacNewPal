@@ -11,6 +11,7 @@ __pycache__/
 *.log
 
 # Xcode / Build outputs
+/.build
 build/
 DerivedData/
 *.xcodeproj/
@@ -45,3 +46,4 @@ samples/
 *.asi
 *.dll
 *.exe
+
