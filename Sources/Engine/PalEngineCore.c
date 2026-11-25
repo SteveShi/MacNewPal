@@ -5228,6 +5228,9 @@ typedef struct {
     int32_t luck;          /* prop[53] */
     int32_t res[6];        /* props 59,65,71,77,83,89 */
     int32_t monster_mag;   /* prop[95] */
+    int32_t flee_hp_pct;   /* prop[101]: low-HP flee threshold % (0x4b2543) */
+    int32_t rage_rate;     /* prop[107]: per-turn rage trigger % (0x4b2543) */
+    int32_t spirit_val;    /* prop[125]: 靈葫值 absorbed by 靈葫咒 (0x4c7cd2) */
     int32_t ai_script;     /* prop[180] */
     int32_t act_id;        /* prop[182] */
     int32_t exp_reward;    /* prop[190] */
@@ -5273,6 +5276,39 @@ typedef struct {
 } PalGlobalNpcEntry;
 
 #define PAL_MAX_DUNGEON_EXITS 64
+#define PAL_MAX_ALCHEMY_ITEMS 96
+#define PAL_MAX_ALCHEMY_EGGS  24
+#define PAL_MAX_ALCHEMY_PAIRS 1300
+#define PAL_MAX_GOURD_RECIPES 96
+
+typedef struct {
+    int32_t cat;
+    int32_t item_id;
+    int32_t lv;
+    int32_t bonus;
+} PalAlchemyItemEntry;
+
+typedef struct {
+    int32_t valid;
+    int32_t res_cat;
+    int32_t delta_lv;
+} PalAlchemyMatrixCell;
+
+typedef struct {
+    int32_t egg_id;
+    int32_t prod_id;
+} PalAlchemyEggEntry;
+
+typedef struct {
+    int32_t prod_id;
+    int32_t item_a;
+    int32_t item_b;
+} PalAlchemyPairRecipe;
+
+typedef struct {
+    int32_t item_id;
+    int32_t spirit_cost;
+} PalGourdRecipeEntry;
 
 typedef struct {
     uint16_t exit_map_id;
@@ -5302,6 +5338,15 @@ typedef struct {
     int32_t global_npc_count;
     PalDungeonExitGroup dungeon_exits[PAL_MAX_DUNGEON_EXITS];
     int32_t dungeon_exit_count;
+    PalAlchemyItemEntry alchemy_items[PAL_MAX_ALCHEMY_ITEMS];
+    int32_t alchemy_item_count;
+    PalAlchemyMatrixCell alchemy_matrix[11][11];
+    PalAlchemyEggEntry alchemy_eggs[PAL_MAX_ALCHEMY_EGGS];
+    int32_t alchemy_egg_count;
+    PalAlchemyPairRecipe alchemy_pairs[PAL_MAX_ALCHEMY_PAIRS];
+    int32_t alchemy_pair_count;
+    PalGourdRecipeEntry gourd_recipes[PAL_MAX_GOURD_RECIPES];
+    int32_t gourd_recipe_count;
     char bgm_tracks[64][48];
     int32_t bgm_track_count;
     uint8_t *path_banks[10];
@@ -5397,6 +5442,7 @@ typedef struct {
     int32_t shake_ticks;
     int32_t auto_trig_recheck;
     int32_t jiushen_uses_used;                    /* 酒神 (6253, prop[6]=9) cumulative casts used */
+    int32_t spirit_value;                         /* 紫金葫蘆靈葫值 (Palgame.exe DAT_005ab014) */
 } PalTalkWorldState;
 
 static int pal_item_equip_slot(int32_t item_id) {
@@ -5614,6 +5660,9 @@ static void pal_db_apply_entity_prop(int kind, void *rec, int32_t pid, int32_t v
             case 83:  m->res[4] = val; break;
             case 89:  m->res[5] = val; break;
             case 95:  m->monster_mag = val; break;
+            case 101: m->flee_hp_pct = val; break;
+            case 107: m->rage_rate = val; break;
+            case 125: m->spirit_val = val; break;
             case 180: m->ai_script = val; break;
             case 182: m->act_id = val; break;
             case 190: m->exp_reward = val; break;
@@ -5663,6 +5712,13 @@ static int pal_db_load_file(const char *game_dir, const char *filename, int kind
     memset(d_exit_vars, 0, sizeof(d_exit_vars));
     memset(d_exit_seen, 0, sizeof(d_exit_seen));
     int d_exit_any = 0;
+    int32_t (*alch_pair_tmp)[3] = NULL;
+    uint8_t *alch_pair_mask = NULL;
+    int alch_pair_any = 0;
+    if (kind == PAL_DB_KIND_ITEM) {
+        alch_pair_tmp = (int32_t (*)[3])calloc(PAL_MAX_ALCHEMY_PAIRS, sizeof(int32_t[3]));
+        alch_pair_mask = (uint8_t *)calloc(PAL_MAX_ALCHEMY_PAIRS, sizeof(uint8_t));
+    }
 
     while (pos + 4 <= plen) {
         uint32_t tag = rd_u32(p + pos);
@@ -5687,6 +5743,28 @@ static int pal_db_load_file(const char *game_dir, const char *filename, int kind
                 memset(d_exit_vars, 0, sizeof(d_exit_vars));
                 memset(d_exit_seen, 0, sizeof(d_exit_seen));
                 d_exit_any = 0;
+            }
+            if (rec_kind == 1 && cur_scr.id == 77777 && alch_pair_any && alch_pair_tmp && alch_pair_mask) {
+                for (int pi = 0; pi < PAL_MAX_ALCHEMY_PAIRS && db->alchemy_pair_count < PAL_MAX_ALCHEMY_PAIRS; pi++) {
+                    if (alch_pair_mask[pi] == 0x7u && alch_pair_tmp[pi][0] > 0) {
+                        PalAlchemyPairRecipe pr;
+                        pr.prod_id = alch_pair_tmp[pi][0];
+                        pr.item_a  = alch_pair_tmp[pi][1];
+                        pr.item_b  = alch_pair_tmp[pi][2];
+                        db->alchemy_pairs[db->alchemy_pair_count++] = pr;
+                    }
+                }
+                /* Sort gourd_recipes ascending by spirit_cost (matching Palgame.exe 0x4ab25f sort) */
+                for (int i = 0; i < db->gourd_recipe_count; i++) {
+                    for (int j = i + 1; j < db->gourd_recipe_count; j++) {
+                        if (db->gourd_recipes[j].spirit_cost < db->gourd_recipes[i].spirit_cost) {
+                            PalGourdRecipeEntry tmp = db->gourd_recipes[i];
+                            db->gourd_recipes[i] = db->gourd_recipes[j];
+                            db->gourd_recipes[j] = tmp;
+                        }
+                    }
+                }
+                alch_pair_any = 0;
             }
             if (rec_kind == 0 && ent_id != 0) {
                 if (kind == PAL_DB_KIND_HERO && db->hero_count < PAL_DB_MAX_HEROES) {
@@ -5809,6 +5887,43 @@ static int pal_db_load_file(const char *game_dir, const char *filename, int kind
                 d_exit_vars[grp][fld] = (uint16_t)scalars[2];
                 d_exit_seen[grp] = 1u;
                 d_exit_any = 1;
+            } else if (rec_kind == 1 && cur_scr.id == 77777 && tag == 0x7F30201Eu &&
+                       n_sc >= 3 && scalars[0] == 0 && scalars[1] >= 7000 && alch_pair_tmp && alch_pair_mask) {
+                /* Authentic 煉蠱皿 special pair recipes (Palgame.exe 0x4ab5fb: var 7000+3k=prod, +1=A, +2=B) */
+                int off = scalars[1] - 7000;
+                int pi = off / 3;
+                int pf = off % 3;
+                if (pi >= 0 && pi < PAL_MAX_ALCHEMY_PAIRS) {
+                    alch_pair_tmp[pi][pf] = scalars[2];
+                    alch_pair_mask[pi] |= (uint8_t)(1u << pf);
+                    alch_pair_any = 1;
+                }
+            } else if (rec_kind == 1 && cur_scr.id == 77777 && tag == 0x7F40204Du && n_sc >= 4) {
+                /* Authentic 煉蠱皿 material catalog: [cat, item_id, lv, bonus] */
+                if (db->alchemy_item_count < PAL_MAX_ALCHEMY_ITEMS) {
+                    PalAlchemyItemEntry ae = { scalars[0], scalars[1], scalars[2], scalars[3] };
+                    db->alchemy_items[db->alchemy_item_count++] = ae;
+                }
+            } else if (rec_kind == 1 && cur_scr.id == 77777 && tag == 0x7F40204Eu && n_sc >= 4) {
+                /* Authentic 煉蠱皿 11x11 category synthesis matrix: [catA, catB, res_cat, delta_lv] */
+                int ca = scalars[0], cb_i = scalars[1];
+                if (ca >= 0 && ca < 11 && cb_i >= 0 && cb_i < 11) {
+                    db->alchemy_matrix[ca][cb_i].valid = 1;
+                    db->alchemy_matrix[ca][cb_i].res_cat = scalars[2];
+                    db->alchemy_matrix[ca][cb_i].delta_lv = scalars[3];
+                }
+            } else if (rec_kind == 1 && cur_scr.id == 77777 && tag == 0x7F20204Fu && n_sc >= 2) {
+                /* Authentic 煉蠱皿 egg hatch table: [egg_id, prod_id] */
+                if (db->alchemy_egg_count < PAL_MAX_ALCHEMY_EGGS) {
+                    PalAlchemyEggEntry ee = { scalars[0], scalars[1] };
+                    db->alchemy_eggs[db->alchemy_egg_count++] = ee;
+                }
+            } else if (rec_kind == 1 && cur_scr.id == 77777 && tag == 0x7F202053u && n_sc >= 2) {
+                /* Authentic 紫金葫蘆 elixir table: [item_id, spirit_cost] */
+                if (db->gourd_recipe_count < PAL_MAX_GOURD_RECIPES) {
+                    PalGourdRecipeEntry ge = { scalars[0], scalars[1] };
+                    db->gourd_recipes[db->gourd_recipe_count++] = ge;
+                }
             } else if (rec_kind == 1 && cur_scr.op_count < PAL_SCRIPT_MAX_OPS) {
                 PalScript7fOp *op = &cur_scr.ops[cur_scr.op_count++];
                 op->tag = tag;
@@ -5817,6 +5932,8 @@ static int pal_db_load_file(const char *game_dir, const char *filename, int kind
             }
         }
     }
+    free(alch_pair_tmp);
+    free(alch_pair_mask);
     free(buf);
     return 0;
 }
@@ -6375,73 +6492,167 @@ static int pal_item_is_reusable(const PalItemRecord *it) {
     return (it->target_flag == 65535) ? 1 : 0;
 }
 
+/* Authentic Palgame.exe 0x4ab48d: material whitelist for 煉蠱皿 */
+static int pal_alchemy_is_material(int32_t id) {
+    if (id == 4206 || id == 4207 || id == 4404 || id == 4407) return 0;
+    if (id >= 4401 && id <= 4409) return 1;
+    if (id >= 4351 && id <= 4359) return 1;
+    if (id >= 4301 && id <= 4307) return 1;
+    if (id >= 4251 && id <= 4254) return 1;
+    if (id >= 4201 && id <= 4211) return 1;
+    if (id >= 3951 && id <= 3959) return 1;
+    if (id >= 3901 && id <= 3904) return 1;
+    if (id >= 3601 && id <= 3626) return 1;
+    return 0;
+}
+
+/* Authentic Palgame.exe 0x4ab556 / 0x4ab59d: egg hatch lookup (0x7F20204F table) */
+static int32_t pal_alchemy_resolve_egg(const PalGameDatabase *db, int32_t egg_id) {
+    if (!db) return -1;
+    for (int32_t i = 0; i < db->alchemy_egg_count; i++) {
+        if (db->alchemy_eggs[i].egg_id == egg_id) return db->alchemy_eggs[i].prod_id;
+    }
+    return -1;
+}
+
+/* Authentic Palgame.exe 0x4ab580: exact 煉蠱皿 pair synthesis */
+static int32_t pal_alchemy_resolve_pair(const PalGameDatabase *db, int32_t id_a, int32_t id_b) {
+    if (!db) return -1;
+    int32_t egg_prod = pal_alchemy_resolve_egg(db, id_a);
+    if (egg_prod > 0) return egg_prod;
+    if (!pal_alchemy_is_material(id_a) || !pal_alchemy_is_material(id_b)) return -1;
+
+    /* 1. Special pair table (vars 7000+3k = prod, +1 = itemA, +2 = itemB) */
+    for (int32_t i = 0; i < db->alchemy_pair_count; i++) {
+        if (db->alchemy_pairs[i].item_a == id_a && db->alchemy_pairs[i].item_b == id_b) {
+            return db->alchemy_pairs[i].prod_id;
+        }
+    }
+
+    /* 2. General 11x11 category x level matrix (0x7F40204D + 0x7F40204E) */
+    const PalAlchemyItemEntry *ea = NULL, *eb = NULL;
+    for (int32_t i = 0; i < db->alchemy_item_count; i++) {
+        if (db->alchemy_items[i].item_id == id_a) ea = &db->alchemy_items[i];
+        if (db->alchemy_items[i].item_id == id_b) eb = &db->alchemy_items[i];
+    }
+    if (!ea || !eb) return -1;
+    if (ea->cat < 0 || ea->cat >= 11 || eb->cat < 0 || eb->cat >= 11) return -1;
+    const PalAlchemyMatrixCell *cell = &db->alchemy_matrix[ea->cat][eb->cat];
+    if (!cell->valid) return -1;
+    if (cell->res_cat > 10) return cell->res_cat; /* direct item ID (e.g. 3601 蠱) */
+
+    int32_t delta = cell->delta_lv;
+    if (delta == 1000 || delta == -1000) {
+        delta = (ea->lv > eb->lv) ? eb->bonus : ea->bonus;
+    }
+    int32_t tgt_lv = ((ea->lv > eb->lv) ? ea->lv : eb->lv) + delta;
+    if (tgt_lv < 0) tgt_lv = 1;
+
+    /* Exact match on (res_cat, tgt_lv), then step down tgt_lv-- until >= 0 */
+    for (int32_t lv = tgt_lv; lv >= 0; lv--) {
+        for (int32_t i = 0; i < db->alchemy_item_count; i++) {
+            if (db->alchemy_items[i].cat == cell->res_cat && db->alchemy_items[i].lv == lv) {
+                return db->alchemy_items[i].item_id;
+            }
+        }
+    }
+    /* Fallback: lowest-level item in res_cat (matching 0x4ab86a sort + find first) */
+    int32_t best_id = -1, best_lv = 999999;
+    for (int32_t i = 0; i < db->alchemy_item_count; i++) {
+        if (db->alchemy_items[i].cat == cell->res_cat && db->alchemy_items[i].lv < best_lv) {
+            best_lv = db->alchemy_items[i].lv;
+            best_id = db->alchemy_items[i].item_id;
+        }
+    }
+    return best_id;
+}
+
+/* Authentic Palgame.exe 0x4ab242: exact 紫金葫蘆 elixir synthesis from spirit_value */
+static int32_t pal_gourd_refine_elixir(const PalGameDatabase *db, int32_t *io_spirit_val) {
+    if (!db || !io_spirit_val || *io_spirit_val <= 0) return -1;
+    int32_t best_id = -1;
+    int32_t best_cost = 0;
+    for (int32_t i = 0; i < db->gourd_recipe_count; i++) {
+        if (db->gourd_recipes[i].spirit_cost <= *io_spirit_val) {
+            best_id = db->gourd_recipes[i].item_id;
+            best_cost = db->gourd_recipes[i].spirit_cost;
+        } else {
+            break; /* gourd_recipes is sorted ascending by spirit_cost */
+        }
+    }
+    if (best_id > 0) {
+        *io_spirit_val -= best_cost;
+        if (*io_spirit_val < 0) *io_spirit_val = 0;
+    }
+    return best_id;
+}
+
 static int pal_item_use_alchemy(PalTalkWorldState *ws, uint16_t item_id, char *out_msg, size_t msg_cap) {
     if (!ws || !ws->db) return -1;
     if (item_id == 3906u) {
-        /* 煉蠱皿：煉化蠱卵與蟲蠱 */
-        int egg_total = 0;
-        int first_egg_slot = -1;
-        int second_egg_slot = -1;
+        /* 煉蠱皿 (Palgame.exe 0x4ab580):
+         * 1) If inventory has any 蠱卵 (3651..3663), hatch 1 egg into its exact 0x7F20204F product.
+         * 2) Otherwise combine 2 valid alchemy materials (preferring 蟲蠱 3601..3626) via 0x4ab580 tables. */
         for (int i = 0; i < ws->inventory_count; i++) {
             uint16_t id = ws->inventory_ids[i];
-            if ((id >= 3651u && id <= 3663u) || id == 3601u) {
-                if (first_egg_slot < 0 && ws->inventory_qty[i] > 0) {
-                    first_egg_slot = i;
-                } else if (second_egg_slot < 0 && ws->inventory_qty[i] > 0) {
-                    second_egg_slot = i;
+            if (ws->inventory_qty[i] > 0) {
+                int32_t egg_prod = pal_alchemy_resolve_egg(ws->db, (int32_t)id);
+                if (egg_prod > 0) {
+                    pal_world_add_item(ws, id, -1);
+                    pal_world_add_item(ws, (uint16_t)egg_prod, 1);
+                    const PalItemRecord *it_prod = pal_db_find_item(ws->db, egg_prod);
+                    const char *pname = it_prod ? it_prod->name_utf8 : "靈蠱";
+                    if (out_msg) snprintf(out_msg, msg_cap, "「煉蠱皿」靈光流轉，蠱卵成功煉化出「%s」！", pname);
+                    return 0;
                 }
-                egg_total += ws->inventory_qty[i];
             }
         }
-        if (egg_total < 2) {
-            if (out_msg) snprintf(out_msg, msg_cap, "沒有可煉的蠱物。（煉蠱皿需至少兩只蟲蠱或蠱卵）");
+        /* Pick two material items (first prefer bugs 3601..3626, then any valid material) */
+        uint16_t mat_a = 0, mat_b = 0;
+        for (int pass = 0; pass < 2 && (mat_a == 0 || mat_b == 0); pass++) {
+            for (int i = 0; i < ws->inventory_count && (mat_a == 0 || mat_b == 0); i++) {
+                uint16_t id = ws->inventory_ids[i];
+                int32_t qty = ws->inventory_qty[i];
+                if (qty <= 0 || !pal_alchemy_is_material((int32_t)id)) continue;
+                int is_bug = (id >= 3601u && id <= 3626u);
+                if (pass == 0 && !is_bug) continue;
+                if (mat_a == 0) {
+                    mat_a = id;
+                    if (qty >= 2) { mat_b = id; break; }
+                } else if (mat_b == 0 && (id != mat_a || qty >= 2)) {
+                    mat_b = id;
+                    break;
+                }
+            }
+        }
+        if (mat_a == 0 || mat_b == 0) {
+            if (out_msg) snprintf(out_msg, msg_cap, "沒有可煉的蠱物");
             return 0;
         }
-
-        /* 消耗兩枚蠱卵/基礎蠱 */
-        if (first_egg_slot >= 0) {
-            uint16_t id1 = ws->inventory_ids[first_egg_slot];
-            pal_world_add_item(ws, id1, -1);
+        int32_t prod_id = pal_alchemy_resolve_pair(ws->db, (int32_t)mat_a, (int32_t)mat_b);
+        if (prod_id <= 0) {
+            if (out_msg) snprintf(out_msg, msg_cap, "無法煉製！");
+            return 0;
         }
-        for (int i = 0; i < ws->inventory_count; i++) {
-            uint16_t id = ws->inventory_ids[i];
-            if (((id >= 3651u && id <= 3663u) || id == 3601u) && ws->inventory_qty[i] > 0) {
-                pal_world_add_item(ws, id, -1);
-                break;
-            }
-        }
-
-        /* 經典煉蠱產出：40% 冰蠶蠱(3605) / 40% 火蠶蠱(3606) / 15% 食妖蟲(3609) / 5% 隱蠱(3626) */
-        static uint32_t s_alchemy_rng = 0x82A10915u;
-        s_alchemy_rng = s_alchemy_rng * 1664525u + 1013904223u;
-        uint32_t r = (s_alchemy_rng >> 16) % 100u;
-        uint16_t prod_id = 3605u;
-        if (r < 40) prod_id = 3605u;
-        else if (r < 80) prod_id = 3606u;
-        else if (r < 95) prod_id = 3609u;
-        else prod_id = 3626u;
-
-        pal_world_add_item(ws, prod_id, 1);
-        const PalItemRecord *it_prod = pal_db_find_item(ws->db, (int32_t)prod_id);
+        pal_world_add_item(ws, mat_a, -1);
+        pal_world_add_item(ws, mat_b, -1);
+        pal_world_add_item(ws, (uint16_t)prod_id, 1);
+        const PalItemRecord *it_prod = pal_db_find_item(ws->db, prod_id);
         const char *pname = it_prod ? it_prod->name_utf8 : "靈蠱";
-        if (out_msg) {
-            snprintf(out_msg, msg_cap, "「煉蠱皿」靈光流轉，成功煉化出「%s」！", pname);
-        }
+        if (out_msg) snprintf(out_msg, msg_cap, "「煉蠱皿」靈光流轉，成功煉化出「%s」！", pname);
         return 0;
     } else if (item_id == 3905u) {
-        /* 紫金葫蘆：收妖煉丹 */
-        if (!pal_test_runtime_god_mode()) {
-            if (out_msg) snprintf(out_msg, msg_cap, "靈葫值不夠！（需在戰鬥中配合靈葫咒吸收怪物靈氣）");
+        /* 紫金葫蘆 (Palgame.exe 0x4ab242): refine highest elixir affordable by ws->spirit_value */
+        int32_t prod_id = pal_gourd_refine_elixir(ws->db, &ws->spirit_value);
+        if (prod_id <= 0) {
+            if (out_msg) snprintf(out_msg, msg_cap, "靈葫值不夠！（目前靈葫值：%d，需在戰鬥中以靈葫咒收妖累積）", ws->spirit_value);
             return 0;
         }
-        static uint32_t s_gourd_rng = 0x317F4028u;
-        s_gourd_rng = s_gourd_rng * 1664525u + 1013904223u;
-        uint16_t prod_id = ((s_gourd_rng >> 16) % 2 == 0) ? 4405u : 4306u;
-        pal_world_add_item(ws, prod_id, 1);
-        const PalItemRecord *it_prod = pal_db_find_item(ws->db, (int32_t)prod_id);
+        pal_world_add_item(ws, (uint16_t)prod_id, 1);
+        const PalItemRecord *it_prod = pal_db_find_item(ws->db, prod_id);
         const char *pname = it_prod ? it_prod->name_utf8 : "仙丹";
         if (out_msg) {
-            snprintf(out_msg, msg_cap, "「紫金葫蘆」紫霞升騰，成功煉製出「%s」！", pname);
+            snprintf(out_msg, msg_cap, "「紫金葫蘆」紫霞升騰，成功煉製出「%s」！（剩餘靈葫值：%d）", pname, ws->spirit_value);
         }
         return 0;
     }
@@ -6674,16 +6885,50 @@ static int pal_party_cast_field_magic(
     return 0;
 }
 
-static int32_t pal_level_rand_jitter(uint32_t *io_rng, int32_t base_delta, int32_t min_val, int32_t max_val) {
-    if (!io_rng || base_delta <= 0) return base_delta;
+/* Authentic Palgame.exe 0x4a4d5a: exact level-up stat randomization & per-stat [min, max] clamps.
+ * When io_rng == NULL (deterministic self-tests), returns base_delta unchanged. */
+static int32_t pal_level_apply_original_rng(
+    uint32_t *io_rng, int32_t base_delta, int stat_idx, int32_t hero_group, int32_t target_lv
+) {
+    if (!io_rng) return base_delta;
     uint32_t x = *io_rng ? *io_rng : 0x5A172026u;
     x = x * 1664525u + 1013904223u;
     *io_rng = x;
-    int32_t jitter = (int32_t)((x >> 16) % 3u) - 1; /* -1, 0, +1 */
-    int32_t out = base_delta + jitter;
-    if (out < min_val) out = min_val;
-    if (out > max_val) out = max_val;
-    return out;
+    uint32_t rv = (x >> 16);
+
+    int32_t val = base_delta;
+    if (stat_idx < 2) {
+        /* HP / MP: f = round_half_up(target_lv / 12.0f); r = rand() % (int)(20 + f + 1);
+         * d = round_half_up((r - 20.0f) / 10.0f); val = (int)(base_delta + d); */
+        float f = (float)target_lv / 12.0f;
+        int fi = (int)f;
+        if (f - (float)fi >= 0.5f) f = (float)(fi + 1);
+        int range = (int)(20.0f + f + 1.0f);
+        if (range < 1) range = 1;
+        int r = (int)(rv % (uint32_t)range);
+        float d = ((float)r - 20.0f) / 10.0f;
+        int di = (int)d;
+        if (d - (float)di >= 0.5f) d = (float)(di + 1);
+        val = (int)((float)base_delta + d);
+    } else {
+        /* ATK/MAG/DEF/SPD/LUCK: base_delta + (rand() % 3) - 1 */
+        val = base_delta + (int32_t)(rv % 3u) - 1;
+    }
+
+    int32_t min_v = 10, max_v = 15;
+    switch (stat_idx) {
+        case 0: min_v = 10; max_v = 15; break; /* HP  (0x10) */
+        case 1: min_v = 7;  max_v = 17; break; /* MP  (0x16) */
+        case 2: min_v = 4;  max_v = (hero_group < 1002) ? 6 : 5; break; /* ATK (0x1D) */
+        case 3: min_v = (hero_group < 1002) ? 3 : 4; max_v = 3; break;  /* MAG (0x23): clamp >max then <min */
+        case 4: min_v = 2;  max_v = 3;  break; /* DEF (0x29) */
+        case 5: min_v = 2;  max_v = 3;  break; /* SPD (0x2F) */
+        case 6: min_v = 10; max_v = 15; break; /* LUCK(0x35) */
+        default: break;
+    }
+    if (val > max_v) val = max_v;
+    if (val < min_v) val = min_v;
+    return val;
 }
 
 static int pal_party_level_up_slot_rng(const PalGameDatabase *db, PalPartyMemberState *m, uint32_t *io_rng) {
@@ -6715,13 +6960,13 @@ static int pal_party_level_up_slot_rng(const PalGameDatabase *db, PalPartyMember
         m->next_exp = lt->next_exp;
     }
 
-    m->base_max_hp += pal_level_rand_jitter(io_rng, lt->d_max_hp, 1, 99);
-    m->base_max_mp += pal_level_rand_jitter(io_rng, lt->d_max_mp, 0, 99);
-    m->base_atk    += pal_level_rand_jitter(io_rng, lt->d_atk, 1, 20);
-    m->base_mag    += pal_level_rand_jitter(io_rng, lt->d_mag, 1, 20);
-    m->base_def    += pal_level_rand_jitter(io_rng, lt->d_def, 1, 20);
-    m->base_spd    += pal_level_rand_jitter(io_rng, lt->d_spd, 1, 20);
-    m->base_luck   += pal_level_rand_jitter(io_rng, lt->d_luck, 1, 20);
+    m->base_max_hp += pal_level_apply_original_rng(io_rng, lt->d_max_hp, 0, base_id, target_lv);
+    m->base_max_mp += pal_level_apply_original_rng(io_rng, lt->d_max_mp, 1, base_id, target_lv);
+    m->base_atk    += pal_level_apply_original_rng(io_rng, lt->d_atk,    2, base_id, target_lv);
+    m->base_mag    += pal_level_apply_original_rng(io_rng, lt->d_mag,    3, base_id, target_lv);
+    m->base_def    += pal_level_apply_original_rng(io_rng, lt->d_def,    4, base_id, target_lv);
+    m->base_spd    += pal_level_apply_original_rng(io_rng, lt->d_spd,    5, base_id, target_lv);
+    m->base_luck   += pal_level_apply_original_rng(io_rng, lt->d_luck,   6, base_id, target_lv);
     if (m->base_max_hp > 999) m->base_max_hp = 999;
     if (m->base_max_mp > 999) m->base_max_mp = 999;
 
@@ -11479,6 +11724,9 @@ typedef struct {
     int32_t cur_hp, max_hp, display_hp;
     int32_t atk, mag, def, spd, luck;
     int32_t monster_mag;
+    int32_t flee_hp_pct;  /* prop[101]: low-HP flee threshold % */
+    int32_t rage_rate;    /* prop[107]: per-turn rage % */
+    int32_t spirit_val;   /* prop[125]: 靈葫值 */
     int32_t res[6];
     int32_t ai_script;
     int32_t exp_reward;
@@ -11538,6 +11786,7 @@ typedef struct {
     PalCombatActorMods hero_mods[4];
     uint8_t ally_down_triggered[4];
     int flee_blocked;
+    int32_t auto_end_turn; /* from gitem end-check script 0x7F302018 [3, turn, 1645] (e.g. 林天南 7-turn duel) */
     PalCombatTimedScript timed_scripts[PAL_COMBAT_MAX_TIMED_SCRIPTS];
     int hero_action_type[4];  /* 0=攻擊, 1=仙術, 2=物品, 3=防禦, 4=逃跑 */
     uint16_t hero_action_id[4];
@@ -11697,6 +11946,9 @@ typedef struct {
     int32_t cur_mp, max_mp;
     int32_t atk, mag, def, spd, luck;
     int32_t monster_mag;
+    int32_t flee_hp_pct;  /* prop[101]: low-HP flee threshold % */
+    int32_t rage_rate;    /* prop[107]: per-turn rage % */
+    int32_t spirit_val;   /* prop[125]: 靈葫值 */
     int32_t res[6];
     uint32_t status_bits[PAL_CSTAT_WORDS];
     int has_armor_0c02; /* Item 3074 (0xC02) */
@@ -12852,6 +13104,8 @@ static int32_t pal_resolve_battle_bg_fr(const char *game_dir, int32_t bg_act_id)
     return 15005; /* fallback: all_map2.tsw slot 5 (15001_羅剎洞內一) */
 }
 
+static int32_t combat_resolve_auto_end_turn(const PalGameDatabase *db, int32_t end_script_id);
+
 static int pal_combat_init_ex(
     PalCombatState *cb, const PalTalkWorldState *ws, const char *game_dir,
     int32_t formation_id, int32_t map_id, int32_t player_tx, int32_t player_ty
@@ -12880,12 +13134,24 @@ static int pal_combat_init_ex(
     cb->bg_fr_id = pal_resolve_battle_bg_fr(game_dir, cb->bg_act_id);
     snprintf(cb->bgm_name, sizeof(cb->bgm_name), "%s", sc->bgm_name[0] ? sc->bgm_name : "F005.mp3");
 
-    /* Default SWD2k combat coordinates (left enemies 4..9, right party 0..3) */
-    static const int kDefX[10] = {490, 540, 445, 575, 130, 210, 145, 225, 295, 175};
-    static const int kDefY[10] = {330, 275, 375, 220, 220, 178, 285, 240, 198, 330};
-    for (int i = 0; i < 10; i++) {
-        cb->slot_x[i] = kDefX[i];
-        cb->slot_y[i] = kDefY[i];
+    /* Authentic Palgame.exe 0x4c3a75 / 0x4c3ad1 default 800x600 world coords projected
+     * through centered 640x480 viewport camera (0x4a282c: cam_x = (800-640)/2 = 80, cam_y = (600-480)/2 = 60). */
+    const int kBattleCamX = 80;
+    const int kBattleCamY = 60;
+    static const int kDefHero3X[4] = {585, 643, 482, 629};
+    static const int kDefHero3Y[4] = {384, 310, 428, 368};
+    static const int kDefHero4X[4] = {544, 643, 433, 629};
+    static const int kDefHero4Y[4] = {411, 285, 430, 368};
+    static const int kDefMonX[6]   = {140, 240, 167, 268, 366, 255};
+    static const int kDefMonY[6]   = {248, 190, 316, 268, 216, 355};
+    int use_4p = (ws->party_member_count >= 4) ? 1 : 0;
+    for (int i = 0; i < 4; i++) {
+        cb->slot_x[i] = (use_4p ? kDefHero4X[i] : kDefHero3X[i]) - kBattleCamX;
+        cb->slot_y[i] = (use_4p ? kDefHero4Y[i] : kDefHero3Y[i]) - kBattleCamY;
+    }
+    for (int i = 0; i < 6; i++) {
+        cb->slot_x[4 + i] = kDefMonX[i] - kBattleCamX;
+        cb->slot_y[4 + i] = kDefMonY[i] - kBattleCamY;
     }
 
     for (int32_t i = 0; i < sc->op_count; i++) {
@@ -12897,12 +13163,8 @@ static int pal_combat_init_ex(
         } else if (op->tag == 0x7F302014u && op->arg_count >= 3) {
             int idx = op->args[0];
             if (idx >= 0 && idx < 10) {
-                int sx = op->args[1];
-                int sy = op->args[2];
-                if (idx <= 3 && sx > 560) sx = 520 + (sx - 560) / 3;
-                if (sy > 390) sy = 385;
-                cb->slot_x[idx] = sx;
-                cb->slot_y[idx] = sy;
+                cb->slot_x[idx] = op->args[1] - kBattleCamX;
+                cb->slot_y[idx] = op->args[2] - kBattleCamY;
             }
         } else if (op->tag == 0x7FF02005u && op->arg_count >= 2 && op->args[0] >= 10) {
             int32_t inst_id = op->args[0];
@@ -12931,6 +13193,9 @@ static int pal_combat_init_ex(
                 eu->luck = mr->luck;
                 for (int r = 0; r < 6; r++) eu->res[r] = mr->res[r];
                 eu->monster_mag = mr->monster_mag;
+                eu->flee_hp_pct = mr->flee_hp_pct;
+                eu->rage_rate = mr->rage_rate;
+                eu->spirit_val = mr->spirit_val;
                 eu->ai_script = (mr->ai_script > 0 && pal_db_find_script(ws->db, mr->ai_script))
                                     ? mr->ai_script : 0;
                 eu->death_script = mr->act_id;
@@ -12984,6 +13249,7 @@ static int pal_combat_init_ex(
                                 &cb->hero_shadow_vms[p], &cb->hero_shadow_ok[p], NULL);
     }
 
+    cb->auto_end_turn = combat_resolve_auto_end_turn(ws->db, cb->bg_id);
     cb->turn_no = 1;
     cb->phase = COMBAT_PHASE_COMMAND;
     cb->post_anim_phase = COMBAT_PHASE_COMMAND;
@@ -13034,6 +13300,11 @@ typedef struct {
 } PalCombatExecSummary;
 
 /* Returns 1 if script executed 0x7F002002 (RET to caller), 0 if script terminated. */
+static int combat_resolve_hero_evade_and_cover(
+    PalCombatState *cb, const PalTalkWorldState *ws, int attacker_mon_idx,
+    int is_physical, int is_aoe, int *io_hidx, int *out_covered_by
+);
+
 static int combat_exec_fight_script(
     PalCombatState *cb, PalTalkWorldState *ws, int32_t script_id, int32_t prefer_kind,
     int caster_is_hero, int caster_idx, int init_tgt_is_hero, int init_tgt_idx, int allow_revive,
@@ -13319,6 +13590,11 @@ static void combat_resolve_script_target(
     (void)cb;
 }
 
+static int combat_resolve_hero_evade_and_cover(
+    PalCombatState *cb, const PalTalkWorldState *ws, int attacker_mon_idx,
+    int is_physical, int is_aoe, int *io_hidx, int *out_covered_by
+);
+
 static int combat_exec_fight_script(
     PalCombatState *cb, PalTalkWorldState *ws, int32_t script_id, int32_t prefer_kind,
     int caster_is_hero, int caster_idx, int init_tgt_is_hero, int init_tgt_idx, int allow_revive,
@@ -13353,9 +13629,43 @@ static int combat_exec_fight_script(
             int32_t vop = op->args[0];
             int32_t slot = op->args[1];
             int32_t rhs = op->args[2];
-            if (slot >= 0 && slot < 16 && vop == 6 && rhs > 0) {
-                local_vars[slot] = 1 + (int32_t)pal_combat_rand_n(cb, (uint32_t)rhs);
-                local_var_set[slot] = 1;
+            if (slot >= 0 && slot < 16) {
+                if (vop == 6 && rhs > 0) {
+                    local_vars[slot] = 1 + (int32_t)pal_combat_rand_n(cb, (uint32_t)rhs);
+                    local_var_set[slot] = 1;
+                } else if (vop == 4 && rhs != 0) {
+                    /* Integer division: var[slot] /= rhs (used by 靈葫咒 GFight1[561]: max_hp / 4) */
+                    local_vars[slot] /= rhs;
+                    local_var_set[slot] = 1;
+                } else if (vop == 26 || vop == 27) {
+                    /* Read actor max_hp (26) or cur_hp (27) into var[slot] (used by 靈葫咒 GFight1[561]) */
+                    int th = cur_tgt_is_hero, ti = cur_tgt_idx, tao = cur_tgt_aoe;
+                    combat_resolve_script_target(cb, ws, (uint32_t)rhs,
+                                                 caster_is_hero, caster_idx, init_tgt_is_hero, init_tgt_idx,
+                                                 &th, &ti, &tao);
+                    int32_t val = 0;
+                    if (!tao && ti >= 0) {
+                        if (th && ti < ws->party_member_count) {
+                            val = (vop == 26) ? ws->party_members[ti].eff_max_hp : ws->party_members[ti].cur_hp;
+                        } else if (!th && ti < cb->enemy_count) {
+                            val = (vop == 26) ? cb->enemies[ti].max_hp : cb->enemies[ti].cur_hp;
+                        }
+                    }
+                    local_vars[slot] = val;
+                    local_var_set[slot] = 1;
+                }
+            }
+        } else if (op->tag == 0x7F102054u && op->arg_count >= 1) {
+            /* Authentic Palgame.exe 0x4c7cd2 (靈葫咒 capture): absorb target monster's prop[125] into spirit_value */
+            int th = cur_tgt_is_hero, ti = cur_tgt_idx, tao = cur_tgt_aoe;
+            combat_resolve_script_target(cb, ws, (uint32_t)op->args[0],
+                                         caster_is_hero, caster_idx, init_tgt_is_hero, init_tgt_idx,
+                                         &th, &ti, &tao);
+            if (!th && !tao && ti >= 0 && ti < cb->enemy_count && cb->enemies[ti].active) {
+                if (cb->enemies[ti].spirit_val > 0) {
+                    ws->spirit_value += cb->enemies[ti].spirit_val;
+                    cb->enemies[ti].spirit_val = 0;
+                }
             }
         } else if (op->tag == 0x7F002009u) {
             if (summary && has_step_in_phase) {
@@ -13384,6 +13694,10 @@ static int combat_exec_fight_script(
             int32_t cmp = op->args[0];
             int32_t slot = op->args[1];
             int32_t thresh = op->args[2];
+            if ((uint32_t)thresh >= 0x7EFFF000u && (uint32_t)thresh < 0x7EFFF010u) {
+                int32_t vs = (int32_t)((uint32_t)thresh - 0x7EFFF000u);
+                if (vs >= 0 && vs < 16) thresh = local_vars[vs];
+            }
             int cond = 0;
             if (slot == 100) {
                 int32_t v = ws->money;
@@ -13501,9 +13815,20 @@ static int combat_exec_fight_script(
             int32_t lhs = 0;
             if (who == 0x7EFF1000u) {
                 if (caster_is_hero && caster_idx >= 0 && caster_idx < ws->party_member_count) {
-                    lhs = (pid == 17) ? ws->party_members[caster_idx].cur_hp : ws->party_members[caster_idx].cur_mp;
+                    lhs = (pid == 17) ? ws->party_members[caster_idx].cur_hp
+                        : (pid == 16 ? ws->party_members[caster_idx].eff_max_hp : ws->party_members[caster_idx].cur_mp);
                 } else if (!caster_is_hero && caster_idx >= 0 && caster_idx < cb->enemy_count) {
-                    lhs = (pid == 17) ? cb->enemies[caster_idx].cur_hp : cb->enemies[caster_idx].lv;
+                    lhs = (pid == 17) ? cb->enemies[caster_idx].cur_hp
+                        : (pid == 125 ? cb->enemies[caster_idx].spirit_val : cb->enemies[caster_idx].lv);
+                }
+            } else if (who == 0x7EFF1001u) {
+                if (cur_tgt_is_hero && !cur_tgt_aoe && cur_tgt_idx >= 0 && cur_tgt_idx < ws->party_member_count) {
+                    lhs = (pid == 17) ? ws->party_members[cur_tgt_idx].cur_hp
+                        : (pid == 16 ? ws->party_members[cur_tgt_idx].eff_max_hp : ws->party_members[cur_tgt_idx].cur_mp);
+                } else if (!cur_tgt_is_hero && !cur_tgt_aoe && cur_tgt_idx >= 0 && cur_tgt_idx < cb->enemy_count) {
+                    lhs = (pid == 17) ? cb->enemies[cur_tgt_idx].cur_hp
+                        : (pid == 16 ? cb->enemies[cur_tgt_idx].max_hp
+                        : (pid == 125 ? cb->enemies[cur_tgt_idx].spirit_val : cb->enemies[cur_tgt_idx].lv));
                 }
             } else if (who >= 2000u && who <= 2010u) {
                 int pidx = pal_world_find_party_member(ws, (int32_t)who);
@@ -13656,7 +13981,19 @@ static int combat_exec_fight_script(
                     continue;
                 }
                 if (cur_tgt_is_hero) {
-                    PalPartyMemberState *pm = &ws->party_members[k];
+                    int eff_k = k;
+                    int is_phys_mon = (!caster_is_hero && (formula == 51 || formula == 52));
+                    if (!caster_is_hero && !is_mp && delta < 0) {
+                        int cov_by = -1;
+                        if (combat_resolve_hero_evade_and_cover(cb, ws, caster_idx, is_phys_mon, cur_tgt_aoe, &eff_k, &cov_by)) {
+                            delta = 0; /* 0x4b058f physical evade/block */
+                        } else if (cov_by >= 0 && eff_k != k) {
+                            /* 0x4bebaa Li Xiaoyao cover: re-evaluate damage against Li Xiaoyao's defense */
+                            pal_combat_build_hero_view(cb, ws, eff_k, &tv);
+                            delta = pal_combat_eval_hp_mp_delta(cb, &cv, &tv, formula, power, &is_mp);
+                        }
+                    }
+                    PalPartyMemberState *pm = &ws->party_members[eff_k];
                     int32_t old_hp = pm->cur_hp;
                     if (is_mp) {
                         pal_party_apply_hp_mp_delta(pm, 0, delta);
@@ -13664,18 +14001,18 @@ static int combat_exec_fight_script(
                         if (old_hp <= 0 && delta > 0) {
                             pm->cur_hp = delta;
                             if (pm->cur_hp > pm->eff_max_hp) pm->cur_hp = pm->eff_max_hp;
-                            pal_cstat_set(cb->hero_mods[k].status_bits, PAL_CSTAT_BIT_DEAD, 0);
-                            cb->ally_down_triggered[k] = 0;
+                            pal_cstat_set(cb->hero_mods[eff_k].status_bits, PAL_CSTAT_BIT_DEAD, 0);
+                            cb->ally_down_triggered[eff_k] = 0;
                         } else {
                             pal_party_apply_hp_mp_delta(pm, delta, 0);
-                            if (delta < 0) pal_cstat_set(cb->hero_mods[k].status_bits, PAL_CSTAT_BIT_SLEEP, 0);
+                            if (delta < 0) pal_cstat_set(cb->hero_mods[eff_k].status_bits, PAL_CSTAT_BIT_SLEEP, 0);
                             if (old_hp > 0 && pm->cur_hp <= 0) {
-                                pal_cstat_set(cb->hero_mods[k].status_bits, PAL_CSTAT_BIT_DEAD, 1);
-                                if (summary) summary->hero_fell_mask |= (1 << k);
+                                pal_cstat_set(cb->hero_mods[eff_k].status_bits, PAL_CSTAT_BIT_DEAD, 1);
+                                if (summary) summary->hero_fell_mask |= (1 << eff_k);
                             }
                         }
                         int32_t abs_v = (delta < 0) ? -delta : (pm->cur_hp - old_hp);
-                        combat_record_summary_hit(summary, 1, k, abs_v, (delta >= 0) ? 1 : 0, 0);
+                        combat_record_summary_hit(summary, 1, eff_k, abs_v, (delta >= 0) ? 1 : 0, 0);
                     }
                 } else {
                     PalCombatEnemyUnit *eu = &cb->enemies[k];
@@ -14465,6 +14802,55 @@ static void pal_combat_execute_hero_action(
     pal_combat_execute_hero_action_ex(cb, ws, hidx, action_type, action_id, target_idx, NULL);
 }
 
+/* Authentic Palgame.exe 0x4b058f (hero physical evade/block) + 0x4bebaa (Li Xiaoyao ally cover).
+ * Returns 1 if physical attack was evaded (dmg becomes 0); otherwise may redirect *io_hidx to Li Xiaoyao (cover). */
+static int combat_resolve_hero_evade_and_cover(
+    PalCombatState *cb, const PalTalkWorldState *ws, int attacker_mon_idx,
+    int is_physical, int is_aoe, int *io_hidx, int *out_covered_by
+) {
+    if (out_covered_by) *out_covered_by = -1;
+    if (!cb || !ws || !io_hidx) return 0;
+    int hidx = *io_hidx;
+    if (hidx < 0 || hidx >= ws->party_member_count || hidx >= 4) return 0;
+    if (attacker_mon_idx < 0 || attacker_mon_idx >= cb->enemy_count) return 0;
+    const PalPartyMemberState *def = &ws->party_members[hidx];
+    const PalCombatEnemyUnit *atk = &cb->enemies[attacker_mon_idx];
+    if (!def->active || def->cur_hp <= 0) return 0;
+
+    /* 1. Physical evade/block (0x4b058f): when hero is NOT defending (bit 0x44 clear) */
+    if (is_physical && !cb->hero_defending[hidx] &&
+        !pal_cstat_has(cb->hero_mods[hidx].status_bits, PAL_CSTAT_BIT_DEFEND)) {
+        int32_t diff = def->lv - atk->lv;
+        uint32_t rate = (diff > 7) ? 40u : (diff >= 4 ? 20u : (diff >= 1 ? 15u : 10u));
+        if (pal_combat_rand_n(cb, 100u) < rate) {
+            return 1; /* evaded/blocked */
+        }
+    }
+
+    /* 2. Li Xiaoyao (2000 / 2009) ally cover (0x4bebaa): single-target attack on non-Xiaoyao ally */
+    if (!is_aoe && def->hero_id != 2000 && def->hero_id != 2009) {
+        int lxy = pal_world_find_party_member(ws, 2000);
+        if (lxy < 0) lxy = pal_world_find_party_member(ws, 2009);
+        if (lxy >= 0 && lxy < 4 && lxy != hidx) {
+            const PalPartyMemberState *lm = &ws->party_members[lxy];
+            const uint32_t *lbits = cb->hero_mods[lxy].status_bits;
+            int incapacitated = (cb->hero_defending[lxy] ||
+                                 pal_cstat_has(lbits, PAL_CSTAT_BIT_DEFEND) ||
+                                 pal_cstat_has(lbits, PAL_CSTAT_BIT_CONFUSE) ||
+                                 pal_cstat_has(lbits, PAL_CSTAT_BIT_SLEEP) ||
+                                 pal_cstat_has(lbits, PAL_CSTAT_BIT_STUN));
+            if (lm->active && lm->cur_hp > 0 && lm->eff_max_hp > 0 &&
+                lm->cur_hp >= (lm->eff_max_hp / 3) && !incapacitated) {
+                if (pal_combat_rand_n(cb, 100u) < 20u) {
+                    *io_hidx = lxy;
+                    if (out_covered_by) *out_covered_by = lxy;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 static void pal_combat_execute_enemy_ai_ex(
     PalCombatState *cb, PalTalkWorldState *ws, int eidx, PalCombatAnimBeat *out_beat
 ) {
@@ -14485,7 +14871,46 @@ static void pal_combat_execute_enemy_ai_ex(
         }
     }
     if (n_alive == 0) return;
+
+    /* Authentic Palgame.exe 0x4b2543: monster rage (prop[107]) & low-HP flee (prop[101] + 0x4ac90c) */
+    if (eu->rage_rate > 0 && !pal_cstat_has(eu->mods.status_bits, 9)) {
+        if ((int32_t)pal_combat_rand_n(cb, 100u) < eu->rage_rate) {
+            pal_cstat_set(eu->mods.status_bits, 9, 1);
+        }
+    }
+    if (eu->flee_hp_pct > 0 && !cb->flee_blocked && eu->max_hp > 0 &&
+        (eu->cur_hp * 100) / eu->max_hp <= eu->flee_hp_pct) {
+        const PalPartyMemberState *lead = &ws->party_members[alive_heroes[0]];
+        int32_t lv_diff = lead->lv - eu->lv;
+        uint32_t want_rate = (lv_diff > 7) ? 60u : (lv_diff >= 4 ? 30u : (lv_diff >= 1 ? 20u : 10u));
+        if (pal_combat_rand_n(cb, 100u) < want_rate) {
+            int32_t spd_diff = (lead->eff_spd + cb->hero_mods[alive_heroes[0]].spd_mod) - (eu->spd + eu->mods.spd_mod);
+            uint32_t succ_rate = (spd_diff < 0) ? 100u : (spd_diff <= 10 ? 75u : (spd_diff <= 20 ? 50u : (spd_diff <= 30 ? 25u : 0u)));
+            int fled_ok = (pal_combat_rand_n(cb, 100u) < succ_rate) ? 1 : 0;
+            if (fled_ok) {
+                eu->alive = 0;
+                eu->cur_hp = 0;
+                eu->active = 0;
+                eu->death_state = 2;
+                snprintf(cb->log_text, sizeof(cb->log_text), "%s 逃跑了！", eu->name_utf8);
+            } else {
+                snprintf(cb->log_text, sizeof(cb->log_text), "%s 試圖逃跑，但逃跑失敗！", eu->name_utf8);
+            }
+            if (out_beat) {
+                memset(out_beat, 0, sizeof(*out_beat));
+                out_beat->is_hero = 0;
+                out_beat->actor_idx = eidx;
+                out_beat->action_type = 4;
+                snprintf(out_beat->log_msg, sizeof(out_beat->log_msg), "%s", cb->log_text);
+            }
+            return;
+        }
+    }
+
     int hidx = alive_heroes[combat_next_rng(cb) % (uint32_t)n_alive];
+    int orig_hidx = hidx;
+    int covered_by = -1;
+    int evaded = 0;
     PalPartyMemberState *hero = &ws->party_members[hidx];
 
     /* Execute real monster AI router script from gmon.dat prop[180] (lives in gitem/glevel and dispatches to GFight4) */
@@ -14499,17 +14924,22 @@ static void pal_combat_execute_enemy_ai_ex(
         combat_exec_fight_script(cb, ws, ai_sid, PAL_DB_KIND_FIGHT, 0, eidx, 1, hidx, 0, &sum, 0);
     }
     if (sum.tgt_count == 0) {
-        /* Fallback monster physical formula 51 (mode 0x33) */
-        PalCombatUnitView cv, tv;
-        pal_combat_build_enemy_view(cb, eidx, &cv);
-        pal_combat_build_hero_view(cb, ws, hidx, &tv);
-        int is_mp = 0;
-        int32_t delta = pal_combat_eval_hp_mp_delta(cb, &cv, &tv, 51, 0, &is_mp);
-        int32_t dmg = (delta < 0) ? -delta : 0;
-        int32_t old_hp = hero->cur_hp;
-        pal_party_apply_hp_mp_delta(hero, -dmg, 0);
-        if (dmg > 0) pal_cstat_set(cb->hero_mods[hidx].status_bits, PAL_CSTAT_BIT_SLEEP, 0);
-        if (old_hp > 0 && hero->cur_hp <= 0) pal_cstat_set(cb->hero_mods[hidx].status_bits, PAL_CSTAT_BIT_DEAD, 1);
+        /* Fallback monster physical formula 51 (mode 0x33) with 0x4b058f evade & 0x4bebaa cover */
+        evaded = combat_resolve_hero_evade_and_cover(cb, ws, eidx, 1, 0, &hidx, &covered_by);
+        hero = &ws->party_members[hidx];
+        int32_t dmg = 0;
+        if (!evaded) {
+            PalCombatUnitView cv, tv;
+            pal_combat_build_enemy_view(cb, eidx, &cv);
+            pal_combat_build_hero_view(cb, ws, hidx, &tv);
+            int is_mp = 0;
+            int32_t delta = pal_combat_eval_hp_mp_delta(cb, &cv, &tv, 51, 0, &is_mp);
+            dmg = (delta < 0) ? -delta : 0;
+            int32_t old_hp = hero->cur_hp;
+            pal_party_apply_hp_mp_delta(hero, -dmg, 0);
+            if (dmg > 0) pal_cstat_set(cb->hero_mods[hidx].status_bits, PAL_CSTAT_BIT_SLEEP, 0);
+            if (old_hp > 0 && hero->cur_hp <= 0) pal_cstat_set(cb->hero_mods[hidx].status_bits, PAL_CSTAT_BIT_DEAD, 1);
+        }
         combat_record_summary_hit(&sum, 1, hidx, dmg, 0, 0);
     }
 
@@ -14517,7 +14947,12 @@ static void pal_combat_execute_enemy_ai_ex(
 
     int main_tgt = (sum.tgt_count > 0) ? sum.tgt_indices[0] : hidx;
     const char *tgt_name = (main_tgt >= 0 && main_tgt < ws->party_member_count) ? ws->party_members[main_tgt].name_utf8 : hero->name_utf8;
-    if (sum.tgt_count > 1) {
+    if (evaded) {
+        snprintf(cb->log_text, sizeof(cb->log_text), "%s 閃過了 %s 的攻擊！", tgt_name, eu->name_utf8);
+    } else if (covered_by >= 0 && orig_hidx >= 0 && orig_hidx < ws->party_member_count && sum.tgt_count <= 1) {
+        snprintf(cb->log_text, sizeof(cb->log_text), "%s 挺身護住 %s，代受 %d 點傷害！",
+                 ws->party_members[covered_by].name_utf8, ws->party_members[orig_hidx].name_utf8, sum.total_dmg);
+    } else if (sum.tgt_count > 1) {
         snprintf(cb->log_text, sizeof(cb->log_text), "%s 發動攻擊全體，共造成 %d 點傷害！",
                  eu->name_utf8, sum.total_dmg);
     } else {
@@ -14592,9 +15027,52 @@ static void combat_begin_command_phase(PalCombatState *cb, PalTalkWorldState *ws
     }
 }
 
-static int combat_is_scripted_defeat_battle(int32_t formation_id) {
-    /* 2801 夢境羅剎鬼婆, 2812 林天南比武, 2819 石長老劇情必敗戰 */
-    return (formation_id == 2801 || formation_id == 2812 || formation_id == 2819) ? 1 : 0;
+/* Authentic Palgame.exe 0x4bf9ad / 0x4a3ee7: resolve scripted defeat from gitem.dat end-check script (0x7F102010).
+ * Standard battles (1602) point 0x7F10200C -> 1601 (0x7F00200F battle_lose = real Game Over).
+ * Scripted-defeat battles (1609: formations 2801 夢境羅剎鬼婆 & 2815 石長老) point 0x7F10200C -> 1645 (0x7F002047 story continue). */
+static int combat_is_scripted_defeat_battle(const PalGameDatabase *db, int32_t end_script_id) {
+    if (!db || end_script_id <= 0) return 0;
+    const PalScript7fRecord *end_sc = pal_db_find_script_kind(db, end_script_id, PAL_DB_KIND_ITEM);
+    if (!end_sc) end_sc = pal_db_find_script(db, end_script_id);
+    if (!end_sc) return 0;
+    int32_t lose_sid = 0;
+    for (int32_t i = 0; i < end_sc->op_count; i++) {
+        if (end_sc->ops[i].tag == 0x7F10200Cu && end_sc->ops[i].arg_count >= 1) {
+            lose_sid = end_sc->ops[i].args[0];
+            break;
+        }
+    }
+    if (lose_sid <= 0) return 0;
+    const PalScript7fRecord *lose_sc = pal_db_find_script_kind(db, lose_sid, PAL_DB_KIND_ITEM);
+    if (!lose_sc) lose_sc = pal_db_find_script(db, lose_sid);
+    if (!lose_sc) return 0;
+    int has_story_end = 0;
+    int has_game_over = 0;
+    for (int32_t i = 0; i < lose_sc->op_count; i++) {
+        if (lose_sc->ops[i].tag == 0x7F002047u) has_story_end = 1;
+        if (lose_sc->ops[i].tag == 0x7F00200Fu) has_game_over = 1;
+    }
+    return (has_story_end && !has_game_over) ? 1 : 0;
+}
+
+/* Resolve 0x7F302018 [3, max_turn, 1645] turn-limit story auto-end (e.g. gitem 1656 / formation 2823 林天南 7-turn duel). */
+static int32_t combat_resolve_auto_end_turn(const PalGameDatabase *db, int32_t end_script_id) {
+    if (!db || end_script_id <= 0) return 0;
+    const PalScript7fRecord *end_sc = pal_db_find_script_kind(db, end_script_id, PAL_DB_KIND_ITEM);
+    if (!end_sc) end_sc = pal_db_find_script(db, end_script_id);
+    if (!end_sc) return 0;
+    for (int32_t i = 0; i < end_sc->op_count; i++) {
+        const PalScript7fOp *op = &end_sc->ops[i];
+        if (op->tag == 0x7F302018u && op->arg_count >= 3 && op->args[0] == 3 && op->args[1] > 0) {
+            const PalScript7fRecord *sub = pal_db_find_script_kind(db, op->args[2], PAL_DB_KIND_ITEM);
+            if (sub) {
+                for (int32_t j = 0; j < sub->op_count; j++) {
+                    if (sub->ops[j].tag == 0x7F002047u) return op->args[1];
+                }
+            }
+        }
+    }
+    return 0;
 }
 
 static void combat_enter_defeat_phase(PalCombatState *cb, PalTalkWorldState *ws) {
@@ -14603,7 +15081,7 @@ static void combat_enter_defeat_phase(PalCombatState *cb, PalTalkWorldState *ws)
     cb->double_atk_pending = 0;
     combat_cleanup_battle_end(cb, ws, 0);
     snprintf(cb->log_text, sizeof(cb->log_text), "%s",
-             combat_is_scripted_defeat_battle(cb->formation_id)
+             combat_is_scripted_defeat_battle(ws->db, cb->bg_id)
                  ? "戰敗……按 Enter 繼續劇情。"
                  : "全軍覆沒……按 Enter 返回標題畫面。");
     cb->toast_timer = 0.0f;
@@ -14789,6 +15267,15 @@ static void combat_advance_next_turn(PalCombatState *cb, PalTalkWorldState *ws) 
     }
     if (pal_combat_all_heroes_dead(ws) && !pal_test_runtime_god_mode()) {
         combat_enter_defeat_phase(cb, ws);
+        return;
+    }
+    if (cb->auto_end_turn > 0 && cb->turn_no >= cb->auto_end_turn) {
+        cb->phase = COMBAT_PHASE_FLED;
+        cb->post_anim_phase = COMBAT_PHASE_FLED;
+        combat_cleanup_battle_end(cb, ws, 0);
+        snprintf(cb->log_text, sizeof(cb->log_text), "勝負已分，戰鬥結束。");
+        cb->dirty = 1;
+        combat_sync_idle_poses(cb, ws);
         return;
     }
     cb->turn_no++;
@@ -15587,8 +16074,18 @@ static void combat_draw_scene(
         bg_sp = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 15005);
     }
     if (bg_sp && bg_sp->nframes > 0 && bg_sp->frames[0]) {
+        /* Authentic Palgame.exe 0x4a282c: 800x600 battle backgrounds render through a centered 640x480 viewport */
         SDL_FRect full = {cam_sx, cam_sy, 640.0f, 480.0f};
-        SDL_RenderTexture(renderer, bg_sp->frames[0], NULL, &full);
+        if (bg_sp->w > 640 || bg_sp->h > 480) {
+            float src_w = (bg_sp->w >= 640) ? 640.0f : (float)bg_sp->w;
+            float src_h = (bg_sp->h >= 480) ? 480.0f : (float)bg_sp->h;
+            float src_x = ((float)bg_sp->w - src_w) * 0.5f;
+            float src_y = ((float)bg_sp->h - src_h) * 0.5f;
+            SDL_FRect src = {src_x, src_y, src_w, src_h};
+            SDL_RenderTexture(renderer, bg_sp->frames[0], &src, &full);
+        } else {
+            SDL_RenderTexture(renderer, bg_sp->frames[0], NULL, &full);
+        }
     } else {
         SDL_SetRenderDrawColor(renderer, 18, 22, 34, 255);
         SDL_RenderClear(renderer);
@@ -18748,6 +19245,7 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
             int elig = pal_combat_combo_eligible_count(cb, ws);
             int32_t hp0_pre = ws->party_members[0].cur_hp;
             int32_t hp1_pre = ws->party_members[1].cur_hp;
+            cb->enemies[0].spd = 1; /* Ensure hero combo acts before enemy so enemy damage/cover doesn't perturb cost_ok */
             uint32_t cmd_rc = combat_execute_command(cb, ws, 1);
             int target_entered = (cmd_rc == 2u && cb->phase == COMBAT_PHASE_TARGET && cb->hero_action_type[0] == 5);
             combat_confirm_target(cb, ws, 0);
@@ -19133,13 +19631,121 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         }
     }
 
-    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok) {
-        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d\n",
-                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok);
+    int p1_authentic_ok = 0;
+    {
+        PalCombatState *p1_cb = (PalCombatState *)calloc(1, sizeof(PalCombatState));
+        if (p1_cb) {
+            /* #6: Authentic 煉蠱皿 (gitem 77777 tables: 13 eggs, 75 items, 121 matrix, 1126 special pairs) & 紫金葫蘆 (68 elixirs) + 靈葫咒 */
+            int ok_alch_tbl = (db->alchemy_egg_count == 13 && db->alchemy_item_count == 75 &&
+                               db->alchemy_pair_count == 1126 && db->gourd_recipe_count == 68);
+            int ok_alch_egg = (pal_alchemy_resolve_egg(db, 3656) == 3605 && /* 冰蠶蠱 */
+                               pal_alchemy_resolve_egg(db, 3658) == 3959 && /* 金蠶王 */
+                               pal_alchemy_resolve_egg(db, 3659) == 3626);  /* 隱蠱 */
+            int ok_alch_pair = (pal_alchemy_resolve_pair(db, 3601, 3601) > 0 &&
+                                pal_alchemy_resolve_pair(db, 3001, 3002) < 0); /* 鹿茸 not material */
+            int32_t sp_v = 55;
+            int32_t g_prod = pal_gourd_refine_elixir(db, &sp_v); /* cost<=55 -> 3615(55) or matching max <=55, sp_v drops */
+            int32_t sp_low = 0;
+            int32_t g_fail = pal_gourd_refine_elixir(db, &sp_low);
+            int ok_gourd = (g_prod > 0 && sp_v < 55 && g_fail < 0);
+
+            /* 靈葫咒 (GFight1[561] -> 1845) capture on <= 25% HP monster with prop[125] > 0 */
+            memset(ws, 0, sizeof(*ws));
+            ws->db = db;
+            pal_party_init_from_db(ws, db, 0);
+            ws->party_members[0].cur_mp = 200;
+            pal_combat_init_ex(p1_cb, ws, game_dir, 2004, 17, 10, 10);
+            p1_cb->enemies[0].max_hp = 100;
+            p1_cb->enemies[0].cur_hp = 20; /* <= 25% */
+            p1_cb->enemies[0].spirit_val = 25;
+            PalCombatAnimBeat b_lhz = {0};
+            pal_combat_execute_hero_action_ex(p1_cb, ws, 0, 1, 6251u, 0, &b_lhz);
+            int ok_lhz = (!p1_cb->enemies[0].alive && ws->spirit_value == 25);
+
+            /* #7: Authentic level-up 0x4a4d5a clamps (HP 10..15, MP 7..17, ATK 4..5, MAG 4, DEF 2..3, SPD 2..3, LUCK 10..15) */
+            uint32_t lv_rng = 0x12345678u;
+            int ok_lv_clamp = 1;
+            for (int k = 0; k < 20; k++) {
+                int32_t hp_d  = pal_level_apply_original_rng(&lv_rng, 15, 0, 2000, 10 + k);
+                int32_t mp_d  = pal_level_apply_original_rng(&lv_rng, 12, 1, 2000, 10 + k);
+                int32_t atk_d = pal_level_apply_original_rng(&lv_rng, 5,  2, 2000, 10 + k);
+                int32_t mag_d = pal_level_apply_original_rng(&lv_rng, 5,  3, 2000, 10 + k);
+                int32_t def_d = pal_level_apply_original_rng(&lv_rng, 3,  4, 2000, 10 + k);
+                int32_t spd_d = pal_level_apply_original_rng(&lv_rng, 3,  5, 2000, 10 + k);
+                int32_t lck_d = pal_level_apply_original_rng(&lv_rng, 2,  6, 2000, 10 + k);
+                if (hp_d < 10 || hp_d > 15 || mp_d < 7 || mp_d > 17 ||
+                    atk_d < 4 || atk_d > 5 || mag_d != 4 ||
+                    def_d < 2 || def_d > 3 || spd_d < 2 || spd_d > 3 ||
+                    lck_d < 10 || lck_d > 15) {
+                    ok_lv_clamp = 0;
+                    break;
+                }
+            }
+
+            /* #8: Authentic 800x600 -> 640x480 centered camera projection (cam_x=80, cam_y=60) */
+            pal_combat_init_ex(p1_cb, ws, game_dir, 2801, 502, 10, 10);
+            int ok_coords = (p1_cb->slot_x[0] == 585 - 80 && p1_cb->slot_y[0] == 384 - 60 &&
+                             p1_cb->slot_x[1] == 643 - 80 && p1_cb->slot_y[1] == 310 - 60 &&
+                             p1_cb->slot_x[2] == 482 - 80 && p1_cb->slot_y[2] == 428 - 60);
+
+            /* #9: Monster low-HP flee (prop[101]) & rage (prop[107]) + Hero evade (0x4b058f) & cover (0x4bebaa) */
+            int ok_mon_flee = 0;
+            pal_combat_init_ex(p1_cb, ws, game_dir, 2004, 17, 10, 10);
+            p1_cb->flee_blocked = 0;
+            p1_cb->enemies[0].flee_hp_pct = 100;
+            p1_cb->enemies[0].rage_rate = 100;
+            p1_cb->enemies[0].spd = 999; /* spd_diff < 0 -> 100% flee success once triggered */
+            ws->party_members[0].lv = 50; /* diff > 7 -> 60% want_rate */
+            for (int t = 0; t < 15 && !ok_mon_flee; t++) {
+                p1_cb->enemies[0].active = 1; p1_cb->enemies[0].alive = 1; p1_cb->enemies[0].cur_hp = 10; p1_cb->enemies[0].max_hp = 100;
+                PalCombatAnimBeat bf = {0};
+                pal_combat_execute_enemy_ai_ex(p1_cb, ws, 0, &bf);
+                if (!p1_cb->enemies[0].alive && pal_cstat_has(p1_cb->enemies[0].mods.status_bits, 9)) {
+                    ok_mon_flee = 1;
+                }
+            }
+            /* Cover test: preset 0 has Li Xiaoyao (0) + Zhao Linger (1) + Lin Yueru (2) + Anu (3) */
+            memset(ws, 0, sizeof(*ws));
+            ws->db = db;
+            pal_party_init_from_db(ws, db, 0);
+            ws->party_members[0].cur_hp = ws->party_members[0].eff_max_hp;
+            ws->party_members[1].cur_hp = ws->party_members[1].eff_max_hp;
+            pal_combat_init_ex(p1_cb, ws, game_dir, 2004, 17, 10, 10);
+            int saw_evade = 0, saw_cover = 0;
+            for (int t = 0; t < 60 && (!saw_evade || !saw_cover); t++) {
+                int th = 1, cov = -1;
+                int ev = combat_resolve_hero_evade_and_cover(p1_cb, ws, 0, 1, 0, &th, &cov);
+                if (ev) saw_evade = 1;
+                if (!ev && cov == 0 && th == 0) saw_cover = 1;
+            }
+            int ok_cover_evade = (saw_evade && saw_cover);
+
+            /* #10: Scripted defeat resolved from gitem.dat 0x7F102010 (1609->1645 scripted; 1602->1601 GameOver; 1656->7 turns) */
+            int ok_defeat = (combat_is_scripted_defeat_battle(db, 1609) == 1 &&
+                             combat_is_scripted_defeat_battle(db, 1602) == 0 &&
+                             combat_is_scripted_defeat_battle(db, 1656) == 0 &&
+                             combat_resolve_auto_end_turn(db, 1656) == 7 &&
+                             combat_resolve_auto_end_turn(db, 1602) == 0);
+
+            p1_authentic_ok = (ok_alch_tbl && ok_alch_egg && ok_alch_pair && ok_gourd && ok_lhz &&
+                               ok_lv_clamp && ok_coords && ok_mon_flee && ok_cover_evade && ok_defeat) ? 1 : 0;
+            if (!p1_authentic_ok) {
+                fprintf(stderr, "[SelfTest] p1_authentic failed: alch_tbl=%d egg=%d pair=%d gourd=%d lhz=%d lv=%d coords=%d mflee=%d cov=%d def=%d\n",
+                        ok_alch_tbl, ok_alch_egg, ok_alch_pair, ok_gourd, ok_lhz,
+                        ok_lv_clamp, ok_coords, ok_mon_flee, ok_cover_evade, ok_defeat);
+            }
+            combat_free_textures(p1_cb);
+            free(p1_cb);
+        }
+    }
+
+    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok) {
+        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d\n",
+                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok);
     }
 
     out_info->ok = (out_info->monster_count == 160 &&
-                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok &&
+                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok &&
                     out_info->zone_count == 265 &&
                     out_info->fight_script_count == 1056 &&
                     out_info->battle2801_bg_id == 1609 &&
@@ -19901,7 +20507,7 @@ static void combat_finish_to_field(
     int defeated = (combat_state->phase == COMBAT_PHASE_DEFEAT) ? 1 : 0;
     int fled = (combat_state->phase == COMBAT_PHASE_FLED) ? 1 : 0;
     combat_cleanup_battle_end(combat_state, world_state, won);
-    if (defeated && !combat_is_scripted_defeat_battle(combat_state->formation_id)) {
+    if (defeated && !combat_is_scripted_defeat_battle(world_state ? world_state->db : NULL, combat_state->bg_id)) {
         if (talk_vm) {
             talk_vm->paused_for_battle = 0;
             talk_vm->active = 0;
@@ -22559,13 +23165,15 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         int d0 = combat_advance_settlement(st_cb, p2_ws, cfg->game_dir, NULL, 0.0f, 1);
                         int d1 = combat_advance_settlement(st_cb, p2_ws, cfg->game_dir, NULL, 0.0f, 1);
                         st_cb->formation_id = 2834;
+                        st_cb->bg_id = 1602; /* standard defeat -> 1601 Game Over */
                         PalTalkVM dvm = {0};
                         dvm.active = 1;
                         dvm.paused_for_battle = 1;
                         int d_ret = 0;
                         combat_finish_to_field(NULL, st_cb, p2_ws, &dvm, NULL, NULL, NULL, NULL, 0,
                                                NULL, NULL, NULL, 0.0f, 0.0f, 1, NULL, NULL, NULL, 0, NULL, &d_ret);
-                        st_cb->formation_id = 2819;
+                        st_cb->formation_id = 2815;
+                        st_cb->bg_id = 1609; /* scripted defeat -> 1645 story continue */
                         st_cb->phase = COMBAT_PHASE_DEFEAT;
                         p2_ws->party_members[0].cur_hp = 0;
                         dvm.active = 1;
