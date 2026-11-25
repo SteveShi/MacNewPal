@@ -11373,6 +11373,7 @@ typedef struct {
 #define PAL_CSTAT_BIT_SLEEP     66  /* 0x42: 昏睡 */
 #define PAL_CSTAT_BIT_STUN      67  /* 0x43: 定身/麻痺 */
 #define PAL_CSTAT_BIT_DEFEND    68  /* 0x44: 防禦 (GFight4 0x7F502026) */
+#define PAL_CSTAT_BIT_DOUBLE_ATK 129 /* 0x81: 醉仙望月步 (normal physical attack x2) */
 
 static inline int pal_cstat_has(const uint32_t bits[PAL_CSTAT_WORDS], int32_t bit) {
     if (bit < 0 || bit >= PAL_CSTAT_WORDS * 32) return 0;
@@ -11577,6 +11578,9 @@ typedef struct {
     int turn_count;
     int turn_cursor;
     int round_active;
+    int double_atk_pending;
+    int double_atk_hero;
+    int double_atk_target;
     float anim_beat_timer;
     float anim_beat_dur;
     int beat_impact_applied;
@@ -11959,7 +11963,7 @@ static void pal_combat_scan_magic_script(
                 caster_hidden = (op->args[2] != 0) ? 1 : 0;
             }
             int32_t bit = op->args[1];
-            if (bit >= 20 && bit <= 30 && op->args[2] != 0) *saw_buff = 1;
+            if (((bit >= 20 && bit <= 31) || bit == PAL_CSTAT_BIT_DOUBLE_ATK) && op->args[2] != 0) *saw_buff = 1;
         } else if (op->tag == 0x7F30200Bu && op->arg_count >= 3) {
             uint32_t tgt = (uint32_t)op->args[0];
             if (tgt == 0x7EFF1016u) *saw_ally_aoe = 1;
@@ -13864,11 +13868,9 @@ static void pal_combat_execute_hero_action_ex(
 
     cb->hero_defending[hidx] = 0;
     pal_cstat_set(cb->hero_mods[hidx].status_bits, PAL_CSTAT_BIT_DEFEND, 0);
-    pal_cstat_set(cb->hero_mods[hidx].status_bits, PAL_CSTAT_BIT_DEFEND_LOW, 0);
     if (action_type == 3) { /* Defend */
         cb->hero_defending[hidx] = 1;
         pal_cstat_set(cb->hero_mods[hidx].status_bits, PAL_CSTAT_BIT_DEFEND, 1);
-        pal_cstat_set(cb->hero_mods[hidx].status_bits, PAL_CSTAT_BIT_DEFEND_LOW, 1);
         snprintf(cb->log_text, sizeof(cb->log_text), "%s 擺出防禦架勢。", hero->name_utf8);
         snprintf(beat.log_msg, sizeof(beat.log_msg), "%s", cb->log_text);
         if (out_beat) *out_beat = beat;
@@ -14428,6 +14430,7 @@ static int combat_is_scripted_defeat_battle(int32_t formation_id) {
 static void combat_enter_defeat_phase(PalCombatState *cb, PalTalkWorldState *ws) {
     if (!cb || !ws) return;
     cb->round_active = 0;
+    cb->double_atk_pending = 0;
     combat_cleanup_battle_end(cb, ws, 0);
     snprintf(cb->log_text, sizeof(cb->log_text), "%s",
              combat_is_scripted_defeat_battle(cb->formation_id)
@@ -14453,6 +14456,7 @@ static void combat_advance_next_turn(PalCombatState *cb, PalTalkWorldState *ws) 
 
     if (cb->phase == COMBAT_PHASE_FLED || cb->post_anim_phase == COMBAT_PHASE_FLED) {
         cb->round_active = 0;
+        cb->double_atk_pending = 0;
         cb->phase = COMBAT_PHASE_FLED;
         combat_cleanup_battle_end(cb, ws, 0);
         cb->dirty = 1;
@@ -14461,6 +14465,7 @@ static void combat_advance_next_turn(PalCombatState *cb, PalTalkWorldState *ws) 
     }
     if (pal_combat_all_enemies_dead(cb)) {
         cb->round_active = 0;
+        cb->double_atk_pending = 0;
         pal_combat_apply_victory_rewards(cb, ws);
         cb->post_anim_phase = COMBAT_PHASE_VICTORY;
         cb->phase = COMBAT_PHASE_VICTORY;
@@ -14471,6 +14476,39 @@ static void combat_advance_next_turn(PalCombatState *cb, PalTalkWorldState *ws) 
     if (pal_combat_all_heroes_dead(ws) && !pal_test_runtime_god_mode()) {
         combat_enter_defeat_phase(cb, ws);
         return;
+    }
+
+    if (cb->double_atk_pending) {
+        int p = cb->double_atk_hero;
+        int tgt = cb->double_atk_target;
+        cb->double_atk_pending = 0;
+        if (p >= 0 && p < ws->party_member_count && ws->party_members[p].active &&
+            ws->party_members[p].cur_hp > 0 && pal_combat_hero_can_act(cb, ws, p) &&
+            pal_cstat_has(cb->hero_mods[p].status_bits, PAL_CSTAT_BIT_DOUBLE_ATK)) {
+            PalCombatAnimBeat beat2 = {0};
+            if (pal_cstat_has(cb->hero_mods[p].status_bits, PAL_CSTAT_BIT_CONFUSE)) {
+                int n_alive = 0, alive_e[6];
+                for (int e = 0; e < cb->enemy_count; e++) {
+                    if (cb->enemies[e].active && cb->enemies[e].alive && cb->enemies[e].cur_hp > 0) alive_e[n_alive++] = e;
+                }
+                if (n_alive > 0) tgt = alive_e[combat_next_rng(cb) % (uint32_t)n_alive];
+            }
+            pal_combat_execute_hero_action_ex(cb, ws, p, 0, 0, tgt, &beat2);
+            combat_trigger_ally_down_fury(cb, ws);
+            if (beat2.log_msg[0]) {
+                char orig_log[256];
+                snprintf(orig_log, sizeof(orig_log), "%s", beat2.log_msg);
+                snprintf(cb->log_text, sizeof(cb->log_text), "【連擊】%s", orig_log);
+                snprintf(beat2.log_msg, sizeof(beat2.log_msg), "%s", cb->log_text);
+                cb->anim_queue[0] = beat2;
+                cb->anim_count = 1;
+                cb->anim_cursor = 0;
+                cb->phase = COMBAT_PHASE_ANIMATE;
+                combat_activate_anim_beat(cb, ws, 0);
+                cb->dirty = 1;
+                return;
+            }
+        }
     }
 
     while (cb->turn_cursor < cb->turn_count) {
@@ -14503,7 +14541,15 @@ static void combat_advance_next_turn(PalCombatState *cb, PalTalkWorldState *ws) 
                 }
                 pal_combat_execute_hero_action_ex(cb, ws, p, act_t, cb->hero_action_id[p], tgt, &beat);
                 combat_trigger_ally_down_fury(cb, ws);
-                if (cb->phase == COMBAT_PHASE_FLED) cb->post_anim_phase = COMBAT_PHASE_FLED;
+                if (cb->phase == COMBAT_PHASE_FLED) {
+                    cb->post_anim_phase = COMBAT_PHASE_FLED;
+                } else if (beat.action_type == 0 &&
+                           pal_cstat_has(cb->hero_mods[p].status_bits, PAL_CSTAT_BIT_DOUBLE_ATK) &&
+                           ws->party_members[p].cur_hp > 0 && !pal_combat_all_enemies_dead(cb)) {
+                    cb->double_atk_pending = 1;
+                    cb->double_atk_hero = p;
+                    cb->double_atk_target = tgt;
+                }
             }
         } else {
             int e = slot.idx;
@@ -14525,13 +14571,13 @@ static void combat_advance_next_turn(PalCombatState *cb, PalTalkWorldState *ws) 
 
     /* Round completed cleanly with both sides still standing -> tick timed buffs/DOTs & next command phase */
     cb->round_active = 0;
+    cb->double_atk_pending = 0;
     cb->turn_count = 0;
     cb->turn_cursor = 0;
     cb->combo_skip_mask = 0;
     memset(cb->hero_defending, 0, sizeof(cb->hero_defending));
     for (int p = 0; p < 4; p++) {
         pal_cstat_set(cb->hero_mods[p].status_bits, PAL_CSTAT_BIT_DEFEND, 0);
-        pal_cstat_set(cb->hero_mods[p].status_bits, PAL_CSTAT_BIT_DEFEND_LOW, 0);
     }
     for (int ts = 0; ts < PAL_COMBAT_MAX_TIMED_SCRIPTS; ts++) {
         PalCombatTimedScript *tsc = &cb->timed_scripts[ts];
@@ -14614,6 +14660,7 @@ static void pal_combat_step_round(PalCombatState *cb, PalTalkWorldState *ws) {
     cb->turn_count = cnt;
     cb->turn_cursor = 0;
     cb->round_active = 1;
+    cb->double_atk_pending = 0;
     cb->post_anim_phase = COMBAT_PHASE_COMMAND;
     combat_advance_next_turn(cb, ws);
 }
@@ -15559,7 +15606,9 @@ static void combat_draw_ui_overlay(
             if (pal_cstat_has(sbits, PAL_CSTAT_BIT_SLEEP)) strcat(badges, "%C4眠");
             if (pal_cstat_has(sbits, PAL_CSTAT_BIT_STUN)) strcat(badges, "%C6麻");
             if (pal_cstat_has(sbits, PAL_CSTAT_BIT_ATK_DOUBLE)) strcat(badges, "%C1攻↑");
-            if (pal_cstat_has(sbits, PAL_CSTAT_BIT_DEF_HALVE)) strcat(badges, "%C1防↑");
+            if (pal_cstat_has(sbits, PAL_CSTAT_BIT_DEF_HALVE) ||
+                pal_cstat_has(sbits, PAL_CSTAT_BIT_DEFEND_LOW)) strcat(badges, "%C1防↑");
+            if (pal_cstat_has(sbits, PAL_CSTAT_BIT_DOUBLE_ATK)) strcat(badges, "%C1連");
             snprintf(buf, sizeof(buf), "%s%d/%d %s%%N%%C4%d/%d",
                      hp_col, m->cur_hp, m->eff_max_hp, badges, m->cur_mp, m->eff_max_mp);
             cb->card_tex[p] = create_richtext_texture(renderer, buf, 11.5f, 96, &cb->card_w[p], &cb->card_h[p]);
@@ -18467,13 +18516,48 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
             /* Force deterministic damage check on sleeping hero 0 */
             combat_exec_fight_script(cb, ws, 1005, PAL_DB_KIND_FIGHT, 0, 0, 1, 0, 0, &psum, 0);
             int wake_on_hit_ok = !pal_cstat_has(cb->hero_mods[0].status_bits, PAL_CSTAT_BIT_SLEEP);
-            m6_status_ok = (dot_ok && heal3074_ok && cure3063_ok && seal_ok && sleep_skip_ok && wake_on_hit_ok) ? 1 : 0;
+
+            /* 醉仙望月步 (6203 / bit 129): buffs ally, triggers 2x normal physical attack in one turn, expires after 6 turns */
+            pal_combat_init(cb, ws, game_dir, 2801);
+            ws->party_members[0].cur_mp = ws->party_members[0].eff_max_mp;
+            int32_t b2801_hp0 = cb->enemies[0].cur_hp;
+            PalCombatAnimBeat zbeat = {0};
+            pal_combat_execute_hero_action_ex(cb, ws, 0, 1, 6203u, 0, &zbeat);
+            int zui_cast_ok = (pal_cstat_has(cb->hero_mods[0].status_bits, PAL_CSTAT_BIT_DOUBLE_ATK) &&
+                               cb->enemies[0].cur_hp == b2801_hp0);
+            cb->hero_action_type[0] = 0;
+            cb->hero_action_id[0] = 0;
+            cb->hero_target_idx[0] = 0;
+            cb->turn_order[0].is_hero = 1;
+            cb->turn_order[0].idx = 0;
+            cb->turn_order[0].spd = 999;
+            cb->turn_count = 1;
+            cb->turn_cursor = 0;
+            cb->round_active = 1;
+            cb->double_atk_pending = 0;
+            combat_advance_next_turn(cb, ws); /* Hit 1 */
+            int32_t b2801_hp1 = cb->enemies[0].cur_hp;
+            int zui_pending_ok = (b2801_hp1 < b2801_hp0 && cb->double_atk_pending == 1);
+            combat_advance_next_turn(cb, ws); /* Hit 2 (【連擊】) */
+            int32_t b2801_hp2 = cb->enemies[0].cur_hp;
+            int zui_hit2_ok = (b2801_hp2 < b2801_hp1 && cb->double_atk_pending == 0 &&
+                               strstr(cb->log_text, "【連擊】") != NULL);
+            /* Advance 6 round-ends so timed script 1895 clears bit 129 */
+            for (int r = 0; r < 6; r++) {
+                cb->round_active = 1; cb->turn_count = 0; cb->turn_cursor = 0; cb->double_atk_pending = 0;
+                combat_advance_next_turn(cb, ws);
+            }
+            int zui_expire_ok = !pal_cstat_has(cb->hero_mods[0].status_bits, PAL_CSTAT_BIT_DOUBLE_ATK);
+            int zui_ok = (zui_cast_ok && zui_pending_ok && zui_hit2_ok && zui_expire_ok);
+
+            m6_status_ok = (dot_ok && heal3074_ok && cure3063_ok && seal_ok && sleep_skip_ok && wake_on_hit_ok && zui_ok) ? 1 : 0;
             if (!m6_status_ok) {
-                fprintf(stderr, "  M6.1 fail: dot=%d(b32=%d,%d,%d) h3074=%d(%d) c3063=%d(%d,pois=%d) seal=%d sleep=%d(act=%d) wake=%d\n",
+                fprintf(stderr, "  M6.1 fail: dot=%d(b32=%d,%d,%d) h3074=%d(%d) c3063=%d(%d,pois=%d) seal=%d sleep=%d(act=%d) wake=%d zui=%d(%d,%d,%d,%d)\n",
                         dot_ok, bit32_set, hp_after_dot1, hp_after_dot2,
                         heal3074_ok, hp_after_3074,
                         cure3063_ok, hp_after_3063, pal_cstat_is_poisoned(cb->hero_mods[0].status_bits),
-                        seal_ok, sleep_skip_ok, cb->active_hero_idx, wake_on_hit_ok);
+                        seal_ok, sleep_skip_ok, cb->active_hero_idx, wake_on_hit_ok,
+                        zui_ok, zui_cast_ok, zui_pending_ok, zui_hit2_ok, zui_expire_ok);
             }
         }
 
@@ -19685,6 +19769,7 @@ static void pal_test_bridge_instant_kill(void *ctx) {
     }
     pal_combat_apply_victory_rewards(c->cb, c->ws);
     c->cb->round_active = 0;
+    c->cb->double_atk_pending = 0;
     c->cb->anim_count = 0;
     c->cb->anim_cursor = 0;
     c->cb->fx_active_count = 0;
@@ -21062,6 +21147,7 @@ static int pal_mcp_cb_exec(
                 }
                 pal_combat_apply_victory_rewards(c->cb, c->ws);
                 c->cb->round_active = 0;
+                c->cb->double_atk_pending = 0;
                 c->cb->anim_count = 0;
                 c->cb->fx_active_count = 0;
                 c->cb->other_open = 0;
@@ -23674,7 +23760,6 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                                 memset(combat_state.hero_defending, 0, sizeof(combat_state.hero_defending));
                                 for (int hp = 0; hp < 4; hp++) {
                                     pal_cstat_set(combat_state.hero_mods[hp].status_bits, PAL_CSTAT_BIT_DEFEND, 0);
-                                    pal_cstat_set(combat_state.hero_mods[hp].status_bits, PAL_CSTAT_BIT_DEFEND_LOW, 0);
                                 }
                             }
                             combat_state.dirty = 1;
@@ -23697,7 +23782,6 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             memset(combat_state.hero_defending, 0, sizeof(combat_state.hero_defending));
                             for (int hp = 0; hp < 4; hp++) {
                                 pal_cstat_set(combat_state.hero_mods[hp].status_bits, PAL_CSTAT_BIT_DEFEND, 0);
-                                pal_cstat_set(combat_state.hero_mods[hp].status_bits, PAL_CSTAT_BIT_DEFEND_LOW, 0);
                             }
                         }
                         combat_state.dirty = 1;
