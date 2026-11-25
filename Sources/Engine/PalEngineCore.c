@@ -5239,14 +5239,14 @@ typedef struct {
 
 typedef struct {
     int32_t x1, y1, x2, y2;
-    int32_t formations[3];
+    int32_t bg_act_ids[3]; /* all_map2.act IDs (15001..15070) for tile rect */
 } PalMapZoneRect;
 
 typedef struct {
-    int32_t zone_id;
+    int32_t zone_id; /* field map_id */
     PalMapZoneRect rects[5];
     int32_t rect_count;
-    int32_t default_formations[3];
+    int32_t default_bg_act_ids[3]; /* default all_map2.act IDs (3-slot random pool) */
 } PalMapZoneRecord;
 
 typedef struct {
@@ -5792,13 +5792,13 @@ static int pal_db_load_file(const char *game_dir, const char *filename, int kind
                     rc->y1 = scalars[1];
                     rc->x2 = scalars[2];
                     rc->y2 = scalars[3];
-                    rc->formations[0] = scalars[4];
-                    rc->formations[1] = scalars[5];
-                    rc->formations[2] = scalars[6];
+                    rc->bg_act_ids[0] = scalars[4];
+                    rc->bg_act_ids[1] = scalars[5];
+                    rc->bg_act_ids[2] = scalars[6];
                 } else if (n_sc == 3) {
-                    cur_ent.zone.default_formations[0] = scalars[0];
-                    cur_ent.zone.default_formations[1] = scalars[1];
-                    cur_ent.zone.default_formations[2] = scalars[2];
+                    cur_ent.zone.default_bg_act_ids[0] = scalars[0];
+                    cur_ent.zone.default_bg_act_ids[1] = scalars[1];
+                    cur_ent.zone.default_bg_act_ids[2] = scalars[2];
                 }
             } else if (rec_kind == 1 && cur_scr.id == 77777 && tag == 0x7F30201Eu &&
                        n_sc >= 3 && scalars[0] == 0 && scalars[1] >= 5000 && scalars[1] < 5500) {
@@ -11514,7 +11514,9 @@ typedef struct {
 
 typedef struct {
     int32_t formation_id;
-    int32_t bg_id;
+    int32_t bg_id;     /* 0x7F102010 combat rule/script parameter (e.g. 1602, 1609) */
+    int32_t bg_act_id; /* gmap.dat battle background all_map2.act slot (15001..15070) */
+    int32_t bg_fr_id;  /* resolved all_map2.tsw frame ID from all_map2.act FR opcode */
     char bgm_name[32];
     char game_dir[1024];
     int slot_x[10];
@@ -12785,8 +12787,42 @@ static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws,
     }
 }
 
-static int pal_combat_init(
-    PalCombatState *cb, const PalTalkWorldState *ws, const char *game_dir, int32_t formation_id
+static int32_t pal_db_resolve_battle_bg_act(
+    const PalGameDatabase *db, int32_t map_id, int32_t tx, int32_t ty, uint32_t *io_rng
+) {
+    const PalMapZoneRecord *zr = pal_db_find_zone(db, map_id);
+    if (!zr) return 15001; /* SWD2k fallback: all_map2.act 15001 */
+    uint32_t r = 0u;
+    if (io_rng) {
+        *io_rng = (*io_rng * 1664525u + 1013904223u);
+        r = (*io_rng >> 16) % 3u;
+    }
+    for (int32_t i = 0; i < zr->rect_count; i++) {
+        const PalMapZoneRect *rc = &zr->rects[i];
+        if (tx >= rc->x1 && tx <= rc->x2 && ty >= rc->y1 && ty <= rc->y2) {
+            if (rc->bg_act_ids[r] > 0) return rc->bg_act_ids[r];
+            if (rc->bg_act_ids[0] > 0) return rc->bg_act_ids[0];
+        }
+    }
+    if (zr->default_bg_act_ids[r] > 0) return zr->default_bg_act_ids[r];
+    if (zr->default_bg_act_ids[0] > 0) return zr->default_bg_act_ids[0];
+    return 15001;
+}
+
+static int32_t pal_resolve_battle_bg_fr(const char *game_dir, int32_t bg_act_id) {
+    if (game_dir && game_dir[0] && bg_act_id >= 15000) {
+        PalActVM bg_vm;
+        if (pal_act_vm_init(game_dir, "all_map2.act", (uint32_t)bg_act_id, 0, &bg_vm) == 0 &&
+            bg_vm.fr_tsw_id >= 15000) {
+            return bg_vm.fr_tsw_id;
+        }
+    }
+    return 15005; /* fallback: all_map2.tsw slot 5 (15001_羅剎洞內一) */
+}
+
+static int pal_combat_init_ex(
+    PalCombatState *cb, const PalTalkWorldState *ws, const char *game_dir,
+    int32_t formation_id, int32_t map_id, int32_t player_tx, int32_t player_ty
 ) {
     if (!cb || !ws || !ws->db) return -1;
     combat_free_textures(cb);
@@ -12807,6 +12843,9 @@ static int pal_combat_init(
 
     cb->formation_id = formation_id;
     cb->bg_id = 1602;
+    uint32_t bg_rng = (uint32_t)(SDL_GetTicksNS() ^ ((uint64_t)(uint32_t)map_id * 2654435761u) ^ (uint64_t)(uint32_t)formation_id);
+    cb->bg_act_id = pal_db_resolve_battle_bg_act(ws->db, map_id, player_tx, player_ty, &bg_rng);
+    cb->bg_fr_id = pal_resolve_battle_bg_fr(game_dir, cb->bg_act_id);
     snprintf(cb->bgm_name, sizeof(cb->bgm_name), "%s", sc->bgm_name[0] ? sc->bgm_name : "F005.mp3");
 
     /* Default SWD2k combat coordinates (left enemies 4..9, right party 0..3) */
@@ -12926,6 +12965,12 @@ static int pal_combat_init(
     cb->toast_timer = 2.8f;
     cb->dirty = 1;
     return 0;
+}
+
+static int pal_combat_init(
+    PalCombatState *cb, const PalTalkWorldState *ws, const char *game_dir, int32_t formation_id
+) {
+    return pal_combat_init_ex(cb, ws, game_dir, formation_id, 0, 0, 0);
 }
 
 typedef struct {
@@ -15410,8 +15455,8 @@ static void combat_draw_scene(
         cam_sy = ((cb->ui_tick & 2u) ? (amp * 0.6f) : -(amp * 0.6f));
     }
 
-    /* 1. Render battle background from all_map2.tsw (15000+ slots) */
-    int bg_fr = 15005 + ((cb->bg_id >= 1600 ? (cb->bg_id - 1600) : cb->bg_id) % 40);
+    /* 1. Render battle background resolved from gmap.dat -> all_map2.act -> all_map2.tsw */
+    int bg_fr = (cb->bg_fr_id >= 15000) ? cb->bg_fr_id : 15005;
     PalLoadedSprite *bg_sp = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, bg_fr);
     if (!bg_sp || bg_sp->nframes <= 0 || bg_sp->w < 320) {
         bg_sp = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, 15005);
@@ -18853,13 +18898,39 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         }
     }
 
-    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok) {
-        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d\n",
-                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok);
+    int battle_bg_ok = 0;
+    {
+        PalCombatState *bg_cb = (PalCombatState *)calloc(1, sizeof(PalCombatState));
+        if (bg_cb) {
+            int ok_palace = (pal_combat_init_ex(bg_cb, ws, game_dir, 2844, 794, 30, 20) == 0 &&
+                             bg_cb->bg_act_id == 15064 && bg_cb->bg_fr_id == 15061);
+            int ok_baiyue = (pal_combat_init_ex(bg_cb, ws, game_dir, 2846, 791, 30, 20) == 0 &&
+                             bg_cb->bg_act_id == 15063 && bg_cb->bg_fr_id == 15073);
+            int ok_water  = (pal_combat_init_ex(bg_cb, ws, game_dir, 2847, 798, 30, 20) == 0 &&
+                             bg_cb->bg_act_id == 15061 && bg_cb->bg_fr_id == 15053);
+            int ok_yz_wall = (pal_combat_init_ex(bg_cb, ws, game_dir, 2001, 125, 20, 20) == 0 &&
+                              bg_cb->bg_act_id == 15035 && bg_cb->bg_fr_id == 15049);
+            int ok_yz_roof = (pal_combat_init_ex(bg_cb, ws, game_dir, 2001, 125, 5, 5) == 0 &&
+                              bg_cb->bg_act_id == 15034 && bg_cb->bg_fr_id == 15031);
+            int ok_fallback = (pal_combat_init_ex(bg_cb, ws, game_dir, 2001, 9999, 0, 0) == 0 &&
+                               bg_cb->bg_act_id == 15001 && bg_cb->bg_fr_id == 15005);
+            battle_bg_ok = (ok_palace && ok_baiyue && ok_water && ok_yz_wall && ok_yz_roof && ok_fallback) ? 1 : 0;
+            if (!battle_bg_ok) {
+                fprintf(stderr, "[SelfTest] battle_bg failed: palace=%d baiyue=%d water=%d yz_wall=%d yz_roof=%d fallback=%d\n",
+                        ok_palace, ok_baiyue, ok_water, ok_yz_wall, ok_yz_roof, ok_fallback);
+            }
+            combat_free_textures(bg_cb);
+            free(bg_cb);
+        }
+    }
+
+    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok) {
+        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d\n",
+                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok);
     }
 
     out_info->ok = (out_info->monster_count == 160 &&
-                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok &&
+                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok &&
                     out_info->zone_count == 265 &&
                     out_info->fight_script_count == 1056 &&
                     out_info->battle2801_bg_id == 1609 &&
@@ -23467,11 +23538,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         }
                     } else if (key == SDLK_F && !talk_vm.active) {
                         if (world_state) {
-                            int32_t fid = 2801;
-                            const PalMapZoneRecord *zr = pal_db_find_zone(world_state->db, (int32_t)map.map_id);
-                            if (zr && zr->default_formations[0] > 0) fid = zr->default_formations[0];
-                            else if (zr && zr->rect_count > 0 && zr->rects[0].formations[0] > 0) fid = zr->rects[0].formations[0];
-                            world_state->active_battle_id = fid;
+                            world_state->active_battle_id = 2801;
                             play_ui_sfx(cfg->game_dir, 2u, &sfx_pool, runtime_sfx_vol, runtime_mute);
                         }
                     } else if (key == SDLK_B && !talk_vm.active) {
@@ -24502,7 +24569,10 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 int32_t bid = world_state->active_battle_id;
                 world_state->active_battle_id = 0;
                 astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
-                if (pal_combat_init(&combat_state, world_state, cfg->game_dir, bid) == 0) {
+                int32_t battle_tx = (int32_t)(party[0].px / 16.0f);
+                int32_t battle_ty = (int32_t)(party[0].py / 16.0f);
+                if (pal_combat_init_ex(&combat_state, world_state, cfg->game_dir, bid,
+                                       (int32_t)map.map_id, battle_tx, battle_ty) == 0) {
                     if (run_fade_transition_ex(window, renderer, scene_rt, &gpu_filter, active_shader,
                                                640 * rt_scale, 480 * rt_scale, 0, 140, &bgm) == 1) {
                         app_quit = 1;
