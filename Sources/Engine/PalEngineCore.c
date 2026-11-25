@@ -6145,11 +6145,25 @@ static int pal_world_has_item(const PalTalkWorldState *ws, uint16_t item_id) {
     return pal_world_total_item_count(ws, item_id) > 0 ? 1 : 0;
 }
 
+#define PAL_MONEY_MAX 9999999 /* Palgame.exe 0x498aa8: 0x98967f */
+#define PAL_ITEM_STACK_MAX 99 /* Palgame.exe 0x487d84 / 0x48e217: 0x63 */
+
+static void pal_world_add_money(PalTalkWorldState *ws, int32_t delta) {
+    if (!ws) return;
+    int64_t next = (int64_t)ws->money + (int64_t)delta;
+    if (next < 0) next = 0;
+    if (next > PAL_MONEY_MAX) next = PAL_MONEY_MAX;
+    ws->money = (int32_t)next;
+}
+
 static void pal_world_add_item(PalTalkWorldState *ws, uint16_t item_id, int32_t delta) {
     if (!ws || item_id == 0u || delta == 0) return;
     for (int32_t i = 0; i < ws->inventory_count; i++) {
         if (ws->inventory_ids[i] == item_id) {
             ws->inventory_qty[i] += delta;
+            if (ws->inventory_qty[i] > PAL_ITEM_STACK_MAX) {
+                ws->inventory_qty[i] = PAL_ITEM_STACK_MAX;
+            }
             if (ws->inventory_qty[i] <= 0) {
                 memmove(&ws->inventory_ids[i], &ws->inventory_ids[i + 1],
                         sizeof(uint16_t) * (size_t)(ws->inventory_count - 1 - i));
@@ -6161,6 +6175,7 @@ static void pal_world_add_item(PalTalkWorldState *ws, uint16_t item_id, int32_t 
         }
     }
     if (delta > 0 && ws->inventory_count < PAL_INVENTORY_CAP) {
+        if (delta > PAL_ITEM_STACK_MAX) delta = PAL_ITEM_STACK_MAX;
         ws->inventory_ids[ws->inventory_count] = item_id;
         ws->inventory_qty[ws->inventory_count] = delta;
         ws->inventory_count++;
@@ -6756,8 +6771,7 @@ static int pal_camp_exec_item_script(
             uint32_t tgt = (uint32_t)op->args[0];
             int32_t delta = op->args[1];
             if (tgt == 0x7EFFE002u || tgt == 0x7EFF0002u) {
-                ws->money += delta;
-                if (ws->money < 0) ws->money = 0;
+                pal_world_add_money(ws, delta);
                 applied = 1;
             } else if (op->args[0] > 0 && op->args[0] < 10000) {
                 pal_world_add_item(ws, (uint16_t)op->args[0], delta);
@@ -7026,8 +7040,7 @@ static int pal_talk_exec_script_id(PalTalkWorldState *ws, int32_t script_id, int
             uint32_t tgt = (uint32_t)sop->args[0];
             int32_t delta = sop->args[1];
             if (tgt == 0x7EFFE002u || tgt == 0x7EFF0002u) {
-                ws->money += delta;
-                if (ws->money < 0) ws->money = 0;
+                pal_world_add_money(ws, delta);
                 applied = 1;
             } else if (sop->args[0] > 0 && sop->args[0] < 10000) {
                 pal_world_add_item(ws, (uint16_t)sop->args[0], delta);
@@ -8412,8 +8425,7 @@ static void pal_talk_vm_step_ex(
                 uint16_t item_id = rd_u16(ins + 2u);
                 int16_t delta = (int16_t)rd_u16(ins + 4u);
                 if (item_id == 0u || item_id == 0xE002u || item_id == 0xE003u) {
-                    ws->money += (int32_t)delta;
-                    if (ws->money < 0) ws->money = 0;
+                    pal_world_add_money(ws, (int32_t)delta);
                 } else {
                     pal_world_add_item(ws, item_id, (int32_t)delta);
                 }
@@ -10787,6 +10799,12 @@ typedef struct {
     uint16_t npc_ai_override[PAL_OBJ_CAP];
 } PalNpalSaveFooterV5;
 
+typedef struct {
+    PalNpalSaveFooterV5 v5;
+    int32_t spirit_value;       /* 紫金葫蘆靈葫值 (Palgame.exe DAT_005ab014) */
+    int32_t jiushen_uses_used;  /* 酒神 (6253, max 9) cumulative uses */
+} PalNpalSaveFooterV6;
+
 static void pal_load_footer_v4_fields(
     const PalNpalSaveFooterV4 *ft4, PalTalkWorldState *ws,
     uint32_t *out_map_id, int *out_px, int *out_py, int *out_dir
@@ -10906,7 +10924,7 @@ static int pal_save_slot_read_summary(const char *game_dir, int slot, PalSaveSlo
     if (sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV1)) {
         PalNpalSaveFooterHdr hdr;
         memcpy(&hdr, buf + PAL_LEGACY_SAVE_SIZE, sizeof(hdr));
-        if (hdr.magic == PAL_NPAL_SAVE_MAGIC && (hdr.version >= 1u && hdr.version <= 5u)) {
+        if (hdr.magic == PAL_NPAL_SAVE_MAGIC && (hdr.version >= 1u && hdr.version <= 6u)) {
             out_sum->has_npal_ext = 1;
             out_sum->map_id = hdr.map_id;
             out_sum->px = hdr.px;
@@ -10944,14 +10962,15 @@ static int pal_save_game_slot(
     SDL_CreateDirectory(save_dir);
     snprintf(file_path, sizeof(file_path), "%s/%d.sav", save_dir, slot);
 
-    size_t total_sz = (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV5);
+    size_t total_sz = (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV6);
     uint8_t *buf = (uint8_t *)calloc(1, total_sz);
-    PalNpalSaveFooterV5 *ft5 = (PalNpalSaveFooterV5 *)calloc(1, sizeof(PalNpalSaveFooterV5));
-    if (!buf || !ft5) {
+    PalNpalSaveFooterV6 *ft6 = (PalNpalSaveFooterV6 *)calloc(1, sizeof(PalNpalSaveFooterV6));
+    if (!buf || !ft6) {
         free(buf);
-        free(ft5);
+        free(ft6);
         return -1;
     }
+    PalNpalSaveFooterV5 *ft5 = &ft6->v5;
 
     wr_u32_le(buf + 0x00u, 0x6A54u);
     wr_u32_le(buf + 0x04u, (uint32_t)(ws->money >= 0 ? ws->money : 0));
@@ -11010,7 +11029,7 @@ static int pal_save_game_slot(
 
     PalNpalSaveFooterV4 *ft = &ft5->v4;
     ft->magic = PAL_NPAL_SAVE_MAGIC;
-    ft->version = 5u;
+    ft->version = 6u;
     ft->map_id = map_id;
     ft->px = px;
     ft->py = py;
@@ -11039,8 +11058,10 @@ static int pal_save_game_slot(
     ft->control_obj_id = ws->control_obj_id;
     memcpy(ft5->obj_rv, ws->obj_rv, sizeof(ft5->obj_rv));
     memcpy(ft5->npc_ai_override, ws->npc_ai_override, sizeof(ft5->npc_ai_override));
-    memcpy(buf + PAL_LEGACY_SAVE_SIZE, ft5, sizeof(*ft5));
-    free(ft5);
+    ft6->spirit_value = ws->spirit_value;
+    ft6->jiushen_uses_used = ws->jiushen_uses_used;
+    memcpy(buf + PAL_LEGACY_SAVE_SIZE, ft6, sizeof(*ft6));
+    free(ft6);
 
     FILE *f = fopen(file_path, "wb");
     if (!f) {
@@ -11085,8 +11106,22 @@ static int pal_load_game_slot(
     if (sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV1)) {
         PalNpalSaveFooterHdr hdr;
         memcpy(&hdr, buf + PAL_LEGACY_SAVE_SIZE, sizeof(hdr));
-        if (hdr.magic == PAL_NPAL_SAVE_MAGIC && hdr.version == 5u &&
-            sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV5)) {
+        if (hdr.magic == PAL_NPAL_SAVE_MAGIC && hdr.version == 6u &&
+            sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV6)) {
+            PalNpalSaveFooterV6 *ft6 = (PalNpalSaveFooterV6 *)calloc(1, sizeof(PalNpalSaveFooterV6));
+            if (ft6) {
+                memcpy(ft6, buf + PAL_LEGACY_SAVE_SIZE, sizeof(*ft6));
+                has_ext = 1;
+                legacy_len = PAL_LEGACY_SAVE_SIZE;
+                pal_load_footer_v4_fields(&ft6->v5.v4, ws, out_map_id, out_px, out_py, out_dir);
+                memcpy(ws->obj_rv, ft6->v5.obj_rv, sizeof(ws->obj_rv));
+                memcpy(ws->npc_ai_override, ft6->v5.npc_ai_override, sizeof(ws->npc_ai_override));
+                ws->spirit_value = ft6->spirit_value;
+                ws->jiushen_uses_used = ft6->jiushen_uses_used;
+                free(ft6);
+            }
+        } else if (hdr.magic == PAL_NPAL_SAVE_MAGIC && hdr.version == 5u &&
+                   sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV5)) {
             PalNpalSaveFooterV5 *ft5 = (PalNpalSaveFooterV5 *)calloc(1, sizeof(PalNpalSaveFooterV5));
             if (ft5) {
                 memcpy(ft5, buf + PAL_LEGACY_SAVE_SIZE, sizeof(*ft5));
@@ -11239,35 +11274,43 @@ static int pal_shop_resolve_items(const PalGameDatabase *db, int32_t shop_id, ui
 static int pal_shop_buy_item(PalTalkWorldState *ws, uint16_t item_id, char *fb, size_t fb_cap) {
     if (!ws || !ws->db || item_id == 0u) return -1;
     const PalItemRecord *it = pal_db_find_item(ws->db, (int32_t)item_id);
-    int32_t price = (it && it->price > 0) ? it->price : 50;
-    if (ws->money < price) {
-        if (fb) snprintf(fb, fb_cap, "金錢不足，無法購買「%s」(需 %d 文)。", it ? it->name_utf8 : "道具", price);
+    if (!it || it->price <= 0) {
+        if (fb) snprintf(fb, fb_cap, "「%s」為非賣品。", it ? it->name_utf8 : "道具");
         return -1;
     }
-    ws->money -= price;
+    /* Authentic Palgame.exe 0x48e217: block buying when stack is already at 99 (0x63) */
+    if (pal_world_item_qty(ws, item_id) >= PAL_ITEM_STACK_MAX) {
+        if (fb) snprintf(fb, fb_cap, "「%s」已達攜帶上限（%d）。", it->name_utf8, PAL_ITEM_STACK_MAX);
+        return -1;
+    }
+    int32_t price = it->price;
+    if (ws->money < price) {
+        if (fb) snprintf(fb, fb_cap, "金錢不足，無法購買「%s」(需 %d 文)。", it->name_utf8, price);
+        return -1;
+    }
+    pal_world_add_money(ws, -price);
     pal_world_add_item(ws, item_id, 1);
-    if (fb) snprintf(fb, fb_cap, "購買「%s」花費 %d 文。", it ? it->name_utf8 : "道具", price);
+    if (fb) snprintf(fb, fb_cap, "購買「%s」花費 %d 文。", it->name_utf8, price);
     return 0;
 }
 
 static int pal_shop_sell_item(PalTalkWorldState *ws, uint16_t item_id, char *fb, size_t fb_cap) {
     if (!ws || !ws->db || item_id == 0u) return -1;
-    int owned = 0;
-    for (int32_t i = 0; i < ws->inventory_count; i++) {
-        if (ws->inventory_ids[i] == item_id && ws->inventory_qty[i] > 0) {
-            owned = ws->inventory_qty[i];
-            break;
-        }
-    }
+    int owned = pal_world_item_qty(ws, item_id);
     if (owned <= 0) {
         if (fb) snprintf(fb, fb_cap, "背包內無此物品可出售。");
         return -1;
     }
     const PalItemRecord *it = pal_db_find_item(ws->db, (int32_t)item_id);
-    int32_t sell_val = (it && it->price > 1) ? (it->price / 2) : 25;
+    /* Authentic Palgame.exe 0x48e0fa / 0x48e163: price <= 0 (quest/key items) cannot be sold; sell value = (price * 3) / 4 */
+    if (!it || it->price <= 0) {
+        if (fb) snprintf(fb, fb_cap, "「%s」無法典當出售！", it ? it->name_utf8 : "此物品");
+        return -1;
+    }
+    int32_t sell_val = (it->price * 3) / 4;
     pal_world_add_item(ws, item_id, -1);
-    ws->money += sell_val;
-    if (fb) snprintf(fb, fb_cap, "售出「%s」獲得 %d 文。", it ? it->name_utf8 : "道具", sell_val);
+    pal_world_add_money(ws, sell_val);
+    if (fb) snprintf(fb, fb_cap, "售出「%s」獲得 %d 文。", it->name_utf8, sell_val);
     return 0;
 }
 
@@ -11388,15 +11431,21 @@ static void shop_draw_overlay(
             uint16_t iid = (sm->mode == 0) ? sm->buy_items[idx] : ws->inventory_ids[idx];
             sm->row_item_ids[r] = iid;
             const PalItemRecord *it = pal_db_find_item(ws->db, (int32_t)iid);
-            int32_t price = (it && it->price > 0) ? it->price : 50;
-            if (sm->mode == 1) price = (price > 1) ? (price / 2) : 25;
+            int32_t price = (it && it->price > 0) ? it->price : 0;
+            if (sm->mode == 1) price = (price > 0) ? ((price * 3) / 4) : 0;
             int owned = 0;
             for (int32_t q = 0; q < ws->inventory_count; q++) {
                 if (ws->inventory_ids[q] == iid) { owned = ws->inventory_qty[q]; break; }
             }
-            snprintf(buf, sizeof(buf), "%s%-16s  %%C6%4d 文  %%C3持有:%d",
-                     (idx == sm->cursor) ? "%C6" : "%C5",
-                     it ? it->name_utf8 : "未知道具", price, owned);
+            if (price > 0) {
+                snprintf(buf, sizeof(buf), "%s%-16s  %%C6%4d 文  %%C3持有:%d",
+                         (idx == sm->cursor) ? "%C6" : "%C5",
+                         it ? it->name_utf8 : "未知道具", price, owned);
+            } else {
+                snprintf(buf, sizeof(buf), "%s%-16s  %%C3不可售    持有:%d",
+                         (idx == sm->cursor) ? "%C6" : "%C5",
+                         it ? it->name_utf8 : "未知道具", owned);
+            }
             sm->row_tex[r] = create_richtext_texture(renderer, buf, 14.5f, 470, &sm->row_w[r], &sm->row_h[r]);
             sm->row_vis_count++;
         }
@@ -11406,7 +11455,7 @@ static void shop_draw_overlay(
             uint16_t iid = (sm->mode == 0) ? sm->buy_items[sm->cursor] : ws->inventory_ids[sm->cursor];
             const PalItemRecord *it = pal_db_find_item(ws->db, (int32_t)iid);
             if (it && it->desc_utf8[0]) detail = it->desc_utf8;
-            else detail = (sm->mode == 0) ? "按 Enter 購買該道具。" : "按 Enter 半價出售該道具。";
+            else detail = (sm->mode == 0) ? "按 Enter 購買該道具。" : "按 Enter 出售該道具（原價七五折）。";
         }
         if (sm->feedback_timer > 0.0f && sm->feedback[0]) {
             snprintf(buf, sizeof(buf), "%%C6%s%%N%%C5%s", sm->feedback, detail);
@@ -13725,8 +13774,7 @@ static int combat_exec_fight_script(
             uint32_t ref = (uint32_t)op->args[0];
             int32_t delta = op->args[1];
             if (ref == 0x7EFFE002u) {
-                ws->money += delta;
-                if (ws->money < 0) ws->money = 0;
+                pal_world_add_money(ws, delta);
             } else if (ref > 0u && ref < 0x10000u && delta != 0) {
                 pal_world_add_item(ws, (uint16_t)ref, delta);
             }
@@ -13917,6 +13965,14 @@ static int combat_exec_fight_script(
                 int e = tao ? (max_n - 1) : ti;
                 for (int k = s; k <= e; k++) {
                     if (k < 0 || k >= max_n) continue;
+                    /* Authentic Palgame.exe 0x4c4da4..0x4c4de6: 3063 (0xbf7 五毒珠) blocks all status bits 32..100 */
+                    if (th && on != 0 && bit >= 32 && bit <= 100 && ws->party_members[k].active) {
+                        int has_3063 = 0;
+                        for (int eq = 0; eq < PAL_EQUIP_SLOT_COUNT; eq++) {
+                            if (ws->party_members[k].equips[eq] == 3063u) { has_3063 = 1; break; }
+                        }
+                        if (has_3063) continue;
+                    }
                     if (th && on != 0 && pal_test_runtime_god_mode() &&
                         (bit == 64 || bit == 65 || bit == 66 || bit == 67 || bit == 97 ||
                          (bit >= 32 && bit <= 41))) {
@@ -13975,9 +14031,7 @@ static int combat_exec_fight_script(
                 int is_mp = 0;
                 int32_t delta = pal_combat_eval_hp_mp_delta(cb, &cv, &tv, formula, power, &is_mp);
                 if (formula == 71) { /* 0x47: deduct/add player gold (Palgame.exe 0x4b0973) */
-                    if (delta < 0 && ws->money + delta < 0) delta = -ws->money;
-                    ws->money += delta;
-                    if (ws->money < 0) ws->money = 0;
+                    pal_world_add_money(ws, delta);
                     continue;
                 }
                 if (cur_tgt_is_hero) {
@@ -14151,7 +14205,7 @@ static void pal_combat_apply_victory_rewards(PalCombatState *cb, PalTalkWorldSta
         if (has_0c01) { gold_sum *= 2; break; }
     }
 
-    ws->money += gold_sum;
+    pal_world_add_money(ws, gold_sum);
     /* Dead allies receive 0 EXP before battle-end 1/3 revival. */
     for (int p = 0; p < ws->party_member_count && p < 4; p++) {
         PalPartyMemberState *m = &ws->party_members[p];
@@ -14597,7 +14651,7 @@ static void pal_combat_execute_hero_action_ex(
                                  hero->name_utf8, eu->name_utf8, mg->name_utf8, sit ? sit->name_utf8 : "物品");
                         beat.tgt_values[0] = 1;
                     } else if (stolen_gold > 0) {
-                        ws->money += stolen_gold;
+                        pal_world_add_money(ws, stolen_gold);
                         snprintf(cb->log_text, sizeof(cb->log_text), "%s 對 %s 施展「%s」，竊得 %d 文！",
                                  hero->name_utf8, eu->name_utf8, mg->name_utf8, stolen_gold);
                         beat.tgt_values[0] = stolen_gold;
@@ -15283,23 +15337,74 @@ static void combat_advance_next_turn(PalCombatState *cb, PalTalkWorldState *ws) 
     combat_sync_idle_poses(cb, ws);
 }
 
+/* Authentic Palgame.exe 0x4abef3: magic/item IDs that receive +5000 (0x1388) turn-order priority */
+static int pal_combat_action_has_priority(int action_type, uint16_t action_id) {
+    /* 0x4abfd7: Defend (674) and Flee (7797/676) always get +5000 priority */
+    if (action_type == 3 || action_type == 4) return 1;
+    int32_t id = (int32_t)action_id;
+    if (action_type == 1) {
+        if ((id >= 6901 && id <= 6905) || id == 6851 || id == 6852 ||
+            (id >= 6751 && id <= 6753) || (id >= 6701 && id <= 6703) ||
+            (id >= 6201 && id <= 6203)) return 1;
+    } else if (action_type == 2) {
+        if ((id >= 4401 && id <= 4409) || (id >= 4351 && id <= 4359) ||
+            (id >= 4251 && id <= 4254) || (id >= 4301 && id <= 4307) ||
+            (id >= 4201 && id <= 4211) || (id >= 3951 && id <= 3959)) return 1;
+    }
+    return 0;
+}
+
+/* Authentic Palgame.exe 0x4a366b + gitem script 1764 (0x6e4): 3064 壽葫蘆 recovers +20 HP & +20 MP per turn */
+static void pal_combat_tick_shouhulu(PalCombatState *cb, PalTalkWorldState *ws) {
+    if (!cb || !ws) return;
+    for (int p = 0; p < ws->party_member_count && p < 4; p++) {
+        PalPartyMemberState *m = &ws->party_members[p];
+        if (!m->active || m->cur_hp <= 0) continue;
+        int has_3064 = 0;
+        for (int eq = 0; eq < PAL_EQUIP_SLOT_COUNT; eq++) {
+            if (m->equips[eq] == 3064u) { has_3064 = 1; break; }
+        }
+        if (!has_3064) continue;
+        int32_t old_hp = m->cur_hp;
+        pal_party_apply_hp_mp_delta(m, 20, 20);
+        int32_t gained_hp = m->cur_hp - old_hp;
+        if (gained_hp > 0) {
+            combat_spawn_popup(cb, (float)cb->slot_x[p], (float)cb->slot_y[p] - 78.0f, gained_hp, 1, 0);
+        }
+    }
+}
+
 static void pal_combat_step_round(PalCombatState *cb, PalTalkWorldState *ws) {
     if (!cb || !ws) return;
     int cnt = 0;
 
+    /* 0x4a366b: apply 3064 壽葫蘆 start-of-round recovery (+20 HP / +20 MP) */
+    pal_combat_tick_shouhulu(cb, ws);
+
+    /* Authentic Palgame.exe 0x4a4050..0x4a41de turn-order computation:
+     * - Heroes: base eff_spd + spd_mod + (+5000 if priority action), NO random jitter; x2 if bit 24 (0x18 haste).
+     * - Monsters: base spd + spd_mod + (rand()%5 - 2); x2 if bit 24 (0x18 haste). */
     for (int p = 0; p < ws->party_member_count && p < 4 && cnt < 10; p++) {
         if (ws->party_members[p].active && ws->party_members[p].cur_hp > 0) {
+            int32_t s = ws->party_members[p].eff_spd + cb->hero_mods[p].spd_mod;
+            if (pal_combat_action_has_priority(cb->hero_action_type[p], cb->hero_action_id[p])) {
+                s += 5000;
+            }
+            if (pal_cstat_has(cb->hero_mods[p].status_bits, 24)) s *= 2;
             cb->turn_order[cnt].is_hero = 1;
             cb->turn_order[cnt].idx = p;
-            cb->turn_order[cnt].spd = ws->party_members[p].eff_spd + cb->hero_mods[p].spd_mod + (int32_t)(combat_next_rng(cb) % 8u);
+            cb->turn_order[cnt].spd = s;
             cnt++;
         }
     }
     for (int e = 0; e < cb->enemy_count && cnt < 10; e++) {
         if (cb->enemies[e].active && cb->enemies[e].alive && cb->enemies[e].cur_hp > 0) {
+            int32_t jitter = (int32_t)(combat_next_rng(cb) % 5u) - 2; /* 0x4a4163: [-2..+2] */
+            int32_t s = cb->enemies[e].spd + cb->enemies[e].mods.spd_mod + jitter;
+            if (pal_cstat_has(cb->enemies[e].mods.status_bits, 24)) s *= 2;
             cb->turn_order[cnt].is_hero = 0;
             cb->turn_order[cnt].idx = e;
-            cb->turn_order[cnt].spd = cb->enemies[e].spd + cb->enemies[e].mods.spd_mod + (int32_t)(combat_next_rng(cb) % 8u);
+            cb->turn_order[cnt].spd = s;
             cnt++;
         }
     }
@@ -19739,13 +19844,92 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         }
     }
 
-    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok) {
-        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d\n",
-                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok);
+    int p2_authentic_ok = 0;
+    {
+        PalCombatState *p2_cb = (PalCombatState *)calloc(1, sizeof(PalCombatState));
+        if (p2_cb) {
+            /* #11 & #12: Shop sell = 75% (price*3/4), price==0 unsellable, stack cap 99, money cap 9999999 */
+            memset(ws, 0, sizeof(*ws));
+            ws->db = db;
+            pal_party_init_from_db(ws, db, 0);
+            ws->money = 1000;
+            const PalItemRecord *it_4401 = pal_db_find_item(db, 4401);
+            int32_t exp_sell_4401 = (it_4401 && it_4401->price > 0) ? ((it_4401->price * 3) / 4) : -1;
+            pal_world_add_item(ws, 4401u, 150); /* 止血草 -> clamped to 99 */
+            int ok_stack = (pal_world_item_qty(ws, 4401u) == 99);
+            int ok_buy_cap = (pal_shop_buy_item(ws, 4401u, NULL, 0) != 0 && ws->money == 1000);
+            int ok_sell75 = (exp_sell_4401 > 0 && exp_sell_4401 != (it_4401->price / 2) &&
+                             pal_shop_sell_item(ws, 4401u, NULL, 0) == 0 &&
+                             ws->money == (1000 + exp_sell_4401) && pal_world_item_qty(ws, 4401u) == 98);
+            pal_world_add_item(ws, 3001u, 1); /* 鹿茸 price=0 -> unsellable */
+            int ok_nosell0 = (pal_shop_sell_item(ws, 3001u, NULL, 0) != 0 && pal_world_item_qty(ws, 3001u) == 1);
+            pal_world_add_money(ws, 20000000);
+            int ok_money_cap = (ws->money == PAL_MONEY_MAX);
+
+            /* #13: 3063 五毒珠 blocks all status bits 32..100 via 0x7F302011 */
+            pal_combat_init_ex(p2_cb, ws, game_dir, 2004, 17, 10, 10);
+            ws->party_members[0].equips[4] = 3063u;
+            PalCombatExecSummary s_p = {0};
+            combat_exec_fight_script(p2_cb, ws, 777, PAL_DB_KIND_MAGIC, 0, 0, 1, 0, 0, &s_p, 0); /* 赤毒 bit 32 */
+            int ok_wuduzhu = !pal_cstat_has(p2_cb->hero_mods[0].status_bits, PAL_CSTAT_BIT_POISON_RED);
+
+            /* #14: 3064 壽葫蘆 recovers +20 HP and +20 MP at round start */
+            ws->party_members[0].equips[4] = 3064u;
+            ws->party_members[0].cur_hp = 50;
+            ws->party_members[0].cur_mp = 30;
+            pal_combat_tick_shouhulu(p2_cb, ws);
+            int ok_shouhulu = (ws->party_members[0].cur_hp == 70 && ws->party_members[0].cur_mp == 50);
+
+            /* #15: +5000 priority for Defend/Flee/Heal + bit 24 x2 speed */
+            int ok_prio = (pal_combat_action_has_priority(3, 0) == 1 &&
+                           pal_combat_action_has_priority(4, 0) == 1 &&
+                           pal_combat_action_has_priority(1, 6901u) == 1 &&
+                           pal_combat_action_has_priority(2, 4401u) == 1 &&
+                           pal_combat_action_has_priority(0, 0) == 0);
+            ws->party_members[0].eff_spd = 10;
+            p2_cb->enemies[0].spd = 200;
+            p2_cb->hero_action_type[0] = 3; /* Defend -> +5000 beats 200-spd enemy */
+            pal_combat_step_round(p2_cb, ws);
+            int ok_def_first = (p2_cb->turn_count >= 2 && p2_cb->turn_order[0].is_hero == 1 && p2_cb->turn_order[0].idx == 0);
+
+            /* #16: Save V6 roundtrip persists spirit_value & jiushen_uses_used */
+            ws->spirit_value = 77;
+            ws->jiushen_uses_used = 4;
+            int ok_v6_rt = 0;
+            if (pal_save_game_slot(game_dir, 98, ws, 498u, "測試存檔", 160, 160, 2) == 0) {
+                PalTalkWorldState *ws_v6 = (PalTalkWorldState *)calloc(1, sizeof(PalTalkWorldState));
+                if (ws_v6) {
+                    ws_v6->db = db;
+                    uint32_t lm = 0; int lx = 0, ly = 0, ld = 0;
+                    if (pal_load_game_slot(game_dir, 98, ws_v6, &lm, &lx, &ly, &ld) == 0) {
+                        ok_v6_rt = (ws_v6->spirit_value == 77 && ws_v6->jiushen_uses_used == 4);
+                    }
+                    free(ws_v6);
+                }
+                char tmp_p[1200];
+                snprintf(tmp_p, sizeof(tmp_p), "%s/Save/98.sav", game_dir);
+                remove(tmp_p);
+            }
+
+            p2_authentic_ok = (ok_stack && ok_buy_cap && ok_sell75 && ok_nosell0 && ok_money_cap &&
+                               ok_wuduzhu && ok_shouhulu && ok_prio && ok_def_first && ok_v6_rt) ? 1 : 0;
+            if (!p2_authentic_ok) {
+                fprintf(stderr, "[SelfTest] p2_authentic failed: stack=%d buycap=%d sell75=%d nosell0=%d mcap=%d wudu=%d shou=%d prio=%d def1st=%d v6rt=%d\n",
+                        ok_stack, ok_buy_cap, ok_sell75, ok_nosell0, ok_money_cap,
+                        ok_wuduzhu, ok_shouhulu, ok_prio, ok_def_first, ok_v6_rt);
+            }
+            combat_free_textures(p2_cb);
+            free(p2_cb);
+        }
+    }
+
+    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok) {
+        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d\n",
+                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok);
     }
 
     out_info->ok = (out_info->monster_count == 160 &&
-                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok &&
+                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok &&
                     out_info->zone_count == 265 &&
                     out_info->fight_script_count == 1056 &&
                     out_info->battle2801_bg_id == 1609 &&
@@ -20599,8 +20783,7 @@ static void pal_test_bridge_heal_party(void *ctx) {
 static void pal_test_bridge_add_money(void *ctx, int32_t delta) {
     PalTestBridgeCtx *c = (PalTestBridgeCtx *)ctx;
     if (!c || !c->ws) return;
-    c->ws->money += delta;
-    if (c->ws->money < 0) c->ws->money = 0;
+    pal_world_add_money(c->ws, delta);
     if (c->camp_menu) c->camp_menu->dirty = 1;
 }
 
@@ -21012,8 +21195,8 @@ static void pal_mcp_cb_state(void *ctx, PalJsonBuf *out) {
         for (int i = 0; i < cnt && i < 64; i++) {
             uint16_t iid = (c->shop_menu->mode == 0) ? c->shop_menu->buy_items[i] : c->ws->inventory_ids[i];
             const PalItemRecord *it = c->ws->db ? pal_db_find_item(c->ws->db, (int32_t)iid) : NULL;
-            int32_t price = (it && it->price > 0) ? it->price : 50;
-            if (c->shop_menu->mode == 1) price = (price > 1) ? (price / 2) : 25;
+            int32_t price = (it && it->price > 0) ? it->price : 0;
+            if (c->shop_menu->mode == 1) price = (price > 0) ? ((price * 3) / 4) : 0;
             if (i > 0) pal_jbuf_append_cstr(out, ",");
             pal_jbuf_append_fmt(out, "{\"item_id\":%u,\"price\":%d,\"name\":", (unsigned)iid, price);
             mcp_append_jstr_loc(out, it ? it->name_utf8 : "");
@@ -21968,8 +22151,7 @@ static int pal_mcp_cb_exec(
             }
         }
         if (req->has_add_money && c->ws) {
-            c->ws->money += req->add_money;
-            if (c->ws->money < 0) c->ws->money = 0;
+            pal_world_add_money(c->ws, req->add_money);
         }
         if (c->ws && c->ws->db) {
             if (req->has_target_level && req->target_level > 0) {
