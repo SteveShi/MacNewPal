@@ -2571,6 +2571,12 @@ static int resolve_tsw_from_fr(int32_t fr_id, const char **out_tsw_file, uint32_
     return *out_slot_id > 0 ? 0 : -1;
 }
 
+static inline int32_t pal_act_eff_delay(const PalActVM *vm) {
+    if (!vm) return 0;
+    if (vm->delay_override >= 0) return vm->delay_override;
+    return (vm->duration_ticks > 0) ? (vm->duration_ticks - 1) : 0;
+}
+
 static int apply_act_opcode(PalActVM *vm, const PalActInsn *in) {
     switch (in->op) {
         case 0x544Eu: /* NT: set track / sub-layer / count */
@@ -2615,9 +2621,9 @@ static int apply_act_opcode(PalActVM *vm, const PalActInsn *in) {
             vm->frame_index = in->args[0];
             vm->ap_step++;
             return 0;
-        case 0x4544u: /* DE: commit current frame for duration_ticks */
-            vm->delay_rem = vm->duration_ticks > 0 ? (vm->duration_ticks - 1) : 0;
-            return 1; /* end of tick */
+        case 0x534Du: /* SM: slow-move flag (Palgame.exe 0x45bae2 [act+0xA0]=1 -> 4px step instead of 8px) */
+            vm->slow_move = 1;
+            return 0;
         case 0x5859u: /* XY: set (x, y) anchor/offset */
             vm->offset_x = in->args[0];
             vm->offset_y = in->args[1];
@@ -2639,25 +2645,69 @@ static int apply_act_opcode(PalActVM *vm, const PalActInsn *in) {
         case 0x5756u: /* VW: trigger sound wave ID in all.snd */
             vm->last_sfx_id = in->args[0];
             return 0;
-        case 0x4C50u: /* LP: loop [start_ap, end_ap, repeat_count] */
-            vm->loop_start_frame = in->args[0];
-            vm->loop_end_frame = in->args[1];
-            vm->loop_remaining = in->args[2];
-            vm->loop_active = 1;
+        case 0x4C50u: /* LP: loop [start_ap, end_ap, repeat_count] (Palgame.exe 0x45bae2) */
+            vm->loop_start_frame = (int32_t)(uint8_t)in->args[0];
+            vm->loop_end_frame = (int32_t)(uint8_t)in->args[1];
+            if (!vm->loop_active) {
+                vm->loop_active = 1;
+                vm->loop_remaining = ((uint16_t)in->args[2] == 0xFFFFu || in->args[2] < 0)
+                                         ? -1
+                                         : (int32_t)in->args[2];
+            }
             return 0;
-        case 0x4F56u: /* VO: end sequence */
-        case 0x4F32u: /* 2O: end sequence */
-            if (vm->loop_remaining == -1) {
-                vm->pc = 0;
-                vm->ap_step = 0;
-                vm->delay_rem = 0;
-            } else if (vm->loop_remaining > 1) {
-                vm->loop_remaining--;
-                vm->pc = 0;
-                vm->ap_step = 0;
-                vm->delay_rem = 0;
-            } else {
+        case 0x4544u: /* DE: commit frame */
+        case 0x4F56u: /* VO: looping end (Palgame.exe 0x45bae2 -> restarts pc=0 unless force_oneshot) */
+        case 0x4F32u: /* 2O: one-shot end (Palgame.exe 0x45bae2 -> sets finished=1 and holds last frame!) */
+            if (vm->loop_active) {
+                int32_t ap = vm->ap_step;
+                if (ap < vm->loop_start_frame) {
+                    /* Fast-forward pre-loop frames on subsequent LP iterations (Palgame.exe 0x45bc8b) */
+                    vm->last_sfx_id = 0;
+                    return 0;
+                }
+                if (ap == vm->loop_end_frame) {
+                    if (vm->loop_remaining == -1) {
+                        vm->pc = 0;
+                        vm->ap_step = 0;
+                        vm->delay_rem = pal_act_eff_delay(vm);
+                        return 1;
+                    }
+                    vm->loop_remaining--;
+                    if (vm->loop_remaining <= 0) {
+                        vm->loop_active = 0;
+                        vm->loop_remaining = 0;
+                        if (in->op == 0x4F32u) {
+                            vm->finished = 1;
+                        } else if (in->op == 0x4F56u) {
+                            if (vm->force_oneshot) vm->finished = 1;
+                            else { vm->pc = 0; vm->ap_step = 0; }
+                        }
+                        vm->delay_rem = pal_act_eff_delay(vm);
+                        return 1;
+                    }
+                    vm->pc = 0;
+                    vm->ap_step = 0;
+                    vm->delay_rem = pal_act_eff_delay(vm);
+                    return 1;
+                }
+                vm->delay_rem = pal_act_eff_delay(vm);
+                return 1;
+            }
+            if (in->op == 0x4544u) {
+                vm->delay_rem = pal_act_eff_delay(vm);
+                return 1;
+            }
+            if (in->op == 0x4F32u) {
                 vm->finished = 1;
+                return 1;
+            }
+            /* VO (0x4F56): authentic Palgame.exe default is continuous loop */
+            if (vm->force_oneshot) {
+                vm->finished = 1;
+            } else {
+                vm->pc = 0;
+                vm->ap_step = 0;
+                vm->delay_rem = pal_act_eff_delay(vm);
             }
             return 1;
         default:
@@ -2725,6 +2775,7 @@ static int32_t pal_act_vm_init_with_prefs(
     memset(out_vm, 0, sizeof(*out_vm));
     out_vm->act_slot_id = act_slot_id;
     out_vm->duration_ticks = 1;
+    out_vm->delay_override = -1;
     out_vm->visible = 1;
     out_vm->flip_h = 0;
     out_vm->act_scale_fp = 1024;
@@ -4736,7 +4787,8 @@ typedef struct {
     uint16_t walk_end_act_id;   /* 0xFFFF = unchanged */
     uint16_t walk_end_sub;      /* 0xFFFF = unchanged */
     uint16_t walk_end_dir;      /* 0xFFFF = unchanged */
-    int custom_speed_px; /* 0 = default 4px/tick; >0 = OP 0x4D custom speed */
+    int16_t anim_delay_override_p1; /* 0 = none; >0 = OP 0x4D delay override (value - 1) (Palgame.exe [act+0x48]) */
+    int16_t walk_ticks;         /* Safety tick guard for active scripted walk */
     uint16_t fx_id;      /* OP 0x47/0x48 overhead emote: 1 + sub_arg (0 = off) */
     uint16_t fx_loaded_id;
     PalActVM fx_vm;
@@ -4801,6 +4853,7 @@ static int pal_actor_move_sub_base(const PalFieldActor *a, int is_party, int mov
 }
 
 static void field_actor_set_sub(PalFieldActor *a, const char *game_dir, uint32_t act_id, int sub_action, int loop) {
+    (void)loop; /* Authentic Palgame.exe 0x45bae2: VO loops naturally, 2O is one-shot hold-last-frame */
     if (!a) return;
     if (a->vm_ok && a->act_id == act_id && a->sub_action == sub_action) return;
     const char *act_file = NULL;
@@ -4815,7 +4868,9 @@ static void field_actor_set_sub(PalFieldActor *a, const char *game_dir, uint32_t
     };
     PalActVM next_vm;
     if (pal_act_vm_init_with_prefs(game_dir, act_file, sid, prefs, 4, 0, &next_vm) != 0) return;
-    if (loop) next_vm.loop_remaining = -1;
+    if (a->anim_delay_override_p1 > 0) {
+        next_vm.delay_override = (int32_t)(a->anim_delay_override_p1 - 1);
+    }
     a->vm = next_vm;
     a->act_id = act_id;
     a->sub_action = next_vm.sub_action_idx;
@@ -5410,6 +5465,33 @@ typedef struct {
     int32_t train_luck;
 } PalPartyMemberState;
 
+#define PAL_MAX_OVERLAYS        16
+#define PAL_MAX_CG_OVERLAYS     10
+#define PAL_MAX_FLYING_SPRITES  16
+
+typedef struct {
+    int active;
+    uint8_t layer;           /* 0 = OP 0x3A (map layer), 1 = OP 0x99 (top layer), 2 = OP 0x30C (post-fade CG) */
+    uint16_t act_id;
+    uint16_t sub_action;
+    int screen_x;
+    int screen_y;
+    PalActVM vm;
+    int vm_ok;
+} PalTalkOverlay;
+
+typedef struct {
+    int active;
+    uint16_t act_id;
+    uint16_t sub_action;
+    float cur_x, cur_y;      /* World pixel coordinates (Palgame.exe DAT_0050fc7c) */
+    float dst_x, dst_y;
+    float vx, vy;
+    int ticks_alive;
+    PalActVM vm;
+    int vm_ok;
+} PalFlyingSprite;
+
 typedef struct {
     uint8_t story_flags[PAL_STORY_FLAG_CAP];
     int32_t script_vars[PAL_SCRIPT_VAR_CAP];
@@ -5443,6 +5525,7 @@ typedef struct {
     int32_t fade_steps;
     int32_t cam_override_active;                  /* OP 0x32/0x46/0x49 camera pan state */
     int32_t cam_locked;                           /* OP 0x5E/0x5F camera follow lock (Palgame.exe [0x569850] & 2) */
+    int32_t black_screen_active;                  /* OP 0x3D/0x3C black backdrop (Palgame.exe [0x569850] & 1) */
     float cam_cur_x, cam_cur_y;
     float cam_target_x, cam_target_y;
     int32_t cam_pan_steps_x, cam_pan_steps_y;
@@ -5457,7 +5540,15 @@ typedef struct {
     int32_t last_resolved_item_id;
     uint16_t pending_escape_refund_item;
     int32_t combat_cooldown_ticks;
-    int32_t shake_ticks;
+    int32_t shake_active;                         /* OP 0x3F/0x40 authentic keyframe shake (Palgame.exe 0x4260b1) */
+    int32_t shake_interval;
+    int32_t shake_timer;
+    int32_t shake_idx;
+    int32_t shake_pair_count;
+    int16_t shake_dx[64];
+    int16_t shake_dy[64];
+    PalTalkOverlay cg_overlays[PAL_MAX_CG_OVERLAYS];       /* OP 0x30C/0x30D persistent CGs (Palgame.exe DAT_0057e0f0) */
+    PalFlyingSprite flying_sprites[PAL_MAX_FLYING_SPRITES]; /* OP 0x4F/0xD0 flying sprites (Palgame.exe DAT_0050fc7c) */
     int32_t auto_trig_recheck;
     int32_t jiushen_uses_used;                    /* 酒神 (6253, prop[6]=9) cumulative casts used */
     int32_t spirit_value;                         /* 紫金葫蘆靈葫值 (Palgame.exe DAT_005ab014) */
@@ -7150,19 +7241,6 @@ typedef struct {
     int vm_ok;
 } PalTalkPortrait;
 
-#define PAL_MAX_OVERLAYS 8
-
-typedef struct {
-    int active;
-    int is_oneshot_fx;
-    uint16_t act_id;
-    uint16_t sub_action;
-    int screen_x;
-    int screen_y;
-    PalActVM vm;
-    int vm_ok;
-} PalTalkOverlay;
-
 typedef struct {
     int active;
     int waiting_input;
@@ -8063,12 +8141,15 @@ static void pal_talk_vm_step_ex(
                 for (int n = 0; n < npc_cnt && npcs; n++) if (npcs[n].active && npcs[n].script_moving) any = 1;
                 if (any) return;
                 vm->waiting_walk_obj = -1;
-                vm->ip += 2u;
             } else {
                 PalFieldActor *wa = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, (uint16_t)vm->waiting_walk_obj, NULL);
                 if (wa && wa->script_moving) return;
+                if (wa) {
+                    wa->anim_delay_override_p1 = 0;
+                    wa->vm.delay_override = -1;
+                    wa->vm.delay_rem = 0;
+                }
                 vm->waiting_walk_obj = -1;
-                vm->ip += 4u;
             }
         }
         if (vm->waiting_input || vm->wait_ticks > 0 || vm->pending_map_id >= 0 || vm->paused_for_battle || vm->waiting_bink) return;
@@ -8177,7 +8258,7 @@ static void pal_talk_vm_step_ex(
             case 0xA9u: { /* Scripted multi-actor walk to target tile (Palgame.exe 0x447b92 & 0x450793) */
                 uint32_t cnt = (uint32_t)(rd_u16(ins + 2u) & 0x3FFFu);
                 uint32_t stride = (op == 0x14u) ? 6u : 12u;
-                int max_ticks = 0;
+                int any_started = 0;
                 for (uint32_t i = 0; i < cnt && 4u + (i + 1u) * stride <= ilen; i++) {
                     const uint8_t *e = ins + 4u + i * stride;
                     uint16_t obj = talk_resolve_obj_id(vm, rd_u16(e + 0u));
@@ -8220,6 +8301,10 @@ static void pal_talk_vm_step_ex(
                         a->px = wtx;
                         a->py = wty;
                         a->script_moving = 0;
+                        a->walk_ticks = 0;
+                        a->npc_flags &= ~0x04000000u;
+                        a->anim_delay_override_p1 = 0;
+                        a->vm.delay_override = -1;
                         pal_actor_apply_walk_end_pose(a, ws, game_dir, is_p);
                     } else {
                         int dx = abs(wtx - a->px);
@@ -8229,20 +8314,30 @@ static void pal_talk_vm_step_ex(
                             a->walk_target_px = wtx;
                             a->walk_target_py = wty;
                             a->script_moving = 1;
+                            a->walk_ticks = 0;
+                            /* Authentic Palgame.exe 0x447c38: default walk delay override is 1 (0x8001) if unset */
+                            if (a->anim_delay_override_p1 == 0) {
+                                a->anim_delay_override_p1 = 2; /* 1 + 1 */
+                            }
                             int base = pal_actor_move_sub_base(a, is_p, 1);
                             field_actor_set_sub(a, game_dir, a->act_id, base + (walk_dir & 7), 1);
-                            int t = (dist + 3) / 4;
-                            if (t > max_ticks) max_ticks = t;
+                            a->vm.delay_override = (int32_t)(a->anim_delay_override_p1 - 1);
+                            a->vm.delay_rem = 0;
+                            any_started = 1;
                         } else {
                             a->script_moving = 0;
+                            a->walk_ticks = 0;
+                            a->npc_flags &= ~0x04000000u;
+                            a->anim_delay_override_p1 = 0;
+                            a->vm.delay_override = -1;
                             pal_actor_apply_walk_end_pose(a, ws, game_dir, is_p);
                         }
                     }
                 }
                 vm->ip += ilen;
-                if (!auto_advance_wait && max_ticks > 0) {
-                    if (max_ticks > 45) max_ticks = 45;
-                    vm->wait_ticks = max_ticks;
+                if (!auto_advance_wait && any_started) {
+                    /* Authentic Palgame.exe 0x447ee8: block until ALL walking actors reach their destinations */
+                    vm->waiting_walk_obj = 0x10000;
                     return;
                 }
                 break;
@@ -9015,32 +9110,35 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x30Cu: { /* Show screen CG overlay [slot, act_id, sub, x, y] */
+            case 0x30Cu: { /* Show persistent screen CG overlay [slot, act_id, sub, x, y] (Palgame.exe 0x4468a2 -> DAT_0057e0f0) */
                 uint16_t slot = rd_u16(ins + 2u);
                 uint16_t aid = rd_u16(ins + 4u);
                 uint16_t sub = rd_u16(ins + 6u);
                 int16_t ox = (int16_t)rd_u16(ins + 8u);
                 int16_t oy = (int16_t)rd_u16(ins + 10u);
-                if (slot < PAL_MAX_OVERLAYS) {
-                    PalTalkOverlay *ov = &vm->overlays[slot];
-                    ov->active = 1;
-                    ov->act_id = aid;
-                    ov->sub_action = sub;
-                    ov->screen_x = (int)ox;
-                    ov->screen_y = (int)oy;
+                if (ws && slot < PAL_MAX_CG_OVERLAYS) {
+                    PalTalkOverlay *ov = &ws->cg_overlays[slot];
+                    memset(ov, 0, sizeof(*ov));
                     const char *af = NULL; uint32_t sid = 0;
-                    if (resolve_act_file_for_id((int32_t)aid, &af, &sid) == 0) {
-                        ov->vm_ok = (pal_act_vm_init(game_dir, af, sid, (int)sub, &ov->vm) == 0);
-                        if (ov->vm_ok) ov->vm.loop_remaining = -1;
+                    if (resolve_act_file_for_id((int32_t)aid, &af, &sid) == 0 &&
+                        pal_act_vm_init(game_dir, af, sid, (int)sub, &ov->vm) == 0) {
+                        ov->active = 1;
+                        ov->layer = 2u;
+                        ov->act_id = aid;
+                        ov->sub_action = sub;
+                        ov->screen_x = (int)ox;
+                        ov->screen_y = (int)oy;
+                        ov->vm_ok = 1;
+                        if (ov->vm.fr_tsw_id <= 0 && !ov->vm.finished) pal_act_vm_step_tick(&ov->vm);
                     }
                 }
                 vm->ip += ilen;
                 break;
             }
 
-            case 0x30Du: { /* Hide screen CG overlay [slot] */
+            case 0x30Du: { /* Hide persistent screen CG overlay [slot] (Palgame.exe 0x446968) */
                 uint16_t slot = rd_u16(ins + 2u);
-                if (slot < PAL_MAX_OVERLAYS) memset(&vm->overlays[slot], 0, sizeof(vm->overlays[slot]));
+                if (ws && slot < PAL_MAX_CG_OVERLAYS) memset(&ws->cg_overlays[slot], 0, sizeof(ws->cg_overlays[slot]));
                 vm->ip += ilen;
                 break;
             }
@@ -9059,14 +9157,20 @@ static void pal_talk_vm_step_ex(
                         a->px = wtx;
                         a->py = wty;
                         a->script_moving = 0;
+                        a->walk_ticks = 0;
                     } else if (abs(wtx - a->px) > 0 || abs(wty - a->py) > 0) {
                         a->walk_target_px = wtx;
                         a->walk_target_py = wty;
                         a->script_moving = 1;
+                        a->walk_ticks = 0;
+                        if (a->anim_delay_override_p1 == 0) a->anim_delay_override_p1 = 2;
                         int base = pal_actor_move_sub_base(a, is_p, 1);
                         field_actor_set_sub(a, game_dir, a->act_id, base + ndir, 1);
+                        a->vm.delay_override = (int32_t)(a->anim_delay_override_p1 - 1);
+                        a->vm.delay_rem = 0;
                     } else {
                         a->script_moving = 0;
+                        a->walk_ticks = 0;
                     }
                 }
                 vm->ip += ilen;
@@ -9074,14 +9178,19 @@ static void pal_talk_vm_step_ex(
             }
 
             case 0x0Du: /* Wait for single-actor walk [obj] */
-            case 0x12u: { /* Wait for actor walk/anim [obj] */
+            case 0x12u: { /* Wait / finalize single-actor walk [obj] (Palgame.exe 0x447926) */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, NULL);
+                vm->ip += ilen;
                 if (!auto_advance_wait && a && a->script_moving) {
                     vm->waiting_walk_obj = (int)obj;
                     return;
                 }
-                vm->ip += ilen;
+                if (a) {
+                    a->anim_delay_override_p1 = 0;
+                    a->vm.delay_override = -1;
+                    a->vm.delay_rem = 0;
+                }
                 break;
             }
 
@@ -9091,11 +9200,11 @@ static void pal_talk_vm_step_ex(
                     for (int p = 0; p < 4 && party; p++) if (party[p].active && party[p].script_moving) any = 1;
                     for (int n = 0; n < npc_cnt && npcs; n++) if (npcs[n].active && npcs[n].script_moving) any = 1;
                 }
+                vm->ip += ilen;
                 if (any) {
                     vm->waiting_walk_obj = 0x10000;
                     return;
                 }
-                vm->ip += ilen;
                 break;
             }
 
@@ -9345,30 +9454,38 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x4Bu: { /* Stop scripted walk & restore idle pose */
+            case 0x4Bu: { /* Stop scripted walk & restore idle pose (Palgame.exe 0x44ac85) */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 int is_p = 0;
                 PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, &is_p);
                 if (a) {
                     int was_active = a->active;
                     a->script_moving = 0;
+                    a->walk_ticks = 0;
+                    a->npc_flags &= ~0x04000000u;
+                    a->anim_delay_override_p1 = 0;
+                    a->vm.delay_override = -1;
                     int base = is_p ? a->action_base : (int)a->orig_sub_state;
-                    field_actor_set_sub(a, game_dir, a->act_id, base + pal_actor_eff_dir(a->dir), 1);
+                    field_actor_set_sub(a, game_dir, a->act_id, base + pal_actor_eff_dir(a->dir), 0);
                     if (!was_active) a->active = 0;
                 }
                 vm->ip += ilen;
                 break;
             }
 
-            case 0x4Du: case 0x4Eu: { /* Set/clear custom walk speed [obj, spd] */
+            case 0x4Du: case 0x4Eu: { /* Set/clear .act frame delay override [obj, delay_ticks] (Palgame.exe 0x44b011: [act+0x48] = val | 0x8000) */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, NULL);
                 if (a) {
                     if (op == 0x4Du) {
-                        int16_t spd = (int16_t)rd_u16(ins + 4u);
-                        a->custom_speed_px = (spd > 0) ? (int)spd : 4;
+                        uint16_t dly = rd_u16(ins + 4u) & 0x7FFFu;
+                        a->anim_delay_override_p1 = (int16_t)(1 + (int)dly);
+                        a->vm.delay_override = (int32_t)dly;
+                        a->vm.delay_rem = 0;
                     } else {
-                        a->custom_speed_px = 0;
+                        a->anim_delay_override_p1 = 0;
+                        a->vm.delay_override = -1;
+                        a->vm.delay_rem = 0;
                     }
                 }
                 vm->ip += ilen;
@@ -9682,39 +9799,40 @@ static void pal_talk_vm_step_ex(
                 vm->ip += ilen;
                 break;
 
-            case 0x3Au: /* Spawn looping UI/magic screen overlay [x, y, act_id, sub] */
-            case 0x99u: { /* Spawn one-shot screen overlay FX [x, y, act_id, sub] */
+            case 0x3Au: /* Spawn map-layer screen overlay [x, y, act_id, sub] (Palgame.exe DAT_00519e8c) */
+            case 0x99u: { /* Spawn top-layer screen overlay [x, y, act_id, sub] (Palgame.exe DAT_0051a754, visible on 0x3D black screen) */
                 if (ilen >= 10u) {
                     int16_t ox = (int16_t)rd_u16(ins + 2u);
                     int16_t oy = (int16_t)rd_u16(ins + 4u);
                     uint16_t aid = rd_u16(ins + 6u);
                     uint16_t sub = rd_u16(ins + 8u);
-                    int oneshot = (op == 0x99u) ? 1 : 0;
+                    uint8_t layer = (op == 0x99u) ? 1u : 0u;
                     if (aid != 9012u && aid > 0u) {
                         int slot = -1;
                         for (int s = 0; s < PAL_MAX_OVERLAYS; s++) {
-                            if (!oneshot && vm->overlays[s].active && vm->overlays[s].act_id == aid && vm->overlays[s].sub_action == sub) {
+                            if (!vm->overlays[s].active) {
                                 slot = s;
                                 break;
                             }
-                            if (!vm->overlays[s].active && slot < 0) slot = s;
                         }
-                        if (slot >= 0) {
-                            PalTalkOverlay *ov = &vm->overlays[slot];
-                            const char *af = NULL;
-                            uint32_t sid = 0;
-                            if (resolve_act_file_for_id((int32_t)aid, &af, &sid) == 0 &&
-                                pal_act_vm_init(game_dir, af, sid, (int)sub, &ov->vm) == 0) {
-                                ov->active = 1;
-                                ov->is_oneshot_fx = oneshot;
-                                ov->act_id = aid;
-                                ov->sub_action = sub;
-                                ov->screen_x = (int)ox;
-                                ov->screen_y = (int)oy;
-                                ov->vm_ok = 1;
-                                ov->vm.loop_remaining = oneshot ? 0 : -1;
-                                vm->fx_overlays_spawned++;
+                        if (slot < 0) slot = PAL_MAX_OVERLAYS - 1;
+                        PalTalkOverlay *ov = &vm->overlays[slot];
+                        memset(ov, 0, sizeof(*ov));
+                        const char *af = NULL;
+                        uint32_t sid = 0;
+                        if (resolve_act_file_for_id((int32_t)aid, &af, &sid) == 0 &&
+                            pal_act_vm_init(game_dir, af, sid, (int)sub, &ov->vm) == 0) {
+                            ov->active = 1;
+                            ov->layer = layer;
+                            ov->act_id = aid;
+                            ov->sub_action = sub;
+                            ov->screen_x = (int)ox;
+                            ov->screen_y = (int)oy;
+                            ov->vm_ok = 1;
+                            if (ov->vm.fr_tsw_id <= 0 && !ov->vm.finished) {
+                                pal_act_vm_step_tick(&ov->vm);
                             }
+                            vm->fx_overlays_spawned++;
                         }
                     }
                 }
@@ -9722,17 +9840,16 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x9Au: { /* Wait until active 0x99 screen overlay finishes or reaches frame/AP > arg0 (Palgame.exe 0x44c654..0x44c6cb) */
+            case 0x6Au: /* Wait until active 0x3A overlay reaches AP > arg0 (Palgame.exe 0x44c654) */
+            case 0x9Au: { /* Wait until active 0x99 overlay reaches AP > arg0 (Palgame.exe 0x44c654..0x44c6cb) */
                 if (!auto_advance_wait) {
-                    uint16_t target_fr = (ilen >= 4u) ? rd_u16(ins + 2u) : 0u;
+                    uint8_t want_layer = (op == 0x9Au) ? 1u : 0u;
+                    uint16_t target_ap = (ilen >= 4u) ? rd_u16(ins + 2u) : 0u;
                     int still_waiting = 0;
                     for (int s = PAL_MAX_OVERLAYS - 1; s >= 0; s--) {
-                        if (vm->overlays[s].active && vm->overlays[s].is_oneshot_fx &&
+                        if (vm->overlays[s].active && vm->overlays[s].layer == want_layer &&
                             vm->overlays[s].vm_ok && !vm->overlays[s].vm.finished) {
-                            int cur_fr = vm->overlays[s].vm.ap_step > vm->overlays[s].vm.frame_index
-                                             ? vm->overlays[s].vm.ap_step
-                                             : vm->overlays[s].vm.frame_index;
-                            if (cur_fr <= (int)target_fr) {
+                            if (vm->overlays[s].vm.ap_step <= (int)target_ap) {
                                 still_waiting = 1;
                             }
                             break;
@@ -9749,32 +9866,118 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x3Fu: { /* Start Talk screen shake effect (FF00-terminated params) */
-                ws->shake_ticks = 40;
+            case 0x3Fu: { /* Start authentic keyframe screen shake [interval, dx0, dy0, ..., 0xFF00] (Palgame.exe 0x44a5b5 & 0x4260b1) */
+                if (ws) {
+                    int16_t interval = (ilen >= 4u) ? (int16_t)rd_u16(ins + 2u) : 2;
+                    if (interval < 1) interval = 1;
+                    int cnt = 0;
+                    for (uint32_t p = 4u; p + 4u <= ilen && cnt < 64; p += 4u) {
+                        uint16_t wx = rd_u16(ins + p);
+                        if (wx == 0xFF00u) break;
+                        uint16_t wy = rd_u16(ins + p + 2u);
+                        if (wy == 0xFF00u) break;
+                        ws->shake_dx[cnt] = (int16_t)wx;
+                        ws->shake_dy[cnt] = (int16_t)wy;
+                        cnt++;
+                    }
+                    if (cnt == 0) {
+                        ws->shake_dx[0] = 0; ws->shake_dy[0] = 4;
+                        ws->shake_dx[1] = 0; ws->shake_dy[1] = -4;
+                        cnt = 2;
+                    }
+                    ws->shake_pair_count = cnt;
+                    ws->shake_interval = (int32_t)interval;
+                    ws->shake_timer = (int32_t)interval;
+                    ws->shake_idx = 0;
+                    ws->shake_active = 1;
+                }
                 vm->ip += ilen;
                 break;
             }
 
-            case 0x40u: { /* Stop Talk screen shake effect */
-                ws->shake_ticks = 0;
+            case 0x40u: { /* Stop Talk screen shake effect (Palgame.exe 0x44a660) */
+                if (ws) {
+                    ws->shake_active = 0;
+                    ws->shake_pair_count = 0;
+                    ws->shake_idx = 0;
+                }
                 vm->ip += ilen;
                 break;
             }
 
-            case 0x4Fu: { /* Clear UI/dialogue input lock and continue */
-                vm->waiting_input = 0;
+            case 0x4Fu: { /* Spawn flying world-space sprite [act_id, sub, src_tx, src_ty, dst_tx, dst_ty, speed_px] (Palgame.exe 0x44b150 & 0x426358) */
+                if (!auto_advance_wait && ws && ilen >= 16u && game_dir) {
+                    uint16_t aid = rd_u16(ins + 2u);
+                    uint16_t sub = rd_u16(ins + 4u);
+                    float sx = (float)((int)(int16_t)rd_u16(ins + 6u) * 16);
+                    float sy = (float)((int)(int16_t)rd_u16(ins + 8u) * 16);
+                    float dx = (float)((int)(int16_t)rd_u16(ins + 10u) * 16);
+                    float dy = (float)((int)(int16_t)rd_u16(ins + 12u) * 16);
+                    float spd = (float)(int)(int16_t)rd_u16(ins + 14u);
+                    if (spd < 1.0f) spd = 8.0f;
+                    float dist = hypotf(dx - sx, dy - sy);
+                    int slot = -1;
+                    for (int i = 0; i < PAL_MAX_FLYING_SPRITES; i++) {
+                        if (!ws->flying_sprites[i].active) { slot = i; break; }
+                    }
+                    if (slot < 0) slot = PAL_MAX_FLYING_SPRITES - 1;
+                    const char *af = NULL; uint32_t sid = 0;
+                    if (dist >= 1.0f && resolve_act_file_for_id((int32_t)aid, &af, &sid) == 0) {
+                        PalFlyingSprite *fs = &ws->flying_sprites[slot];
+                        memset(fs, 0, sizeof(*fs));
+                        if (pal_act_vm_init(game_dir, af, sid, (int)sub, &fs->vm) == 0) {
+                            fs->active = 1;
+                            fs->act_id = aid;
+                            fs->sub_action = sub;
+                            fs->cur_x = sx;
+                            fs->cur_y = sy;
+                            fs->dst_x = dx;
+                            fs->dst_y = dy;
+                            fs->vx = (spd / dist) * (dx - sx);
+                            fs->vy = (spd / dist) * (dy - sy);
+                            fs->vm_ok = 1;
+                            if (fs->vm.fr_tsw_id <= 0 && !fs->vm.finished) {
+                                pal_act_vm_step_tick(&fs->vm);
+                            }
+                        }
+                    }
+                }
                 vm->ip += ilen;
                 break;
             }
 
-            case 0x6Bu: { /* Wait until actor [obj] animation reaches frame >= [min_frame] */
+            case 0xD0u: { /* Wait until flying sprite [act_id, sub] finishes (Palgame.exe 0x44f4d8) */
+                if (!auto_advance_wait && ws && ilen >= 6u) {
+                    uint16_t aid = rd_u16(ins + 2u);
+                    uint16_t sub = rd_u16(ins + 4u);
+                    int found = 0;
+                    for (int i = 0; i < PAL_MAX_FLYING_SPRITES; i++) {
+                        if (ws->flying_sprites[i].active &&
+                            ws->flying_sprites[i].act_id == aid &&
+                            ws->flying_sprites[i].sub_action == sub) {
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (found && vm->wait_guard_ticks < 600) {
+                        vm->wait_guard_ticks++;
+                        vm->wait_ticks = 1;
+                        return;
+                    }
+                }
+                vm->wait_guard_ticks = 0;
+                vm->ip += ilen;
+                break;
+            }
+
+            case 0x6Bu: { /* Wait until actor [obj] animation reaches AP step >= [min_ap] (Palgame.exe 0x44c6dc) */
                 if (!auto_advance_wait && ilen >= 6u) {
                     uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
-                    uint16_t min_fr = rd_u16(ins + 4u);
+                    uint16_t min_ap = rd_u16(ins + 4u);
                     int is_p = 0;
-                    PalFieldActor *a = (obj != 9012u) ? talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, &is_p) : NULL;
+                    PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, &is_p);
                     if (a && a->vm_ok && !a->vm.finished &&
-                        a->vm.frame_index < (int)min_fr && vm->wait_guard_ticks < 36) {
+                        a->vm.ap_step < (int)min_ap && vm->wait_guard_ticks < 600) {
                         vm->wait_guard_ticks++;
                         vm->wait_ticks = 1;
                         return;
@@ -9806,19 +10009,47 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x36u: { /* Authentic Palgame.exe 0x449aa7: reset actor ACT VM to frame 0 and advance N steps */
+            case 0x36u: { /* Authentic Palgame.exe 0x449aa7: reset actor ACT VM to pc=0 and step 1 + N frames */
                 if (ilen >= 6u) {
                     uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                     int16_t steps = (int16_t)rd_u16(ins + 4u);
                     PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, NULL);
-                    if (a && a->vm_ok && a->act_id > 0u && game_dir) {
-                        field_actor_set_sub(a, game_dir, a->act_id, a->sub_action, 1);
+                    if (a && a->vm_ok && a->vm.insn_count > 0) {
+                        a->vm.pc = 0;
+                        a->vm.ap_step = 0;
+                        a->vm.delay_rem = 0;
+                        a->vm.finished = 0;
+                        a->vm.loop_active = 0;
+                        a->vm.loop_remaining = 0;
+                        pal_act_vm_step_tick(&a->vm);
                         int lim = (steps > 0 && steps <= 256) ? (int)steps : 0;
-                        for (int s = 0; s < lim; s++) {
+                        for (int s = 0; s < lim && !a->vm.finished; s++) {
+                            a->vm.delay_rem = 0;
                             pal_act_vm_step_tick(&a->vm);
+                            a->vm.last_sfx_id = 0;
                         }
                     }
                 }
+                vm->ip += ilen;
+                break;
+            }
+
+            case 0x3Cu: /* Restore normal map rendering after OP 0x3D black backdrop (Palgame.exe 0x449f47) */
+                if (ws) ws->black_screen_active = 0;
+                vm->ip += ilen;
+                break;
+
+            case 0x3Du: /* Switch scene to pure-black backdrop (Palgame.exe 0x449f60: [0x569850] |= 1) */
+                if (ws) ws->black_screen_active = 1;
+                vm->ip += ilen;
+                break;
+
+            case 0x312u: { /* Clear active overlays, portraits, flying sprites & dialogue (Palgame.exe 0x494d53) */
+                memset(vm->overlays, 0, sizeof(vm->overlays));
+                memset(vm->portraits, 0, sizeof(vm->portraits));
+                vm->dlg_visible = 0;
+                vm->dlg_dirty = 1;
+                if (ws) memset(ws->flying_sprites, 0, sizeof(ws->flying_sprites));
                 vm->ip += ilen;
                 break;
             }
@@ -9859,12 +10090,11 @@ static void pal_talk_vm_step_ex(
             }
 
             /* UI/VRAM/particle/weather/input framing opcodes (handled inherently by runtime) */
-            case 0x3Cu: case 0x3Du:
             case 0x50u:
-            case 0x68u: case 0x69u: case 0x6Au:
+            case 0x68u: case 0x69u:
             case 0x70u: case 0x73u: case 0x76u: case 0x8Bu: case 0x8Du:
-            case 0xA0u: case 0xD0u:
-            case 0x311u: case 0x312u: case 0x402u:
+            case 0xA0u:
+            case 0x311u: case 0x402u:
                 vm->ip += ilen;
                 break;
 
@@ -10265,6 +10495,13 @@ int32_t pal_talk_vm_probe_m3(const char *game_dir, PalTalkM3ProbeInfo *out_info)
                     if (pal_talk_vm_start(&vm, game_dir, 1439, 0) != 0) break;
                     vm.request_return_title = 0;
                     for (int g = 0; g < 512 && vm.active; g++) {
+                        for (int o = 0; o < PAL_MAX_OVERLAYS; o++) {
+                            if (vm.overlays[o].active && vm.overlays[o].vm_ok && !vm.overlays[o].vm.finished) {
+                                vm.overlays[o].vm.delay_rem = 0;
+                                pal_act_vm_step_tick(&vm.overlays[o].vm);
+                                if (vm.overlays[o].vm.finished) memset(&vm.overlays[o], 0, sizeof(vm.overlays[o]));
+                            }
+                        }
                         vm.wait_ticks = 0;
                         vm.waiting_input = 0;
                         vm.waiting_fade = 0;
@@ -11004,6 +11241,39 @@ static void pal_field_env_tick(
             pt->x = (float)(pal_env_rand(env) % 640u);
         }
     }
+}
+
+static void pal_render_act_overlay_sprite(
+    SDL_Renderer *renderer, const char *game_dir, SDL_ScaleMode scale_mode,
+    PalTswCache *tsw_cache, const PalActVM *vm, float base_x, float base_y
+) {
+    if (!renderer || !game_dir || !tsw_cache || !vm || !vm->visible || vm->fr_tsw_id <= 0) return;
+    PalLoadedSprite *osp = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, vm->fr_tsw_id);
+    if (!osp || osp->nframes <= 0) return;
+    int fi = vm->frame_index;
+    if (fi < 0) fi = 0;
+    fi %= osp->nframes;
+    SDL_Texture *tex = osp->frames[fi];
+    if (!tex) return;
+    float ofw = 0.0f, ofh = 0.0f;
+    pal_sprite_frame_size(osp, fi, &ofw, &ofh);
+    float sc = (vm->act_scale_fp > 0 && vm->act_scale_fp != 1024) ? ((float)vm->act_scale_fp / 1024.0f) : 1.0f;
+    float dw = ofw * sc;
+    float dh = ofh * sc;
+    SDL_FRect od = {
+        base_x - (float)vm->offset_x * sc,
+        base_y - (float)vm->offset_y * sc,
+        dw, dh
+    };
+    uint8_t alpha = vm->alpha_scale;
+    if (vm->blend_mode == 8) alpha = (uint8_t)(alpha / 2u);
+    SDL_BlendMode bm = (vm->blend_mode == 4) ? SDL_BLENDMODE_ADD : SDL_BLENDMODE_BLEND;
+    SDL_SetTextureBlendMode(tex, bm);
+    SDL_SetTextureAlphaMod(tex, alpha);
+    SDL_RenderTextureRotated(renderer, tex, NULL, &od, 0.0, NULL,
+                             vm->flip_h ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
+    SDL_SetTextureAlphaMod(tex, 255);
+    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
 }
 
 static void pal_field_env_draw_bg(
@@ -13256,7 +13526,7 @@ static void pal_combat_analyze_fight_script(
 
 static void pal_act_warm_start(PalActVM *vm, int loop) {
     if (!vm) return;
-    if (loop) vm->loop_remaining = -1;
+    vm->force_oneshot = (loop == 0) ? 1 : 0;
     for (int t = 0; t < 8 && vm->fr_tsw_id <= 0 && !vm->finished; t++) {
         pal_act_vm_step_tick(vm);
     }
@@ -21001,7 +21271,7 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
                 tvm.active = 1;
                 tvm.ip = 0u;
                 tvm.overlays[0].active = 1;
-                tvm.overlays[0].is_oneshot_fx = 1;
+                tvm.overlays[0].layer = 1u;
                 tvm.overlays[0].vm_ok = 1;
                 tvm.overlays[0].vm.finished = 0;
                 tvm.overlays[0].vm.ap_step = 5;
@@ -22191,14 +22461,24 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
                         ws->active_battle_id = 0;
                         ws->cam_locked = 0;
                     }
-                    /* Step active scripted walks tick-by-tick to verify walk direction & arrival pose */
-                    while (tp32[0].script_moving || (c32 > 0 && n32[c32 - 1].script_moving)) {
+                    /* Step active scripted walks tick-by-tick (with ACT VM tick) to verify walk direction & arrival pose */
+                    for (int wg = 0; wg < 400; wg++) {
+                        int any_m = 0;
+                        for (int p = 0; p < 4; p++) if (tp32[p].active && tp32[p].script_moving) any_m = 1;
+                        for (int n = 0; n < c32; n++) if (n32[n].active && n32[n].script_moving) any_m = 1;
+                        if (!any_m) break;
                         if (tp32[0].script_moving && tp32[0].walk_target_px == (41 << 4) &&
                             tp32[0].walk_target_py == (74 << 4)) {
                             if (tp32[0].dir == 0 && tp32[0].sub_action == 8) saw_li_walk_up = 1;
                         }
-                        for (int p = 0; p < 4; p++) step_script_moving_actor(&tp32[p], ws, game_dir, 1, 1);
-                        for (int n = 0; n < c32; n++) step_script_moving_actor(&n32[n], ws, game_dir, 0, 1);
+                        for (int p = 0; p < 4; p++) {
+                            step_script_moving_actor(&tp32[p], ws, game_dir, 1, 1);
+                            if (tp32[p].vm_ok && !tp32[p].vm.finished) pal_act_vm_step_tick(&tp32[p].vm);
+                        }
+                        for (int n = 0; n < c32; n++) {
+                            step_script_moving_actor(&n32[n], ws, game_dir, 0, 1);
+                            if (n32[n].vm_ok && !n32[n].vm.finished) pal_act_vm_step_tick(&n32[n].vm);
+                        }
                     }
                     if (vm32.dlg_visible && strstr(vm32.last_dialogue_utf8, "小白臉")) {
                         for (int n = 0; n < c32; n++) {
@@ -22236,8 +22516,132 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
             /* Verify level-up parchment scroll (9050[0]=204x55 @ (228,72), 9050[5]=328x312 @ (164,122)) fits inside 640x480 */
             int lvup_bounds_ok = (228 >= 0 && 228 + 204 <= 640 && 72 >= 0 && 72 + 55 <= 480 &&
                                   164 >= 0 && 164 + 328 <= 640 && 122 >= 0 && 122 + 312 <= 480) ? 1 : 0;
+            /* Global Cutscene & Animation Engine Parity Audit (Palgame.exe 0x45bae2 / 0x44598e / 0x4234dc) */
+            int act_vo_2o_lp_ok = 0, op_cutscene_fx_ok = 0;
+            {
+                /* 1) .act VM: 2O one-shot stops & holds last frame; VO loops continuously; LP repeats [start_ap..end_ap] */
+                PalActVM v_2o = {0}, v_vo = {0}, v_lp = {0};
+                int ok_2o = (pal_act_vm_init(game_dir, "all_char.act", 1000u, 40, &v_2o) == 0);
+                int ok_vo = (pal_act_vm_init(game_dir, "all_char.act", 1u, 8, &v_vo) == 0);
+                int ok_lp = (pal_act_vm_init(game_dir, "all_char.act", 10u, 0, &v_lp) == 0);
+                if (ok_2o) {
+                    for (int t = 0; t < 400 && !v_2o.finished; t++) pal_act_vm_step_tick(&v_2o);
+                }
+                if (ok_vo) {
+                    for (int t = 0; t < 120; t++) pal_act_vm_step_tick(&v_vo);
+                }
+                int lp_saw_active = 0, lp_saw_exit = 0;
+                if (ok_lp) {
+                    for (int t = 0; t < 400 && !v_lp.finished; t++) {
+                        pal_act_vm_step_tick(&v_lp);
+                        if (v_lp.loop_active) lp_saw_active = 1;
+                        else if (lp_saw_active) lp_saw_exit = 1;
+                    }
+                }
+                act_vo_2o_lp_ok = (ok_2o && v_2o.finished == 1 &&
+                                   ok_vo && v_vo.finished == 0 &&
+                                   ok_lp && lp_saw_active && lp_saw_exit) ? 1 : 0;
+
+                /* 2) OP 0x4D delay override, OP 0x3D/0x3C black screen, OP 0x3F/0x40 keyframe shake,
+                 *    OP 0x4F/0xD0 flying sprite, OP 0x3A/0x6A + 0x99/0x9A layer split, OP 0x36/0x6B, OP 0x30C/0x30D */
+                PalTalkWorldState *cws = (PalTalkWorldState *)calloc(1, sizeof(PalTalkWorldState));
+                if (cws) {
+                    cws->db = db;
+                    /* 2a) OP 0x4F + 0xD0 in Talk 614 */
+                    int saw_fly = 0, saw_shake = 0, saw_black = 0, saw_black_off = 0, saw_cg_persist = 0, saw_cg_clear = 0;
+                    PalTalkVM cvm = {0};
+                    if (pal_talk_vm_start(&cvm, game_dir, 614, 0) == 0) {
+                        for (int st = 0; st < 200 && cvm.active; st++) {
+                            for (int fi = 0; fi < PAL_MAX_FLYING_SPRITES; fi++) {
+                                if (cws->flying_sprites[fi].active && cws->flying_sprites[fi].act_id == 60u &&
+                                    cws->flying_sprites[fi].sub_action == 31u) {
+                                    saw_fly = 1;
+                                    memset(&cws->flying_sprites[fi], 0, sizeof(cws->flying_sprites[fi]));
+                                }
+                            }
+                            cvm.wait_ticks = 0; cvm.waiting_input = 0; cvm.waiting_walk_obj = -1;
+                            cvm.waiting_fade = 0; cvm.waiting_pan = 0; cvm.pending_map_id = -1;
+                            cvm.waiting_bink = 0; cvm.paused_for_battle = 0;
+                            cws->fade_steps = 0; cws->cam_pan_steps_x = 0; cws->cam_pan_steps_y = 0;
+                            pal_talk_vm_step_ex(&cvm, cws, game_dir, 1u, tp32, n32, &c32, 128, 0);
+                        }
+                        pal_talk_vm_free(&cvm);
+                    }
+                    /* 2b) OP 0x3F / 0x40 + OP 0x3D / 0x3C in Talk 1027 */
+                    if (pal_talk_vm_start(&cvm, game_dir, 1027, 0) == 0) {
+                        for (int st = 0; st < 600 && cvm.active; st++) {
+                            if (cws->shake_active && cws->shake_interval == 2 && cws->shake_pair_count >= 2) saw_shake = 1;
+                            if (cws->black_screen_active) saw_black = 1;
+                            if (saw_black && !cws->black_screen_active) saw_black_off = 1;
+                            for (int o = 0; o < PAL_MAX_OVERLAYS; o++) {
+                                if (cvm.overlays[o].active && cvm.overlays[o].vm_ok && !cvm.overlays[o].vm.finished) {
+                                    cvm.overlays[o].vm.delay_rem = 0;
+                                    pal_act_vm_step_tick(&cvm.overlays[o].vm);
+                                    if (cvm.overlays[o].vm.finished) memset(&cvm.overlays[o], 0, sizeof(cvm.overlays[o]));
+                                }
+                            }
+                            cvm.wait_ticks = 0; cvm.waiting_input = 0; cvm.waiting_walk_obj = -1;
+                            cvm.waiting_fade = 0; cvm.waiting_pan = 0; cvm.pending_map_id = -1;
+                            cvm.waiting_bink = 0; cvm.paused_for_battle = 0;
+                            cws->fade_steps = 0; cws->cam_pan_steps_x = 0; cws->cam_pan_steps_y = 0;
+                            memset(cws->flying_sprites, 0, sizeof(cws->flying_sprites));
+                            pal_talk_vm_step_ex(&cvm, cws, game_dir, 1u, tp32, n32, &c32, 128, 0);
+                        }
+                        pal_talk_vm_free(&cvm);
+                    }
+                    /* 2c) OP 0x30C in Talk 154 persists after Talk 154 ends, cleared by OP 0x30D in Talk 155 */
+                    if (pal_talk_vm_start(&cvm, game_dir, 154, 0) == 0) {
+                        for (int st = 0; st < 400 && cvm.active; st++) {
+                            cvm.wait_ticks = 0; cvm.waiting_input = 0; cvm.waiting_walk_obj = -1;
+                            cvm.waiting_fade = 0; cvm.waiting_pan = 0; cvm.pending_map_id = -1;
+                            cvm.waiting_bink = 0; cvm.paused_for_battle = 0;
+                            cws->fade_steps = 0; cws->cam_pan_steps_x = 0; cws->cam_pan_steps_y = 0;
+                            pal_talk_vm_step_ex(&cvm, cws, game_dir, 1u, tp32, n32, &c32, 128, 0);
+                        }
+                        pal_talk_vm_free(&cvm);
+                        if (cws->cg_overlays[0].active && cws->cg_overlays[0].act_id == 711u) saw_cg_persist = 1;
+                    }
+                    if (saw_cg_persist && pal_talk_vm_start(&cvm, game_dir, 155, 0) == 0) {
+                        for (int st = 0; st < 400 && cvm.active; st++) {
+                            if (!cws->cg_overlays[0].active) { saw_cg_clear = 1; break; }
+                            cvm.wait_ticks = 0; cvm.waiting_input = 0; cvm.waiting_walk_obj = -1;
+                            cvm.waiting_fade = 0; cvm.waiting_pan = 0; cvm.pending_map_id = -1;
+                            cvm.waiting_bink = 0; cvm.paused_for_battle = 0;
+                            cws->fade_steps = 0; cws->cam_pan_steps_x = 0; cws->cam_pan_steps_y = 0;
+                            pal_talk_vm_step_ex(&cvm, cws, game_dir, 1u, tp32, n32, &c32, 128, 0);
+                        }
+                        pal_talk_vm_free(&cvm);
+                    }
+                    /* 2d) OP 0x4D sets anim_delay_override_p1 without corrupting walk speed, OP 0x36 resets pc=0 */
+                    PalFieldActor da = {0};
+                    da.active = 1; da.obj_id = 9012u; da.act_id = 1000u;
+                    field_actor_set_sub(&da, game_dir, 1000u, 40, 1);
+                    for (int t = 0; t < 120 && !da.vm.finished; t++) pal_act_vm_step_tick(&da.vm);
+                    int was_fin = da.vm.finished;
+                    uint8_t synth_36[8] = {0x36, 0x00, 0x34, 0x23, 0x00, 0x00, 0xFF, 0xFF}; /* OP 0x36 [9012, 0] */
+                    cvm.active = 1; cvm.chunk = synth_36; cvm.chunk_len = 8; cvm.ip = 0; cvm.waiting_walk_obj = -1;
+                    int dcnt = 1;
+                    pal_talk_vm_step_ex(&cvm, cws, game_dir, 1u, NULL, &da, &dcnt, 1, 0);
+                    int op36_replayed = (was_fin && !da.vm.finished && da.vm.ap_step == 1) ? 1 : 0;
+                    uint8_t synth_4d[8] = {0x4D, 0x00, 0x34, 0x23, 0x02, 0x00, 0xFF, 0xFF}; /* OP 0x4D [9012, 2] */
+                    cvm.active = 1; cvm.chunk = synth_4d; cvm.chunk_len = 8; cvm.ip = 0; cvm.waiting_walk_obj = -1;
+                    pal_talk_vm_step_ex(&cvm, cws, game_dir, 1u, NULL, &da, &dcnt, 1, 0);
+                    int op4d_ok = (da.anim_delay_override_p1 == 3 && da.vm.delay_override == 2) ? 1 : 0;
+                    cvm.chunk = NULL;
+                    op_cutscene_fx_ok = (saw_fly && saw_shake && saw_black && saw_black_off &&
+                                         saw_cg_persist && saw_cg_clear && op36_replayed && op4d_ok) ? 1 : 0;
+                    if (!act_vo_2o_lp_ok || !op_cutscene_fx_ok) {
+                        fprintf(stderr, "[SelfTest] Global cutscene audit failed: vo2olp=%d (2o=%d vo=%d lp=%d) fx=%d (fly=%d shk=%d blk=%d/%d cg=%d/%d op36=%d op4d=%d)\n",
+                                act_vo_2o_lp_ok, v_2o.finished, v_vo.finished, lp_saw_active,
+                                op_cutscene_fx_ok, saw_fly, saw_shake, saw_black, saw_black_off,
+                                saw_cg_persist, saw_cg_clear, op36_replayed, op4d_ok);
+                    }
+                    free(cws);
+                }
+            }
             m32_cam_ok = (m32_cam_ok && m32_linger_idle_ok && m32_li_walk_ok &&
-                          m32_cam_release_ok && m32_exit_ok && lvup_bounds_ok) ? 1 : 0;
+                          m32_cam_release_ok && m32_exit_ok && lvup_bounds_ok &&
+                          act_vo_2o_lp_ok && op_cutscene_fx_ok) ? 1 : 0;
             if (!m32_cam_ok) {
                 fprintf(stderr, "[SelfTest] Map32 cutscene audit failed: linger_idle=%d li_walk=%d cam_rel=%d exit=%d lvup=%d\n",
                         m32_linger_idle_ok, m32_li_walk_ok, m32_cam_release_ok, m32_exit_ok, lvup_bounds_ok);
@@ -23092,11 +23496,29 @@ static void pal_npc_ai_step(
 static void step_script_moving_actor(
     PalFieldActor *a, PalTalkWorldState *ws, const char *game_dir, int is_party, int rem_ticks
 ) {
+    (void)rem_ticks; /* Authentic Palgame.exe 0x4225e0: cadence driven by ACT delay_rem, never artificial rem_ticks turbo */
     if (!a || !a->script_moving) return;
     int dx = a->walk_target_px - a->px;
     int dy = a->walk_target_py - a->py;
     if (dx == 0 && dy == 0) {
         a->script_moving = 0;
+        a->walk_ticks = 0;
+        a->npc_flags &= ~0x04000000u;
+        a->anim_delay_override_p1 = 0;
+        a->vm.delay_override = -1;
+        pal_actor_apply_walk_end_pose(a, ws, game_dir, is_party);
+        return;
+    }
+    a->walk_ticks++;
+    if (a->walk_ticks > 1200) {
+        /* Safety guard against malformed script coordinates */
+        a->px = a->walk_target_px;
+        a->py = a->walk_target_py;
+        a->script_moving = 0;
+        a->walk_ticks = 0;
+        a->npc_flags &= ~0x04000000u;
+        a->anim_delay_override_p1 = 0;
+        a->vm.delay_override = -1;
         pal_actor_apply_walk_end_pose(a, ws, game_dir, is_party);
         return;
     }
@@ -23106,18 +23528,20 @@ static void step_script_moving_actor(
         int walk_base = pal_actor_move_sub_base(a, is_party, 1);
         field_actor_set_sub(a, game_dir, a->act_id, walk_base + (step_dir & 7), 1);
     }
-    int step = (a->custom_speed_px > 0) ? a->custom_speed_px : 4;
-    if (rem_ticks > 0 && a->custom_speed_px == 0) {
-        int mdist = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
-        int need = (mdist + rem_ticks - 1) / rem_ticks;
-        if (need > step) step = need;
-    }
+    /* Authentic Palgame.exe 0x4226de..0x422740: step pixels only when ACT delay_rem == 0 */
+    if (a->vm_ok && a->vm.delay_rem > 0) return;
+    int step = (a->vm_ok && a->vm.slow_move) ? 4 : 8;
+    if ((a->npc_flags & 0x04000000u) != 0u) step <<= 1; /* OP 0x65 sprint / OP 0xB1 regroup */
     if (abs(dx) <= step) a->px = a->walk_target_px;
     else a->px += (dx > 0 ? step : -step);
     if (abs(dy) <= step) a->py = a->walk_target_py;
     else a->py += (dy > 0 ? step : -step);
     if (a->px == a->walk_target_px && a->py == a->walk_target_py) {
         a->script_moving = 0;
+        a->walk_ticks = 0;
+        a->npc_flags &= ~0x04000000u;
+        a->anim_delay_override_p1 = 0;
+        a->vm.delay_override = -1;
         pal_actor_apply_walk_end_pose(a, ws, game_dir, is_party);
     }
 }
@@ -23522,6 +23946,7 @@ static void pal_snap_cutscene_actors_and_fx(
             ws->cam_cur_y = ws->cam_target_y;
             ws->cam_pan_steps_y = 0;
         }
+        memset(ws->flying_sprites, 0, sizeof(ws->flying_sprites));
     }
     if (party) {
         for (int p = 0; p < 4; p++) {
@@ -23529,6 +23954,10 @@ static void pal_snap_cutscene_actors_and_fx(
             party[p].px = party[p].walk_target_px;
             party[p].py = party[p].walk_target_py;
             party[p].script_moving = 0;
+            party[p].walk_ticks = 0;
+            party[p].npc_flags &= ~0x04000000u;
+            party[p].anim_delay_override_p1 = 0;
+            party[p].vm.delay_override = -1;
             pal_actor_apply_walk_end_pose(&party[p], ws, game_dir, 1);
         }
     }
@@ -23539,6 +23968,10 @@ static void pal_snap_cutscene_actors_and_fx(
             npcs[n].px = npcs[n].walk_target_px;
             npcs[n].py = npcs[n].walk_target_py;
             npcs[n].script_moving = 0;
+            npcs[n].walk_ticks = 0;
+            npcs[n].npc_flags &= ~0x04000000u;
+            npcs[n].anim_delay_override_p1 = 0;
+            npcs[n].vm.delay_override = -1;
             pal_actor_apply_walk_end_pose(&npcs[n], ws, game_dir, 0);
         }
     }
@@ -27231,8 +27664,12 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 world_state->fade_steps = 0;
                 world_state->cam_override_active = 0;
                 world_state->cam_locked = 0;
+                world_state->black_screen_active = 0;
                 world_state->timer_active = 0;
-                world_state->shake_ticks = 0;
+                world_state->shake_active = 0;
+                world_state->shake_pair_count = 0;
+                memset(world_state->cg_overlays, 0, sizeof(world_state->cg_overlays));
+                memset(world_state->flying_sprites, 0, sizeof(world_state->flying_sprites));
                 world_state->active_shop_id = 0;
                 world_state->active_battle_id = 0;
             }
@@ -27307,6 +27744,11 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     camp_menu.open = 0;
                     camp_menu.dirty = 1;
                     shop_menu.open = 0;
+                    world_state->black_screen_active = 0;
+                    world_state->shake_active = 0;
+                    world_state->shake_pair_count = 0;
+                    memset(world_state->cg_overlays, 0, sizeof(world_state->cg_overlays));
+                    memset(world_state->flying_sprites, 0, sizeof(world_state->flying_sprites));
                     pal_talk_vm_free(&talk_vm);
                     if (run_fade_transition_ex(window, renderer, scene_rt, &gpu_filter, active_shader,
                                                640 * rt_scale, 480 * rt_scale, 0, 160, &bgm) == 1) {
@@ -27584,8 +28026,41 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         world_state->cam_pan_steps_y--;
                     }
                 }
-                if (world_state && world_state->shake_ticks > 0) {
-                    world_state->shake_ticks--;
+                if (world_state && world_state->shake_active && world_state->shake_pair_count > 0) {
+                    world_state->shake_timer--;
+                    if (world_state->shake_timer <= 0) {
+                        world_state->shake_timer = world_state->shake_interval > 0 ? world_state->shake_interval : 1;
+                        world_state->shake_idx = (world_state->shake_idx + 1) % world_state->shake_pair_count;
+                    }
+                }
+                if (world_state) {
+                    for (int c = 0; c < PAL_MAX_CG_OVERLAYS; c++) {
+                        PalTalkOverlay *cg = &world_state->cg_overlays[c];
+                        if (cg->active && cg->vm_ok && !cg->vm.finished) {
+                            pal_act_vm_step_tick(&cg->vm);
+                            uint32_t cgsid = pal_act_vm_take_sfx(&cg->vm);
+                            if (cgsid > 0u) pal_sfx_pool_play(&sfx_pool, cgsid, runtime_sfx_vol, runtime_mute);
+                        }
+                    }
+                    for (int fi = 0; fi < PAL_MAX_FLYING_SPRITES; fi++) {
+                        PalFlyingSprite *fs = &world_state->flying_sprites[fi];
+                        if (!fs->active || !fs->vm_ok) continue;
+                        int step_pos = (fs->vm.delay_rem <= 0);
+                        if (!fs->vm.finished) {
+                            pal_act_vm_step_tick(&fs->vm);
+                            uint32_t fsid = pal_act_vm_take_sfx(&fs->vm);
+                            if (fsid > 0u) pal_sfx_pool_play(&sfx_pool, fsid, runtime_sfx_vol, runtime_mute);
+                        }
+                        fs->ticks_alive++;
+                        if (step_pos) {
+                            fs->cur_x += fs->vx;
+                            fs->cur_y += fs->vy;
+                        }
+                        if ((fabsf(fs->cur_x - fs->dst_x) < 32.0f && fabsf(fs->cur_y - fs->dst_y) < 32.0f) ||
+                            fs->ticks_alive > 900) {
+                            memset(fs, 0, sizeof(*fs));
+                        }
+                    }
                 }
                 if (world_state && world_state->timer_active && world_state->timer_rem_ticks > 0 &&
                     !camp_menu.open && !shop_menu.open && !talk_vm.active) {
@@ -27617,7 +28092,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                             if (ovsid > 0u) {
                                 pal_sfx_pool_play(&sfx_pool, ovsid, runtime_sfx_vol, runtime_mute);
                             }
-                            if (talk_vm.overlays[o].is_oneshot_fx && talk_vm.overlays[o].vm.finished) {
+                            if (talk_vm.overlays[o].vm.finished) {
+                                /* Authentic Palgame.exe 0x425f2d: auto-remove any 0x3A/0x99 overlay when 2O finishes */
                                 memset(&talk_vm.overlays[o], 0, sizeof(talk_vm.overlays[o]));
                             }
                         }
@@ -28115,6 +28591,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     world_state->cam_pan_steps_y = 0;
                     world_state->cam_cur_x = cam_x;
                     world_state->cam_cur_y = cam_y;
+                    world_state->shake_active = 0;
+                    world_state->shake_pair_count = 0;
+                    memset(world_state->flying_sprites, 0, sizeof(world_state->flying_sprites));
                 }
                 map_npc_actor_cnt = pal_field_populate_map_npcs(&map, world_state, cfg->game_dir, map_npcs, 128);
                 pal_field_apply_map_env_flags(world_state, &map, &field_env, next_map_preserve_env_flags);
@@ -28300,11 +28779,19 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     world_state->cam_cur_y = cam_y;
                 }
             }
-            if (world_state && world_state->shake_ticks > 0) {
-                cam_x += (world_state->shake_ticks & 1) ? 4.0f : -4.0f;
-                cam_y += (world_state->shake_ticks & 2) ? 3.0f : -3.0f;
+            if (world_state && world_state->shake_active && world_state->shake_pair_count > 0) {
+                int sidx = world_state->shake_idx % world_state->shake_pair_count;
+                cam_x += (float)world_state->shake_dx[sidx];
+                cam_y += (float)world_state->shake_dy[sidx];
             }
 
+            if (world_state && world_state->black_screen_active) {
+                /* Authentic Palgame.exe 0x4236be: OP 0x3D pure-black backdrop skips map, actors, 0x3A, 0x4F, weather */
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                SDL_FRect blk = {0.0f, 0.0f, 640.0f, 480.0f};
+                SDL_RenderFillRect(renderer, &blk);
+            } else {
             /* Pass 0: Map Background Layer (with water/heat strip shimmer when story_flags[7]) */
             pal_field_env_draw_bg(renderer, &field_env, world_state, &map, cam_x, cam_y);
 
@@ -28463,28 +28950,36 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 }
             }
 
+            /* Authentic Palgame.exe 0x42362a..0x423689: OP 0x3A map-layer overlays + OP 0x4F flying world sprites + weather */
             if (talk_vm.active) {
                 for (int o = 0; o < PAL_MAX_OVERLAYS; o++) {
                     const PalTalkOverlay *ov = &talk_vm.overlays[o];
-                    if (!ov->active || !ov->vm_ok || !ov->vm.visible) continue;
-                    PalLoadedSprite *osp = tsw_cache_get(&tsw_cache, cfg->game_dir, renderer, scale_mode, ov->vm.fr_tsw_id);
-                    if (!osp || osp->nframes <= 0) continue;
-                    int fi = ov->vm.frame_index;
-                    if (fi < 0) fi = 0;
-                    fi %= osp->nframes;
-                    float ofw = 0.0f, ofh = 0.0f;
-                    pal_sprite_frame_size(osp, fi, &ofw, &ofh);
-                    SDL_FRect od = {
-                        (float)(ov->screen_x - ov->vm.offset_x),
-                        (float)(ov->screen_y - ov->vm.offset_y),
-                        ofw, ofh
-                    };
-                    SDL_RenderTextureRotated(renderer, osp->frames[fi], NULL, &od, 0.0, NULL,
-                                             ov->vm.flip_h ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
+                    if (!ov->active || !ov->vm_ok || ov->layer != 0u) continue;
+                    pal_render_act_overlay_sprite(renderer, cfg->game_dir, scale_mode, &tsw_cache,
+                                                  &ov->vm, (float)ov->screen_x, (float)ov->screen_y);
+                }
+            }
+            if (world_state) {
+                for (int fi = 0; fi < PAL_MAX_FLYING_SPRITES; fi++) {
+                    const PalFlyingSprite *fs = &world_state->flying_sprites[fi];
+                    if (!fs->active || !fs->vm_ok) continue;
+                    pal_render_act_overlay_sprite(renderer, cfg->game_dir, scale_mode, &tsw_cache,
+                                                  &fs->vm, fs->cur_x - cam_x, fs->cur_y - cam_y);
                 }
             }
 
             pal_field_env_draw_pre_ui(renderer, &field_env, world_state, &map, &party[0], cam_x, cam_y);
+            } /* end if (!black_screen_active) */
+
+            /* Authentic Palgame.exe 0x4236d3: OP 0x99 top-layer overlays render EVEN on OP 0x3D black screen */
+            if (talk_vm.active) {
+                for (int o = 0; o < PAL_MAX_OVERLAYS; o++) {
+                    const PalTalkOverlay *ov = &talk_vm.overlays[o];
+                    if (!ov->active || !ov->vm_ok || ov->layer != 1u) continue;
+                    pal_render_act_overlay_sprite(renderer, cfg->game_dir, scale_mode, &tsw_cache,
+                                                  &ov->vm, (float)ov->screen_x, (float)ov->screen_y);
+                }
+            }
 
             if (world_state && (world_state->fade_r < -0.2f || world_state->fade_g < -0.2f || world_state->fade_b < -0.2f)) {
                 Uint8 mr = (Uint8)((1.0f + (world_state->fade_r < 0.0f ? (world_state->fade_r < -31.0f ? -31.0f : world_state->fade_r) / 31.0f : 0.0f)) * 255.0f);
@@ -28503,6 +28998,15 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 SDL_SetRenderDrawColor(renderer, ar, ag, ab, 255);
                 SDL_FRect fs = {0.0f, 0.0f, 640.0f, 480.0f};
                 SDL_RenderFillRect(renderer, &fs);
+            }
+            /* Authentic Palgame.exe 0x423106: OP 0x30C persistent CG overlays render AFTER fade */
+            if (world_state) {
+                for (int c = 0; c < PAL_MAX_CG_OVERLAYS; c++) {
+                    const PalTalkOverlay *cg = &world_state->cg_overlays[c];
+                    if (!cg->active || !cg->vm_ok) continue;
+                    pal_render_act_overlay_sprite(renderer, cfg->game_dir, scale_mode, &tsw_cache,
+                                                  &cg->vm, (float)cg->screen_x, (float)cg->screen_y);
+                }
             }
         }
 

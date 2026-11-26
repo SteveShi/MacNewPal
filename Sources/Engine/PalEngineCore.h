@@ -98,6 +98,9 @@ typedef struct {
     int32_t fr_tsw_id;       /* FR operand, e.g. 9054 -> all_sys.tsw slot_id 54 */
     int32_t duration_ticks;  /* DS base duration in 35ms ticks */
     int32_t delay_rem;       /* Countdown ticks before advancing */
+    int32_t delay_override;  /* -1 = none, >=0 = OP 0x4D / walk delay ticks (Palgame.exe [act+0x48] & 0x7FFF) */
+    int32_t slow_move;       /* 1 = SM (0x534D) half-step walk flag (Palgame.exe [act+0xA0]) */
+    int32_t force_oneshot;   /* 1 = stop on VO as well as 2O (used for combat one-shot poses/VFX slices) */
     int32_t visible;         /* Always 1 by default (Palgame.exe: 0x4E4F/0x5649 toggle H-flip, not visibility) */
     int32_t flip_h;          /* 1 = horizontal mirror flip (IV 0x5649 -> [act+0x18]|=1, NO 0x4E4F -> &=~1) */
     int32_t act_scale_fp;    /* CS (0x5343) sprite scale in 10.10 fixed-point (default 1024 = 1.0x) */
