@@ -8193,7 +8193,13 @@ static void pal_talk_vm_step_ex(
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 int tx = (int)rd_u16(ins + 4u);
                 int ty = (int)rd_u16(ins + 6u);
-                PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, NULL);
+                int is_p = 0;
+                PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, &is_p);
+                if (!is_p && obj < PAL_OBJ_CAP && cur_map_id > 0u) {
+                    ws->npc_pos_map[obj] = (uint16_t)cur_map_id;
+                    ws->npc_pos_tx[obj] = (int16_t)tx;
+                    ws->npc_pos_ty[obj] = (int16_t)ty;
+                }
                 if (a) {
                     a->px = tx << 4;
                     a->py = ty << 4;
@@ -8629,10 +8635,27 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x30Au: { /* Inn / full party heal (script 8001) + set story flag */
+            case 0x30Au: { /* Authentic Palgame.exe 0x446a81 + 0x4c7a9d:
+                            * Check hero 2000 (fallback 2009) cur_hp==max_hp && cur_mp==max_mp:
+                            * if already full -> story_flags[fid]=1 (skip 8001); else run 8001 full heal & story_flags[fid]=0. */
                 uint16_t fid = rd_u16(ins + 2u);
-                if (ws->db) pal_talk_exec_script_id(ws, 8001, 0);
-                if (fid < PAL_STORY_FLAG_CAP) ws->story_flags[fid] = 1u;
+                int already_full = 0;
+                if (ws) {
+                    int hidx = pal_world_find_party_member(ws, 2000);
+                    if (hidx < 0) hidx = pal_world_find_party_member(ws, 2009);
+                    if (hidx >= 0) {
+                        const PalPartyMemberState *hm = &ws->party_members[hidx];
+                        if (hm->cur_hp == hm->eff_max_hp && hm->cur_mp == hm->eff_max_mp) {
+                            already_full = 1;
+                        }
+                    }
+                }
+                if (already_full) {
+                    if (fid < PAL_STORY_FLAG_CAP) ws->story_flags[fid] = 1u;
+                } else {
+                    if (ws->db) pal_talk_exec_script_id(ws, 8001, 0);
+                    if (fid < PAL_STORY_FLAG_CAP) ws->story_flags[fid] = 0u;
+                }
                 vm->ip += ilen;
                 break;
             }
@@ -9970,6 +9993,21 @@ static int pal_npc_interact_radius_px(const PalLoadedMap *map, const PalFieldAct
     return base_px;
 }
 
+static void pal_npc_nearest_pt_px(const PalFieldActor *a, int qx, int qy, int *out_nx, int *out_ny) {
+    int nx = a->px;
+    int ny = a->py;
+    if (a->act_id == 700u && a->vm_ok && a->vm.hitbox_w > 0 && a->vm.hitbox_h > 0) {
+        int x0 = a->px;
+        int y0 = a->py;
+        int x1 = a->px + a->vm.hitbox_w * 16;
+        int y1 = a->py + a->vm.hitbox_h * 16;
+        nx = (qx < x0) ? x0 : ((qx > x1) ? x1 : qx);
+        ny = (qy < y0) ? y0 : ((qy > y1) ? y1 : qy);
+    }
+    *out_nx = nx;
+    *out_ny = ny;
+}
+
 static int talk_find_interact_npc(const PalLoadedMap *map, const PalFieldActor *leader, const PalFieldActor *npcs, int npc_cnt) {
     if (!leader || !npcs) return -1;
     static const int kDirDx[8] = {0, 0, -1, 1, -1, 1, -1, 1};
@@ -9982,11 +10020,15 @@ static int talk_find_interact_npc(const PalLoadedMap *map, const PalFieldActor *
     int best_score = 96 * 96;
     for (int i = 0; i < npc_cnt; i++) {
         if (!npcs[i].active || npcs[i].talk_id == 0u) continue;
-        int dx = npcs[i].px - probe_x;
-        int dy = npcs[i].py - probe_y;
+        int npx = npcs[i].px, npy = npcs[i].py;
+        int lnx = npcs[i].px, lny = npcs[i].py;
+        pal_npc_nearest_pt_px(&npcs[i], probe_x, probe_y, &npx, &npy);
+        pal_npc_nearest_pt_px(&npcs[i], leader->px, leader->py, &lnx, &lny);
+        int dx = npx - probe_x;
+        int dy = npy - probe_y;
         int d2 = dx * dx + dy * dy;
-        int ldx = npcs[i].px - leader->px;
-        int ldy = npcs[i].py - leader->py;
+        int ldx = lnx - leader->px;
+        int ldy = lny - leader->py;
         int ld2 = ldx * ldx + ldy * ldy;
         int max_r = pal_npc_interact_radius_px(map, leader, &npcs[i], 46);
         int score = d2 < ld2 ? d2 : ld2;
@@ -10006,6 +10048,9 @@ static int talk_find_npc_at_world_pt(const PalFieldActor *npcs, int npc_cnt, int
         if (!npcs[i].active || npcs[i].talk_id == 0u) continue;
         int cx = npcs[i].px + 16;
         int cy = npcs[i].py - 12;
+        if (npcs[i].act_id == 700u && npcs[i].vm_ok && npcs[i].vm.hitbox_w > 0 && npcs[i].vm.hitbox_h > 0) {
+            pal_npc_nearest_pt_px(&npcs[i], wx, wy, &cx, &cy);
+        }
         int dx = wx - cx;
         int dy = wy - cy;
         int d2 = dx * dx + dy * dy;
@@ -20138,13 +20183,253 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         }
     }
 
-    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok) {
-        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d\n",
-                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok);
+    int early_sidequests_ok = 0;
+    {
+        /* End-to-end verification of all 14 Chapters 1-3 side quests / branch events against original talk1..8.dat */
+        int q[14] = {0};
+        PalTalkVM qvm;
+        memset(&qvm, 0, sizeof(qvm));
+
+        /* Q1: 罗刹洞土妖借剑 (7001 -> unequip 3466 -> use 3466 -> 102 -> 1110) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db;
+            pal_party_init_from_db(ws, db, 1); /* dream hero 2009 wearing 3466 */
+            PalFieldActor qp[4], qn[4];
+            memset(qp, 0, sizeof(qp)); memset(qn, 0, sizeof(qn));
+            qp[0].active = 1; qp[0].px = 13 << 4; qp[0].py = 24 << 4;
+            qn[0].active = 1; qn[0].obj_id = 7001u; qn[0].talk_id = 7001u; qn[0].px = 12 << 4; qn[0].py = 25 << 4;
+            qn[1].active = 0; qn[1].obj_id = 5u; qn[1].talk_id = 101u; qn[1].px = 13 << 4; qn[1].py = 22 << 4;
+            int qnc = 2;
+            if (pal_talk_vm_start(&qvm, game_dir, 7001, 7001u) == 0) {
+                pal_talk_vm_step_ex(&qvm, ws, game_dir, 498u, qp, qn, &qnc, 4, 1);
+            }
+            int s1 = (pal_world_item_qty(ws, 4359u) == 1 && ws->story_flags[1626] == 1u && qn[1].active == 1);
+            int ueq = pal_party_unequip_item(ws, 0, 3466u, 1);
+            int cls = 0; int32_t tid = 0;
+            int urc = pal_camp_use_item_direct(ws, 0, 3466u, NULL, 0, &cls, &tid);
+            if (urc == 0 && tid == 102 && pal_talk_vm_start(&qvm, game_dir, 102, 0u) == 0) {
+                pal_talk_vm_step_ex(&qvm, ws, game_dir, 498u, qp, qn, &qnc, 4, 1);
+            }
+            int s2 = (ueq == 0 && tid == 102 && ws->story_flags[101] == 1u && pal_world_item_qty(ws, 3466u) == 0);
+            if (pal_talk_vm_start(&qvm, game_dir, 1110, 609u) == 0) {
+                pal_talk_vm_step_ex(&qvm, ws, game_dir, 505u, qp, qn, &qnc, 4, 1);
+            }
+            q[0] = (s1 && s2 && pal_world_item_qty(ws, 3466u) == 1 && pal_world_item_qty(ws, 3075u) == 1) ? 1 : 0;
+        }
+
+        /* Q2: 丁家姐妹送鞋 (秀蘭115 -> 香蘭114 -> 秀蘭115 -> 布靴3112) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            if (pal_talk_vm_start(&qvm, game_dir, 115, 12u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 8u, NULL, NULL, 0, 1);
+            if (pal_talk_vm_start(&qvm, game_dir, 114, 13u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 8u, NULL, NULL, 0, 1);
+            if (pal_talk_vm_start(&qvm, game_dir, 115, 12u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 8u, NULL, NULL, 0, 1);
+            q[1] = (ws->obj_rv[12][1] == 2 && ws->obj_rv[13][1] == 1 && pal_world_item_qty(ws, 3112u) == 1) ? 1 : 0;
+        }
+
+        /* Q3: 南盗侠往事 (皇甫英2007: choice 0 是 -> choice 0 是 -> flag 2410, re-talk -> flag 2411) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            if (pal_talk_vm_start(&qvm, game_dir, 2007, 2007u) == 0) {
+                qvm.choice_selected = 0;
+                pal_talk_vm_step(&qvm, ws, game_dir, 13u, NULL, NULL, 0, 1);
+            }
+            int f2410 = (ws->story_flags[2410] == 1u);
+            if (pal_talk_vm_start(&qvm, game_dir, 2007, 2007u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 13u, NULL, NULL, 0, 1);
+            q[2] = (f2410 && ws->story_flags[2411] == 1u) ? 1 : 0;
+        }
+
+        /* Q4: 洪大夫赠药 (124 with obj_rv[15][2]==1 -> 靈山仙芝4304) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            ws->obj_rv[15][2] = 1;
+            if (pal_talk_vm_start(&qvm, game_dir, 124, 22u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 10u, NULL, NULL, 0, 1);
+            q[3] = (pal_world_item_qty(ws, 4304u) == 1 && ws->obj_rv[22][1] == 1) ? 1 : 0;
+        }
+
+        /* Q5: 张四哥送丹 (126 with flag 111==1 -> 2nd talk gives 行軍丹4403) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            ws->story_flags[111] = 1u;
+            if (pal_talk_vm_start(&qvm, game_dir, 126, 19u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 24u, NULL, NULL, 0, 1);
+            int rv2 = (ws->obj_rv[19][1] == 2 && pal_world_item_qty(ws, 4403u) == 0);
+            if (pal_talk_vm_start(&qvm, game_dir, 126, 19u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 24u, NULL, NULL, 0, 1);
+            q[4] = (rv2 && ws->obj_rv[19][1] == 3 && pal_world_item_qty(ws, 4403u) == 1) ? 1 : 0;
+        }
+
+        /* Q6: 水月宫暗格苗刀 (7082 x3 -> 4401 止血草 -> empty -> 3407 苗刀) + 灵泉 (2023 -> 0x30A full heal + act700 hitbox) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            PalFieldActor qp[4], qn[2];
+            memset(qp, 0, sizeof(qp)); memset(qn, 0, sizeof(qn));
+            qp[0].active = 1; qp[0].px = 52 << 4; qp[0].py = 18 << 4;
+            qn[0].active = 1; qn[0].obj_id = 7082u; qn[0].talk_id = 7082u; qn[0].px = 52 << 4; qn[0].py = 17 << 4;
+            int qnc = 1;
+            for (int k = 0; k < 3; k++) {
+                if (pal_talk_vm_start(&qvm, game_dir, (int32_t)qn[0].talk_id, 7082u) == 0) {
+                    pal_talk_vm_step_ex(&qvm, ws, game_dir, 30u, qp, qn, &qnc, 2, 1);
+                }
+            }
+            ws->party_members[0].cur_hp = 10; ws->party_members[0].cur_mp = 5;
+            if (pal_talk_vm_start(&qvm, game_dir, 2023, 2015u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 31u, NULL, NULL, 0, 1);
+            int spring_ok = (ws->party_members[0].cur_hp == ws->party_members[0].eff_max_hp &&
+                             ws->party_members[0].cur_mp == ws->party_members[0].eff_max_mp &&
+                             ws->story_flags[1503] == 1u);
+            /* Verify act 700 hitbox click & interact on wide box (e.g. HW=3x2 at (100,100), click far corner (144,128)) */
+            PalFieldActor hb; memset(&hb, 0, sizeof(hb));
+            hb.active = 1; hb.talk_id = 2023u; hb.act_id = 700u; hb.px = 100; hb.py = 100;
+            hb.vm_ok = 1; hb.vm.hitbox_w = 3; hb.vm.hitbox_h = 2;
+            int hb_click = (talk_find_npc_at_world_pt(&hb, 1, 144, 128) == 0);
+            q[5] = (pal_world_item_qty(ws, 4401u) == 1 && pal_world_item_qty(ws, 3407u) == 1 &&
+                    qn[0].talk_id == 7999u && spring_ok && hb_click) ? 1 : 0;
+        }
+
+        /* Q7: 码头初遇阿奴 (199 -> 0x28 [240,76,40] persisted + 0x27 [240] -> 121 gives 3658 蠱卵) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            PalFieldActor qp[4], qn[2];
+            memset(qp, 0, sizeof(qp)); memset(qn, 0, sizeof(qn));
+            qp[0].active = 1; qp[0].px = 76 << 4; qp[0].py = 40 << 4;
+            qn[0].active = 1; qn[0].obj_id = 4u; qn[0].talk_id = 199u; qn[0].px = 77 << 4; qn[0].py = 40 << 4;
+            qn[1].active = 0; qn[1].obj_id = 240u; qn[1].talk_id = 121u; qn[1].px = 74 << 4; qn[1].py = 36 << 4;
+            int qnc = 2;
+            if (pal_talk_vm_start(&qvm, game_dir, 199, 4u) == 0) pal_talk_vm_step_ex(&qvm, ws, game_dir, 12u, qp, qn, &qnc, 2, 1);
+            int drop_ok = (qn[0].active == 0 && qn[1].active == 1 &&
+                           ws->npc_pos_map[240] == 12u && ws->npc_pos_tx[240] == 76 && ws->npc_pos_ty[240] == 40);
+            if (pal_talk_vm_start(&qvm, game_dir, 121, 240u) == 0) pal_talk_vm_step_ex(&qvm, ws, game_dir, 12u, qp, qn, &qnc, 2, 1);
+            q[6] = (drop_ok && qn[1].active == 0 && pal_world_item_qty(ws, 3658u) == 1) ? 1 : 0;
+        }
+
+        /* Q8: 丁大伯气喘 (138 -> 140 -> 124: authentic 0x30A injured heal -> full HP sets 1503 -> shop 58001) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            if (pal_talk_vm_start(&qvm, game_dir, 138, 13u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 11u, NULL, NULL, 0, 1);
+            if (pal_talk_vm_start(&qvm, game_dir, 140, 9003u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 16u, NULL, NULL, 0, 1);
+            int f114 = (ws->story_flags[114] == 1u && ws->obj_rv[22][1] == 2 && ws->npc_visibility_override[9003] == 2u);
+            if (pal_talk_vm_start(&qvm, game_dir, 124, 22u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 10u, NULL, NULL, 0, 1);
+            int rv22_2 = (ws->obj_rv[22][2] == 1);
+            ws->party_members[0].cur_hp = 50; ws->story_flags[1503] = 0u;
+            if (pal_talk_vm_start(&qvm, game_dir, 124, 22u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 10u, NULL, NULL, 0, 1);
+            int healed_0 = (ws->party_members[0].cur_hp == ws->party_members[0].eff_max_hp && ws->story_flags[1503] == 0u && ws->active_shop_id == 0);
+            if (pal_talk_vm_start(&qvm, game_dir, 124, 22u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 10u, NULL, NULL, 0, 1);
+            int full_1 = (ws->story_flags[1503] == 1u);
+            if (pal_talk_vm_start(&qvm, game_dir, 124, 22u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 10u, NULL, NULL, 0, 1);
+            q[7] = (f114 && rv22_2 && healed_0 && full_1 && ws->active_shop_id == 58001) ? 1 : 0;
+        }
+
+        /* Q9: 夸奖巴珍 (2071: choice 0 是 -> rv[2071][2]=1; choice 1 否 -> rv[2071][1]=1) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            if (pal_talk_vm_start(&qvm, game_dir, 2071, 2071u) == 0) {
+                qvm.choice_selected = 0; pal_talk_vm_step(&qvm, ws, game_dir, 33u, NULL, NULL, 0, 1);
+            }
+            int yes_ok = (ws->obj_rv[2071][2] == 1 && ws->obj_rv[2071][1] == 0);
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            if (pal_talk_vm_start(&qvm, game_dir, 2071, 2071u) == 0) {
+                while (qvm.active) {
+                    if (qvm.choice_count > 0) qvm.choice_selected = 1;
+                    pal_talk_vm_step(&qvm, ws, game_dir, 33u, NULL, NULL, 0, 0);
+                    if (qvm.waiting_input) { qvm.waiting_input = 0; }
+                    if (qvm.wait_ticks > 0) { qvm.wait_ticks = 0; }
+                }
+            }
+            q[8] = (yes_ok && ws->obj_rv[2071][1] == 1 && ws->obj_rv[2071][2] == 0) ? 1 : 0;
+        }
+
+        /* Q10: 为灵儿买银钗 (2088: 500 -> 100文 + 銀釵3255, next talk opens shop 58008) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            pal_world_add_money(ws, 500);
+            if (pal_talk_vm_start(&qvm, game_dir, 2088, 2088u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 520u, NULL, NULL, 0, 1);
+            int bought = (ws->money == 100 && pal_world_item_qty(ws, 3255u) == 1);
+            if (pal_talk_vm_start(&qvm, game_dir, 2088, 2088u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 520u, NULL, NULL, 0, 1);
+            q[9] = (bought && ws->active_shop_id == 58008) ? 1 : 0;
+        }
+
+        /* Q11: 喂食小豆子 (2091 x16 with 5x4203, 5x4355, 5x4352 -> spawns obj 2202 on map 519 -> 2202 gives 食妖蟲3609) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            pal_world_add_item(ws, 4203u, 5);
+            pal_world_add_item(ws, 4355u, 5);
+            pal_world_add_item(ws, 4352u, 5);
+            PalFieldActor qp[4], qn[4];
+            memset(qp, 0, sizeof(qp)); memset(qn, 0, sizeof(qn));
+            qp[0].active = 1; qp[0].px = 48 << 4; qp[0].py = 28 << 4;
+            qn[0].active = 1; qn[0].obj_id = 2091u; qn[0].talk_id = 2091u; qn[0].px = 48 << 4; qn[0].py = 27 << 4;
+            int qnc = 1;
+            for (int k = 0; k < 16; k++) {
+                if (pal_talk_vm_start(&qvm, game_dir, 2091, 2091u) == 0) {
+                    pal_talk_vm_step_ex(&qvm, ws, game_dir, 519u, qp, qn, &qnc, 4, 1);
+                }
+            }
+            int spawned = (ws->story_flags[1607] == 1u && ws->story_flags[1608] == 1u && ws->story_flags[1609] == 1u &&
+                           pal_world_item_qty(ws, 4203u) == 0 && pal_world_item_qty(ws, 4355u) == 0 && pal_world_item_qty(ws, 4352u) == 0 &&
+                           qnc == 2 && qn[1].obj_id == 2202u && qn[1].active == 1 && qn[1].talk_id == 2202u);
+            if (spawned && pal_talk_vm_start(&qvm, game_dir, 2202, 2202u) == 0) {
+                pal_talk_vm_step_ex(&qvm, ws, game_dir, 519u, qp, qn, &qnc, 4, 1);
+            }
+            q[10] = (spawned && qn[1].active == 0 && pal_world_item_qty(ws, 3609u) == 1) ? 1 : 0;
+        }
+
+        /* Q12: 资助小晶 (2125: -100文, rv[2125][1]=1) + 借钱赌鬼 (2123: -50文, flag 1518=1) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            pal_world_add_money(ws, 200);
+            if (pal_talk_vm_start(&qvm, game_dir, 2125, 2125u) == 0) {
+                qvm.choice_selected = 0; pal_talk_vm_step(&qvm, ws, game_dir, 38u, NULL, NULL, 0, 1);
+            }
+            int jing_ok = (ws->money == 100 && ws->obj_rv[2125][1] == 1);
+            if (pal_talk_vm_start(&qvm, game_dir, 2123, 2123u) == 0) {
+                qvm.choice_selected = 0; pal_talk_vm_step(&qvm, ws, game_dir, 39u, NULL, NULL, 0, 1);
+            }
+            q[11] = (jing_ok && ws->money == 50 && ws->story_flags[1518] == 1u) ? 1 : 0;
+        }
+
+        /* Q13: 苏州算命仙 (166 with party>1 -> rv[30][1]=1 -> 京城594: 1st talk rv[30][2]=1, 2nd talk -500文 rv[30][2]=2) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 0);
+            ws->money = 600; ws->script_vars[0] = 600;
+            if (pal_talk_vm_start(&qvm, game_dir, 166, 535u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 41u, NULL, NULL, 0, 1);
+            int sz_ok = (ws->obj_rv[30][1] == 1 && ws->npc_visibility_override[535] == 2u);
+            if (pal_talk_vm_start(&qvm, game_dir, 594, 30u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 128u, NULL, NULL, 0, 1);
+            if (pal_talk_vm_start(&qvm, game_dir, 594, 30u) == 0) pal_talk_vm_step(&qvm, ws, game_dir, 128u, NULL, NULL, 0, 1);
+            q[12] = (sz_ok && ws->obj_rv[30][2] == 2 && ws->money == 100) ? 1 : 0;
+        }
+
+        /* Q14: 隐龙窟小狐狸 (2162 dialogue + 2204 白河村郊 bite cutscene spawns & hides obj 2205) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 0);
+            int d2162 = 0;
+            if (pal_talk_vm_start(&qvm, game_dir, 2162, 2162u) == 0) {
+                pal_talk_vm_step(&qvm, ws, game_dir, 100u, NULL, NULL, 0, 1);
+                d2162 = (qvm.dialogues_shown == 1 && strstr(qvm.last_dialogue_utf8, "小狐狸") != NULL);
+            }
+            int d2204 = 0;
+            if (pal_talk_vm_start(&qvm, game_dir, 2204, 2204u) == 0) {
+                pal_talk_vm_step(&qvm, ws, game_dir, 66u, NULL, NULL, 0, 1);
+                d2204 = (qvm.dialogues_shown >= 8 && ws->npc_visibility_override[2205] == 2u &&
+                         ws->npc_visibility_override[2204] == 2u);
+            }
+            q[13] = (d2162 && d2204) ? 1 : 0;
+        }
+        pal_talk_vm_free(&qvm);
+
+        early_sidequests_ok = 1;
+        for (int qi = 0; qi < 14; qi++) {
+            if (!q[qi]) early_sidequests_ok = 0;
+        }
+        if (!early_sidequests_ok) {
+            fprintf(stderr, "[SelfTest] early_sidequests failed: q1..14=%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                    q[0],q[1],q[2],q[3],q[4],q[5],q[6],q[7],q[8],q[9],q[10],q[11],q[12],q[13]);
+        }
+    }
+
+    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok || !early_sidequests_ok) {
+        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d early_sidequests_ok=%d\n",
+                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok, early_sidequests_ok);
     }
 
     out_info->ok = (out_info->monster_count == 160 &&
-                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok &&
+                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok && early_sidequests_ok &&
                     out_info->zone_count == 265 &&
                     out_info->fight_script_count == 1056 &&
                     out_info->battle2801_bg_id == 1609 &&
