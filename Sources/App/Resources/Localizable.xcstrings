@@ -3,452 +3,1202 @@
   "strings": {
     "app.title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "NewPal for macOS" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "新仙剑奇侠传 macOS 版启动器" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NewPal for macOS"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新仙剑奇侠传 macOS 版启动器"
+          }
+        }
       }
     },
     "menu.whats_new": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "What's New in NewPal" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "NewPal 新功能介绍" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What's New in NewPal"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NewPal 新功能介绍"
+          }
+        }
       }
     },
     "badge.sdl3_metal_ready": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "SDL3 Backend: Metal Active" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "SDL3 后端：Metal 已就绪" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SDL3 Backend: Metal Active"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SDL3 后端：Metal 已就绪"
+          }
+        }
       }
     },
     "badge.sdl3_metal_missing": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "SDL3 Metal Backend Unavailable" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "SDL3 Metal 后端不可用" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SDL3 Metal Backend Unavailable"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SDL3 Metal 后端不可用"
+          }
+        }
       }
     },
     "byod.card_title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Original Game Data Directory (BYOD)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原版游戏数据目录（自备正版资产）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original Game Data Directory (BYOD)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原版游戏数据目录（自备正版资产）"
+          }
+        }
       }
     },
     "byod.legal_notice": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "No copyrighted sprites, audio, scripts, or maps are bundled. Select your own legal copy of PalGame to verify and play directly from archive containers." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本应用不含任何受版权保护的美术、音频、脚本或地图资源。请选择您合法拥有的原版《新仙剑奇侠传》游戏目录，通过内存 VFS 直接校验并挂载运行。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No copyrighted sprites, audio, scripts, or maps are bundled. Select your own legal copy of PalGame to verify and play directly from archive containers."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本应用不含任何受版权保护的美术、音频、脚本或地图资源。请选择您合法拥有的原版《新仙剑奇侠传》游戏目录，通过内存 VFS 直接校验并挂载运行。"
+          }
+        }
       }
     },
     "byod.no_folder_selected": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "No game directory selected yet." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "尚未选择原版游戏目录。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No game directory selected yet."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未选择原版游戏目录。"
+          }
+        }
       }
     },
     "byod.choose_folder": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Select PalGame Directory…" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择原版游戏目录…" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select PalGame Directory…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择原版游戏目录…"
+          }
+        }
       }
     },
     "byod.revalidate": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Re-Validate" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "重新校验" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-Validate"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新校验"
+          }
+        }
       }
     },
     "byod.open_panel_prompt": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Select Original PalGame Directory" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "选择原版《新仙剑奇侠传》目录" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select Original PalGame Directory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择原版《新仙剑奇侠传》目录"
+          }
+        }
       }
     },
     "byod.status_verified": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Verified" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "校验通过" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "校验通过"
+          }
+        }
       }
     },
     "byod.status_incomplete": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Verification Required" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "等待完整校验" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verification Required"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "等待完整校验"
+          }
+        }
       }
     },
     "metrics.section_title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Live VFS Metadata Summary" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "内存 VFS 元数据扫描摘要" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Live VFS Metadata Summary"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内存 VFS 元数据扫描摘要"
+          }
+        }
       }
     },
     "metrics.archives": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Verified Archives" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已验证封包" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified Archives"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已验证封包"
+          }
+        }
       }
     },
     "metrics.sprites": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Char Sprites" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "角色精灵槽" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Char Sprites"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "角色精灵槽"
+          }
+        }
       }
     },
     "metrics.maps": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "MSF3 Maps" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "MSF3 地图" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MSF3 Maps"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "MSF3 地图"
+          }
+        }
       }
     },
     "metrics.sfx": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Sound Effects" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "音效条目" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sound Effects"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "音效条目"
+          }
+        }
       }
     },
     "metrics.titles": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Map Titles" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "地图标题数" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Map Titles"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "地图标题数"
+          }
+        }
       }
     },
     "metrics.heroes": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Heroes / Monsters" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "主角 / 怪物" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Heroes / Monsters"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主角 / 怪物"
+          }
+        }
       }
     },
     "checklist.title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Required Asset Signature Checklist" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "核心文件与二进制签名核验清单" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Required Asset Signature Checklist"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "核心文件与二进制签名核验清单"
+          }
+        }
       }
     },
     "launch.section_title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "SDL3 Metal Runtime Launch" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "SDL3 Metal 运行时启动" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SDL3 Metal Runtime Launch"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "SDL3 Metal 运行时启动"
+          }
+        }
       }
     },
     "launch.button": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Launch Game Engine (SDL3 Metal)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启动游戏引擎（SDL3 Metal）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Launch Game Engine (SDL3 Metal)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启动游戏引擎（SDL3 Metal）"
+          }
+        }
       }
     },
     "settings.tab_general": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Engine & Display" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "引擎与显示" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Engine & Display"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "引擎与显示"
+          }
+        }
       }
     },
     "settings.window_scale": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Window Scale" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "窗口分辨率倍率" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Window Scale"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "窗口分辨率倍率"
+          }
+        }
       }
     },
     "settings.scale_1x": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "640 × 480 (1× Native)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "640 × 480（1× 原生）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "640 × 480 (1× Native)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "640 × 480（1× 原生）"
+          }
+        }
       }
     },
     "settings.scale_2x": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "1280 × 960 (2× Retina)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "1280 × 960（2× 高清）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1280 × 960 (2× Retina)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1280 × 960（2× 高清）"
+          }
+        }
       }
     },
     "settings.scale_fullscreen": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Fullscreen Letterbox" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "全屏等比适配" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Fullscreen Letterbox"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全屏等比适配"
+          }
+        }
       }
     },
     "settings.vsync": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Enable Metal VSync" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启用 Metal 垂直同步 (VSync)" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Metal VSync"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用 Metal 垂直同步 (VSync)"
+          }
+        }
       }
     },
     "settings.pixel_filter": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Texture Scaling Mode" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "纹理缩放过滤模式" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Texture Scaling Mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "纹理缩放过滤模式"
+          }
+        }
       }
     },
     "settings.filter_nearest": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Crisp Pixel-Art (Nearest)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "锐利像素（最近邻采样）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Crisp Pixel-Art (Nearest)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "锐利像素（最近邻采样）"
+          }
+        }
       }
     },
     "settings.filter_linear": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Smooth Bilinear" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "平滑双线性过滤" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Smooth Bilinear"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "平滑双线性过滤"
+          }
+        }
       }
     },
     "settings.mute_audio": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Mute SDL3 Audio Output" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "静音 SDL3 音频输出" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mute SDL3 Audio Output"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "静音 SDL3 音频输出"
+          }
+        }
       }
     },
     "settings.master_volume": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Master Volume" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "主音量" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Master Volume"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "主音量"
+          }
+        }
       }
     },
     "settings.game_data_folder": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Game Data Location" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "游戏数据目录位置" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Game Data Location"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "游戏数据目录位置"
+          }
+        }
       }
     },
     "settings.clear_folder": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Clear Saved Directory" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "清除已保存目录" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear Saved Directory"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "清除已保存目录"
+          }
+        }
       }
     },
     "whatsnew.title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "What's New in NewPal" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "NewPal 更新说明" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "What's New in NewPal"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "NewPal 更新说明"
+          }
+        }
       }
     },
     "whatsnew.version": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Version 1.0.0 — M8 Metal Shaders, Audio & Gamepad" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "1.0.0 版 — M8 Metal 着色器、音频过渡与手柄全支持" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Version 1.1.0 — Full 8-Chapter Parity & Side-Quest Audit"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1.1.0 版 — 全八章原版逻辑对齐与 31 条支线全面核验"
+          }
+        }
       }
     },
     "whatsnew.feature1.title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Metal xBRZ / CRT-Royale & Retina UI" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Metal xBRZ / CRT-Royale 滤镜与视网膜级字体" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Exact Palgame.exe Combat, Alchemy & World Parity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全面对齐 Palgame.exe 战斗、炼蛊与大世界机制"
+          }
+        }
       }
     },
     "whatsnew.feature1.desc": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Hardware Metal MSL post-processing shaders upscale the classic pixel canvas while CoreText dialogue, menus, and HUD stay crisp at native Retina resolution." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "采用原生 Metal MSL 片段着色器增强游戏画面，同时将对话、菜单与战斗界面在独立高清通道按视网膜分辨率锐利合成。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replaced all approximated formulas with reverse-engineered Palgame.exe logic: gmap.dat + all_map2.act battlegrounds, P0–P3 damage/status/steal/drop/turn-order rules, 99-level cap, alchemy pot, and dungeon exits."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "按原版 Palgame.exe 逆向逻辑重写战斗公式、专属战斗场景（gmap.dat + all_map2.act）、异常状态/双槽掉落/出手顺序、99 级上限、炼蛊皿与 32 组迷宫出口。"
+          }
+        }
       }
     },
     "whatsnew.feature2.title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Smooth BGM Fades & SDL3 Gamepad" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "平滑 BGM 淡入淡出与完整手柄操控" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "31 Side Quests, Hidden Endings & Full 8-Chapter Verified"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全八章通关实测、双隐藏结局与 31 条支线验证通过"
+          }
+        }
       }
     },
     "whatsnew.feature2.desc": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Seamless music crossfades across maps and battles plus hotplug SDL3 Gamepad support (D-Pad/left stick movement, confirm, cancel, camp & combat)." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "切图与战斗衔接自动启用平滑音频淡变与胜利压低；支持 SDL3 手柄热插拔、摇杆/十字键 8 向移动及全菜单战斗操控。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Audited and regression-tested all 8 chapters, both hidden endings (Zhao Ling'er 1195 & Lin Yueru 1199), and 31 early/mid/late side quests including Peach Village, Gu-Eating Bird AI & Map 460, and Five-God Statues."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成全八章主线通关实测、赵灵儿（1195）与林月如（1199）双隐藏结局以及桃源村、捕捉食蛊鸟、女娲遗迹五神像等 31 条早中后期支线修复与回归校验。"
+          }
+        }
       }
     },
     "whatsnew.feature3.title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Clean-Room BYOD & Full Story Engine" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "洁净室 BYOD 架构与完整剧情战斗内核" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metal Shaders, SDL3 Gamepad & Built-in MCP Server"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metal 滤镜、SDL3 手柄与内置 MCP 自动化接口"
+          }
+        }
       }
     },
     "whatsnew.feature3.desc": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Verifies all 23 original archive signatures in memory and drives the full MSF3 world, 7,394 Talk scripts, turn-based combat, shops, and 10-slot saves." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "全内存流式核验 23 项原版档案签名，完整驱动 MSF3 大世界、7,394 条剧情脚本、回合制战斗、商店与 10 槽存档。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hardware Metal xBRZ / CRT-Royale shaders with Retina-crisp CoreText UI, smooth BGM crossfades, hotplug SDL3 Gamepad controls, V6 extended saves, and built-in stdio MCP server."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "硬件 Metal xBRZ / CRT-Royale 滤镜配视网膜级字体、平滑 BGM 淡入淡出、SDL3 手柄热插拔、V6 扩展存档与内置 stdio MCP 服务端。"
+          }
+        }
       }
     },
     "whatsnew.done": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Done" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "完成" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Done"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完成"
+          }
+        }
       }
     },
     "settings.render_quality": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Resolution Mode" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "画面清晰度" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resolution Mode"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "画面清晰度"
+          }
+        }
       }
     },
     "settings.quality_original": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Original (640×480)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原版清晰度 (640×480)" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Original (640×480)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原版清晰度 (640×480)"
+          }
+        }
       }
     },
     "settings.quality_hd": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "HD Remastered (2×)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "高清重制 (2× 锐化超分)" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HD Remastered (2×)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "高清重制 (2× 锐化超分)"
+          }
+        }
       }
     },
     "settings.gpu_shader": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Metal GPU Shader" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Metal GPU 滤镜" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metal GPU Shader"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metal GPU 滤镜"
+          }
+        }
       }
     },
     "settings.shader_none": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Classic" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "原版直出" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Classic"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "原版直出"
+          }
+        }
       }
     },
     "settings.shader_xbrz": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Metal xBRZ" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "Metal xBRZ 锐化" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metal xBRZ"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Metal xBRZ 锐化"
+          }
+        }
       }
     },
     "settings.shader_crt": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "CRT-Royale" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "CRT-Royale 显像管" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CRT-Royale"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "CRT-Royale 显像管"
+          }
+        }
       }
     },
     "settings.hd_filter_note": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "HD Remastered or active Metal GPU shaders override legacy nearest/bilinear scaling while keeping CoreText UI crisp." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启用高清重制或 Metal GPU 滤镜时会自动接管像素缩放，同时保持 CoreText 界面字体视网膜级锐利。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "HD Remastered or active Metal GPU shaders override legacy nearest/bilinear scaling while keeping CoreText UI crisp."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用高清重制或 Metal GPU 滤镜时会自动接管像素缩放，同时保持 CoreText 界面字体视网膜级锐利。"
+          }
+        }
       }
     },
     "test_mode.section_title": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "QA Test Mode (Optional Module)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "QA 测试模式（独立可选模块）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "QA Test Mode (Optional Module)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "QA 测试模式（独立可选模块）"
+          }
+        }
       }
     },
     "test_mode.enable_toggle": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Enable Test Mode in Game (~ Toolbox / F12 Switch)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启用游戏内测试模式（按 ~ 展开工具箱 / F12 总开关）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Test Mode in Game (~ Toolbox / F12 Switch)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用游戏内测试模式（按 ~ 展开工具箱 / F12 总开关）"
+          }
+        }
       }
     },
     "test_mode.god_mode": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "God Mode (No HP/MP Loss)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "人物无敌（锁血免蓝／免疫异常）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "God Mode (No HP/MP Loss)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "人物无敌（锁血免蓝／免疫异常）"
+          }
+        }
       }
     },
     "test_mode.no_encounter": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "No Encounters" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "屏蔽遇敌" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No Encounters"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "屏蔽遇敌"
+          }
+        }
       }
     },
     "test_mode.auto_instant_kill": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Auto Instant-Kill on Battle" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "入战自动秒杀" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Auto Instant-Kill on Battle"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "入战自动秒杀"
+          }
+        }
       }
     },
     "test_mode.speed_mult": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Field Speed" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "移动倍速" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Field Speed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移动倍速"
+          }
+        }
       }
     },
     "test_mode.speed_1x": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "1× Normal" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "1× 原速" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1× Normal"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1× 原速"
+          }
+        }
       }
     },
     "test_mode.speed_2x": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "2× Fast" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "2× 加速" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2× Fast"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "2× 加速"
+          }
+        }
       }
     },
     "test_mode.speed_3x": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "3× Turbo" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "3× 极速" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3× Turbo"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "3× 极速"
+          }
+        }
       }
     },
     "settings.game_language": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Game Language" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "游戏语言" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Game Language"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "游戏语言"
+          }
+        }
       }
     },
     "settings.lang_traditional": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "繁體中文（原版）" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "繁體中文（原版）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "繁體中文（原版）"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "繁體中文（原版）"
+          }
+        }
       }
     },
     "settings.lang_simplified": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "简体中文" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "简体中文" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "简体中文"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "简体中文"
+          }
+        }
       }
     },
     "settings.language_note": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Converts all runtime game scripts, menus, items, magic, and UI labels in memory without altering original archives or saves." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "运行时在内存中动态转换全套剧情、菜单、物品仙术与界面贴图文字，不改动原版游戏资源或存档文件。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Converts all runtime game scripts, menus, items, magic, and UI labels in memory without altering original archives or saves."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "运行时在内存中动态转换全套剧情、菜单、物品仙术与界面贴图文字，不改动原版游戏资源或存档文件。"
+          }
+        }
       }
     },
     "settings.mcp_section": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "AI / MCP Control Interface" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "AI / MCP 控制接口" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI / MCP Control Interface"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AI / MCP 控制接口"
+          }
+        }
       }
     },
     "settings.mcp_enable": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Enable Local MCP Control Socket" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "启用本地 MCP 控制接口" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable Local MCP Control Socket"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "启用本地 MCP 控制接口"
+          }
+        }
       }
     },
     "settings.mcp_headless": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Headless Launch (No Visible Window)" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "无头模式启动（后台隐身运行，供 AI 高速测试）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Headless Launch (No Visible Window)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无头模式启动（后台隐身运行，供 AI 高速测试）"
+          }
+        }
       }
     },
     "settings.mcp_allow_qa": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Allow MCP Teleport & QA Test Tools" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "允许 MCP 调用瞬移与 QA 测试作弊工具" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Allow MCP Teleport & QA Test Tools"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "允许 MCP 调用瞬移与 QA 测试作弊工具"
+          }
+        }
       }
     },
     "settings.mcp_socket_label": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Unix Socket:" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "本地 Socket：" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unix Socket:"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本地 Socket："
+          }
+        }
       }
     },
     "settings.mcp_copy_config": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Copy MCP Client Config JSON" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "一键复制 MCP 客户端配置 JSON" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy MCP Client Config JSON"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一键复制 MCP 客户端配置 JSON"
+          }
+        }
       }
     },
     "settings.mcp_copied": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Copied MCP Config JSON!" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "已复制 MCP 配置 JSON" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copied MCP Config JSON!"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已复制 MCP 配置 JSON"
+          }
+        }
       }
     },
     "settings.mcp_note": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Built-in MCP server (NewPal --mcp-server) requires zero external dependencies and connects safely over a user-only Unix socket." } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "内建标准 MCP 服务端（NewPal --mcp-server），无需安装 Python/Node 即可通过安全本地 Socket 让 AI 游玩与测试。" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Built-in MCP server (NewPal --mcp-server) requires zero external dependencies and connects safely over a user-only Unix socket."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内建标准 MCP 服务端（NewPal --mcp-server），无需安装 Python/Node 即可通过安全本地 Socket 让 AI 游玩与测试。"
+          }
+        }
       }
     },
     "launch.stop_headless": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Stop Background Headless Engine" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "停止后台无头引擎" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stop Background Headless Engine"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止后台无头引擎"
+          }
+        }
       }
     },
     "test_mode.hotkeys_hint": {
       "localizations": {
-        "en": { "stringUnit": { "state": "translated", "value": "Hotkeys: [~]/[F11] Toolbox · [K]/[F4] Instant Kill · [F2] God · [F3] No-Encounter · [F5] Full Heal · [F6] +50k Gold · [F7] Level Up · [F8] Speed · [F9] NoClip · [F10] Skip Wait" } },
-        "zh-Hans": { "stringUnit": { "state": "translated", "value": "快捷键：[~]/[F11] 工具箱 · [K]/[F4] 战斗秒杀 · [F2] 无敌 · [F3] 免遇敌 · [F5] 满状态 · [F6] +5万文 · [F7] 升级 · [F8] 倍速 · [F9] 穿墙 · [F10] 跳等待（Option+~ 也可随时唤醒）" } }
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hotkeys: [~]/[F11] Toolbox · [K]/[F4] Instant Kill · [F2] God · [F3] No-Encounter · [F5] Full Heal · [F6] +50k Gold · [F7] Level Up · [F8] Speed · [F9] NoClip · [F10] Skip Wait"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "快捷键：[~]/[F11] 工具箱 · [K]/[F4] 战斗秒杀 · [F2] 无敌 · [F3] 免遇敌 · [F5] 满状态 · [F6] +5万文 · [F7] 升级 · [F8] 倍速 · [F9] 穿墙 · [F10] 跳等待（Option+~ 也可随时唤醒）"
+          }
+        }
       }
     }
   },

@@ -29,8 +29,8 @@ targets:
       base:
         PRODUCT_NAME: NewPal
         PRODUCT_BUNDLE_IDENTIFIER: com.steveshi.newpal
-        MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "1.1.0"
+        CURRENT_PROJECT_VERSION: "3"
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Engine/NewPal-Bridging-Header.h
         HEADER_SEARCH_PATHS:
           - "$(inherited)"

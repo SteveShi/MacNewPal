@@ -151,7 +151,7 @@ NewPal 原生内置标准 JSON-RPC 2.0 stdio MCP 服务端，供各类 AI 编码
 ```bash
 ./Tools/package_dmg.py
 ```
-生成文件位于：`build/NewPal-1.0.0.dmg`。
+生成文件位于：`build/NewPal-1.1.0.dmg`。
 
 ---
 

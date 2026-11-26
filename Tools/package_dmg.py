@@ -22,7 +22,18 @@ BUILD_DIR = os.path.join(PROJECT_DIR, "build")
 STAGING_DIR = os.path.join(BUILD_DIR, "staging")
 APP_SRC = os.path.join(BUILD_DIR, "Build", "Products", "Release", "NewPal.app")
 APP_DST = os.path.join(STAGING_DIR, "NewPal.app")
-DMG_OUTPUT = os.path.join(BUILD_DIR, "NewPal-1.0.0.dmg")
+def read_marketing_version():
+    yml = os.path.join(PROJECT_DIR, "project.yml")
+    if os.path.exists(yml):
+        with open(yml, "r", encoding="utf-8") as f:
+            m = re.search(r'MARKETING_VERSION:\s*"([^"]+)"', f.read())
+            if m:
+                return m.group(1)
+    return "1.1.0"
+
+
+APP_VERSION = read_marketing_version()
+DMG_OUTPUT = os.path.join(BUILD_DIR, f"NewPal-{APP_VERSION}.dmg")
 APP_ICON = os.path.join(PROJECT_DIR, "Sources", "App", "Resources", "AppIcon.icns")
 
 

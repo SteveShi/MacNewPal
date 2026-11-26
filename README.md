@@ -151,7 +151,7 @@ To create a standalone, relocatable `.dmg` with bundled dylibs, ad-hoc codesigni
 ```bash
 ./Tools/package_dmg.py
 ```
-Output DMG: `build/NewPal-1.0.0.dmg`.
+Output DMG: `build/NewPal-1.1.0.dmg`.
 
 ---
 
