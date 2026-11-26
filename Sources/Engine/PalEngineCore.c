@@ -6821,6 +6821,7 @@ static int pal_camp_exec_item_script(
                 applied = 1;
             }
             if (out_talk_id && *out_talk_id > 0) return 1;
+            break; /* 0x7F102001 is an unconditional jump (goto), never falls through */
         } else if (op->tag == 0x7F102046u && op->arg_count >= 1 && op->args[0] > 0) {
             if (out_talk_id) *out_talk_id = op->args[0];
             return 1;
@@ -7046,6 +7047,7 @@ static int pal_talk_exec_script_id(PalTalkWorldState *ws, int32_t script_id, int
         const PalScript7fOp *sop = &sc->ops[oi];
         if (sop->tag == 0x7F102001u && sop->arg_count >= 1) {
             if (pal_talk_exec_script_id(ws, sop->args[0], depth + 1)) applied = 1;
+            break; /* 0x7F102001 is an unconditional jump (goto), e.g. 5225 -> 5233 (靈兒學火神) must not fall through to 2003 */
         } else if (sop->tag == 0x7F402022u && sop->arg_count >= 4) {
             int cond = (pal_world_find_party_member(ws, sop->args[1]) >= 0) ? 1 : 0;
             int32_t off = cond ? sop->args[2] : sop->args[3];
@@ -7559,6 +7561,11 @@ static PalFieldActor *talk_find_actor_by_obj(
             if (npcs[i].obj_id == obj_id) return &npcs[i];
         }
     }
+    if (ws && ws->control_obj_id == 3100u && obj_id == 1u && party) {
+        /* Map 460 bug-eating scripts (talk 1770..1789) hardcode obj 1 for distance & pecking-pose reset even when 1 was detached (flag 157 == 1) */
+        if (out_is_party) *out_is_party = 1;
+        return &party[0];
+    }
     return NULL;
 }
 
@@ -8059,7 +8066,8 @@ static void pal_talk_vm_step_ex(
                     uint16_t ex_mid = 0u, ex_tx = 0u, ex_ty = 0u;
                     int resolved = pal_db_resolve_dungeon_exit(ws->db, (uint16_t)cur_map_id, &ex_mid, &ex_tx, &ex_ty);
                     if (resolved && cur_map_id >= 354u && cur_map_id <= 401u && (ex_mid == 404u || ex_mid == 405u)) {
-                        ex_mid = (ws->story_flags[1620] != 0u) ? 404u : 405u;
+                        /* Authentic talk 6492 / 6663: flag 1620 (defeated 木道人) OR flag 2080 (entered 十年前/靈兒線) closes 桃源村 -> map 405 */
+                        ex_mid = (ws->story_flags[1620] != 0u || ws->story_flags[2080] != 0u) ? 405u : 404u;
                     }
                     if (resolved && ex_mid != (uint16_t)cur_map_id) {
                         ws->pending_escape_refund_item = 0u;
@@ -8589,7 +8597,7 @@ static void pal_talk_vm_step_ex(
                 uint32_t tgt = rd_u32(ins + 8u);
                 PalFieldActor *a1 = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, o1, NULL);
                 PalFieldActor *a2 = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, o2, NULL);
-                if (a1 && a2) {
+                if (a1 && a2 && a1->active && a2->active) {
                     int64_t dx = (int64_t)a1->px - (int64_t)a2->px;
                     int64_t dy = (int64_t)a1->py - (int64_t)a2->py;
                     if (dx * dx + dy * dy > (int64_t)limit_px * (int64_t)limit_px) {
@@ -20665,13 +20673,241 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         }
     }
 
-    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok || !early_sidequests_ok || !mid_sidequests_ok) {
-        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d early_sidequests_ok=%d mid_sidequests_ok=%d\n",
-                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok, early_sidequests_ok, mid_sidequests_ok);
+    int late_sidequests_ok = 0;
+    {
+        int lq[6] = {0};
+        PalTalkVM lvm = {0};
+
+        /* L1: 桃源村除木道人 (3067 風靈珠 -> 1166 吹散濃霧 -> 3047/3054/3056 battle 2835 MON 1154 drop2=3062 金罡珠 + 3064 壽葫蘆 + 6492/6663/0x1B[1000] 關閉條件 1620/2080) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 0);
+            pal_world_party_attach_obj(ws, game_dir, NULL, NULL, 0, 4u);
+            pal_world_add_item(ws, 3067u, 1);
+            int32_t wind_tid = 0;
+            int wind_res = pal_item_resolve_field_talk_id(db, 3067u, &wind_tid);
+            PalFieldActor lp[4] = {0}, lnpcs[2] = {0};
+            lp[0].active = 1; lp[0].px = 95 << 4; lp[0].py = 8 << 4;
+            lnpcs[0].active = 1; lnpcs[0].obj_id = 3059u; lnpcs[0].px = 95 << 4; lnpcs[0].py = 7 << 4;
+            lnpcs[1].active = 1; lnpcs[1].obj_id = 1397u; lnpcs[1].px = 83 << 4; lnpcs[1].py = 0;
+            /* Simulate item consumption before field talk (3067 reusable_flag=1, refunded by talk 1166 @158) */
+            pal_world_add_item(ws, 3067u, -1);
+            if (wind_res && wind_tid == 1166 && pal_talk_vm_start(&lvm, game_dir, 1166, 0u) == 0) {
+                pal_talk_vm_step(&lvm, ws, game_dir, 243u, lp, lnpcs, 2, 1);
+            }
+            int fog_ok = (wind_tid == 1166 && ws->npc_visibility_override[3059] == 2u &&
+                          ws->npc_visibility_override[1397] == 2u && pal_world_item_qty(ws, 3067u) == 1);
+            /* Portal 6492 enters map 404 before close, map 405 after flag 2080 (talk 1117) or 1620 */
+            int p_open = 0, p_closed_2080 = 0, p_closed_1620 = 0;
+            if (pal_talk_vm_start(&lvm, game_dir, 6492, 0u) == 0) {
+                pal_talk_vm_step(&lvm, ws, game_dir, 402u, lp, NULL, 0, 1);
+                p_open = (lvm.pending_map_id == 404);
+            }
+            ws->story_flags[2080] = 1u;
+            if (pal_talk_vm_start(&lvm, game_dir, 6492, 0u) == 0) {
+                pal_talk_vm_step(&lvm, ws, game_dir, 402u, lp, NULL, 0, 1);
+                p_closed_2080 = (lvm.pending_map_id == 405);
+            }
+            ws->story_flags[2080] = 0u;
+            /* Full 3047 -> 3054 -> 3056 chain */
+            if (pal_talk_vm_start(&lvm, game_dir, 3047, 3091u) == 0) pal_talk_vm_step(&lvm, ws, game_dir, 404u, lp, NULL, 0, 1);
+            if (pal_talk_vm_start(&lvm, game_dir, 3054, 3092u) == 0) pal_talk_vm_step(&lvm, ws, game_dir, 400u, lp, NULL, 0, 1);
+            int reloc_ok = (ws->npc_pos_map[3093] == 399u);
+            if (pal_talk_vm_start(&lvm, game_dir, 3056, 3093u) == 0) pal_talk_vm_step(&lvm, ws, game_dir, 399u, lp, NULL, 0, 1);
+            const PalMonsterRecord *m1157 = pal_db_find_monster(db, 1157);
+            int boss_ok = (ws->active_battle_id == 2835 && m1157 && m1157->id == 1154 &&
+                           m1157->drop2_item_id == 3062 && m1157->drop2_qty == 1 &&
+                           pal_world_item_qty(ws, 3064u) == 1 && ws->story_flags[1620] == 1u &&
+                           lvm.pending_map_id == 405);
+            if (pal_talk_vm_start(&lvm, game_dir, 6663, 0u) == 0) {
+                pal_talk_vm_step(&lvm, ws, game_dir, 400u, lp, NULL, 0, 1);
+                p_closed_1620 = (lvm.pending_map_id == 405);
+            }
+            lq[0] = (fog_ok && p_open && p_closed_2080 && reloc_ok && boss_ok && p_closed_1620) ? 1 : 0;
+        }
+
+        /* L2: 捕捉食蠱鳥 (3060 -> 3047 -> 3061 AI 419->420->421->422 flag[2025]=1 -> 3063->3062 得3025) + 試煉窟放鳥吃蟲 (1729->1730->1770x6->1751, 含 flag 157==1) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            pal_world_party_attach_obj(ws, game_dir, NULL, NULL, 0, 4u);
+            PalFieldActor lp[4] = {0}, lnpcs[2] = {0};
+            lp[0].active = 1; lp[1].active = 1;
+            lnpcs[0].active = 1; lnpcs[0].obj_id = 3100u; lnpcs[0].act_id = 518u; lnpcs[0].px = 35 << 4; lnpcs[0].py = 17 << 4;
+            if (pal_talk_vm_start(&lvm, game_dir, 3060, 2398u) == 0) pal_talk_vm_step(&lvm, ws, game_dir, 404u, lp, lnpcs, 1, 1);
+            if (pal_talk_vm_start(&lvm, game_dir, 3047, 3091u) == 0) pal_talk_vm_step(&lvm, ws, game_dir, 404u, lp, lnpcs, 1, 1);
+            if (pal_talk_vm_start(&lvm, game_dir, 3061, 3101u) == 0) pal_talk_vm_step(&lvm, ws, game_dir, 404u, lp, lnpcs, 1, 1);
+            int ai_start = (lnpcs[0].ai_script_id == 419u);
+            /* Chase chicken through AI 419 -> 420 -> 421 -> 422 -> 402 by keeping party[1] (阿奴 obj 4) near chicken */
+            for (int tick = 0; tick < 1600 && lnpcs[0].ai_script_id != 402u; tick++) {
+                lp[0].px = lnpcs[0].px; lp[0].py = lnpcs[0].py;
+                lp[1].px = lnpcs[0].px; lp[1].py = lnpcs[0].py;
+                pal_npc_ai_step(&lnpcs[0], NULL, ws, NULL, lp, lnpcs, 1);
+            }
+            int ai_cornered = (lnpcs[0].ai_script_id == 402u && ws->story_flags[2025] == 1u &&
+                               (lnpcs[0].px >> 4) == 101 && (lnpcs[0].py >> 4) == 27);
+            if (pal_talk_vm_start(&lvm, game_dir, 3063, 3100u) == 0) pal_talk_vm_step(&lvm, ws, game_dir, 404u, lp, lnpcs, 1, 1);
+            const PalItemRecord *it3025 = pal_db_find_item(db, 3025);
+            int bird_got = (pal_world_item_qty(ws, 3025u) == 1 && pal_item_is_reusable(it3025) == 1);
+            /* Now test releasing bird on map 463 WITH 靈兒歸隊 (flag 157 == 1, 靈兒+逍遙+阿奴) -> map 460 -> eat bug 1770 -> return via 1751 */
+            pal_world_party_attach_obj(ws, game_dir, lp, NULL, 0, 2u);
+            ws->story_flags[157] = 1u;
+            lp[0].active = 1; lp[0].px = 18 << 4; lp[0].py = 11 << 4;
+            lnpcs[0].active = 1; lnpcs[0].obj_id = 808u; lnpcs[0].px = 17 << 4; lnpcs[0].py = 10 << 4;
+            int lcnt = 1;
+            if (pal_talk_vm_start(&lvm, game_dir, 1729, 0u) == 0) {
+                pal_talk_vm_step_ex(&lvm, ws, game_dir, 463u, lp, lnpcs, &lcnt, 2, 1);
+            }
+            int enter_460 = (ws->control_obj_id == 3100u && lvm.pending_map_id == 460 && ws->story_flags[1700] == 1u);
+            /* Eat bug 1770 on map 460 (pecks 0..4 reset action_base via 0x0A [1,0]; 6th consumes bug & gives 蠱卵 3651..3663) */
+            lnpcs[0].active = 1; lnpcs[0].obj_id = 1770u; lnpcs[0].px = 86 << 4; lnpcs[0].py = 49 << 4;
+            lp[0].active = 1; lp[0].px = 86 << 4; lp[0].py = 50 << 4;
+            int peck_reset_ok = 1;
+            for (int peck = 0; peck < 6; peck++) {
+                if (pal_talk_vm_start(&lvm, game_dir, 1770, 1770u) == 0) {
+                    pal_talk_vm_step(&lvm, ws, game_dir, 460u, lp, lnpcs, 1, 1);
+                }
+                if (peck < 5 && lp[0].action_base != 0) peck_reset_ok = 0;
+            }
+            int egg_cnt = 0;
+            for (uint16_t eid = 3651u; eid <= 3663u; eid++) egg_cnt += pal_world_item_qty(ws, eid);
+            int ate_ok = (lnpcs[0].active == 0 && egg_cnt == 1 && peck_reset_ok);
+            if (pal_talk_vm_start(&lvm, game_dir, 1751, 0u) == 0) {
+                pal_talk_vm_step_ex(&lvm, ws, game_dir, 460u, lp, lnpcs, &lcnt, 2, 1);
+            }
+            int exit_460 = (lvm.pending_map_id == 463 && ws->story_flags[1700] == 0u && ws->control_obj_id == 2u);
+            lq[1] = (ai_start && ai_cornered && bird_got && enter_460 && ate_ok && exit_460) ? 1 : 0;
+            if (!lq[1]) fprintf(stderr, "[SelfTest] L2 diag: ai_start=%d ai_cornered=%d(ai=%u f2025=%u pos=%d,%d) bird=%d enter460=%d ate=%d(act=%d egg=%d rst=%d) exit460=%d\n",
+                ai_start, ai_cornered, (unsigned)lnpcs[0].ai_script_id, (unsigned)ws->story_flags[2025], lnpcs[0].px>>4, lnpcs[0].py>>4,
+                bird_got, enter_460, ate_ok, lnpcs[0].active, egg_cnt, peck_reset_ok, exit_460);
+        }
+
+        /* L3: 騙子賈浩然賣仙劍 (map 268, talk 3091 兩次選「是」清零所有金錢 -> 顯示空箱 1392 -> talk 3092) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 0);
+            pal_world_party_attach_obj(ws, game_dir, NULL, NULL, 0, 4u);
+            ws->money = 54321; ws->script_vars[0] = 54321;
+            if (pal_talk_vm_start(&lvm, game_dir, 3091, 1391u) == 0) {
+                for (int step = 0; step < 32 && lvm.active; step++) {
+                    lvm.choice_selected = 0;
+                    pal_talk_vm_step(&lvm, ws, game_dir, 268u, NULL, NULL, 0, 1);
+                }
+            }
+            int scam_ok = (ws->money == 0 && ws->script_vars[0] == 0 &&
+                           ws->npc_visibility_override[1391] == 2u && ws->npc_visibility_override[1392] == 1u);
+            if (pal_talk_vm_start(&lvm, game_dir, 3092, 1392u) == 0) {
+                pal_talk_vm_step(&lvm, ws, game_dir, 268u, NULL, NULL, 0, 1);
+            }
+            lq[2] = (scam_ok && ws->obj_rv[1392][1] == 1) ? 1 : 0;
+        }
+
+        /* L4: 土妖還純陽劍 (talk 1130 依 flag[101] 決定是否顯示 map 505 obj 609 -> talk 1110 歸還 3466 純陽劍 + 贈 3075 青龍碧血玉) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 0);
+            ws->story_flags[101] = 0u;
+            if (pal_talk_vm_start(&lvm, game_dir, 1130, 0u) == 0) pal_talk_vm_step(&lvm, ws, game_dir, 505u, NULL, NULL, 0, 1);
+            int no_lend_hidden = (ws->npc_visibility_override[609] != 1u);
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 0);
+            ws->story_flags[101] = 1u;
+            if (pal_talk_vm_start(&lvm, game_dir, 1130, 0u) == 0) pal_talk_vm_step(&lvm, ws, game_dir, 505u, NULL, NULL, 0, 1);
+            int lend_shown = (ws->npc_visibility_override[609] == 1u);
+            if (pal_talk_vm_start(&lvm, game_dir, 1110, 609u) == 0) pal_talk_vm_step(&lvm, ws, game_dir, 505u, NULL, NULL, 0, 1);
+            lq[3] = (no_lend_hidden && lend_shown && ws->npc_visibility_override[609] == 2u &&
+                     pal_world_item_qty(ws, 3466u) == 1 && pal_world_item_qty(ws, 3075u) == 1) ? 1 : 0;
+        }
+
+        /* L5: 探望王小虎出生 (map 556 -> talk 1506 -> map 558 十年前王家 -> talk 3105 老王 & 3106 王嬸 -> talk 6020 返回) */
+        {
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 0);
+            int enter_558 = 0, t3105_ok = 0, t3106_ok = 0, exit_556 = 0;
+            if (pal_talk_vm_start(&lvm, game_dir, 1506, 0u) == 0) {
+                pal_talk_vm_step(&lvm, ws, game_dir, 556u, NULL, NULL, 0, 1);
+                enter_558 = (lvm.pending_map_id == 558);
+            }
+            if (pal_talk_vm_start(&lvm, game_dir, 3105, 3105u) == 0) {
+                pal_talk_vm_step(&lvm, ws, game_dir, 558u, NULL, NULL, 0, 1);
+                t3105_ok = (!lvm.active);
+            }
+            if (pal_talk_vm_start(&lvm, game_dir, 3106, 3106u) == 0) {
+                pal_talk_vm_step(&lvm, ws, game_dir, 558u, NULL, NULL, 0, 1);
+                t3106_ok = (!lvm.active);
+            }
+            if (pal_talk_vm_start(&lvm, game_dir, 6020, 0u) == 0) {
+                pal_talk_vm_step(&lvm, ws, game_dir, 558u, NULL, NULL, 0, 1);
+                exit_556 = (lvm.pending_map_id == 556);
+            }
+            lq[4] = (enter_558 && t3105_ok && t3106_ok && exit_556) ? 1 : 0;
+        }
+
+        /* L6: 女媧遺跡學五神 (1813 山神 / 1853 雪妖 / 1857 雷神 / 1858 風神 / 1862 火神: 無靈兒歸阿奴，有靈兒僅歸靈兒) */
+        {
+            int has_m = 0;
+            /* Case A: 靈兒未歸隊 ([李逍遙 2000, 阿奴 2003]) */
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 2);
+            pal_world_party_attach_obj(ws, game_dir, NULL, NULL, 0, 4u);
+            const int32_t god_talks[5] = {1813, 1853, 1857, 1858, 1862};
+            const uint16_t god_objs[5] = {3672u, 3673u, 3674u, 3675u, 3676u};
+            for (int g = 0; g < 5; g++) {
+                if (pal_talk_vm_start(&lvm, game_dir, god_talks[g], god_objs[g]) == 0) {
+                    pal_talk_vm_step(&lvm, ws, game_dir, (uint32_t)(441 + g), NULL, NULL, 0, 1);
+                }
+            }
+            int xy_6505 = 0, xy_6605 = 0, an_6454 = 0, an_6654 = 0, an_6555 = 0, le_6555 = 0;
+            PalPartyMemberState *h_xy = pal_world_find_or_init_hero(ws, 2000);
+            PalPartyMemberState *h_an = pal_world_find_or_init_hero(ws, 2003);
+            PalPartyMemberState *h_le = pal_world_find_or_init_hero(ws, 2001);
+            for (int i = 0; h_xy && i < h_xy->magic_count; i++) {
+                if (h_xy->magics[i] == 6505u) xy_6505 = 1;
+                if (h_xy->magics[i] == 6605u) xy_6605 = 1;
+            }
+            for (int i = 0; h_an && i < h_an->magic_count; i++) {
+                if (h_an->magics[i] == 6454u) an_6454 = 1;
+                if (h_an->magics[i] == 6654u) an_6654 = 1;
+                if (h_an->magics[i] == 6555u) an_6555 = 1;
+            }
+            for (int i = 0; h_le && i < h_le->magic_count; i++) {
+                if (h_le->magics[i] == 6555u) le_6555 = 1;
+            }
+            int statues_hidden = (ws->npc_visibility_override[3672] == 2u && ws->npc_visibility_override[3673] == 2u &&
+                                  ws->npc_visibility_override[3674] == 2u && ws->npc_visibility_override[3675] == 2u &&
+                                  ws->npc_visibility_override[3676] == 2u);
+            int case_a = (xy_6505 && xy_6605 && an_6454 && an_6654 && an_6555 && !le_6555 && statues_hidden);
+
+            /* Case B: 靈兒已歸隊 ([李逍遙 2000, 趙靈兒 2001, 阿奴 2003]) -> 火神僅歸靈兒、阿奴不得習得 */
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 0);
+            pal_world_party_attach_obj(ws, game_dir, NULL, NULL, 0, 2u);
+            pal_world_party_attach_obj(ws, game_dir, NULL, NULL, 0, 4u);
+            if (pal_talk_vm_start(&lvm, game_dir, 1862, 3676u) == 0) {
+                pal_talk_vm_step(&lvm, ws, game_dir, 445u, NULL, NULL, 0, 1);
+            }
+            int b_le_6555 = 0, b_an_6555 = 0;
+            h_le = pal_world_find_or_init_hero(ws, 2001);
+            h_an = pal_world_find_or_init_hero(ws, 2003);
+            for (int i = 0; h_le && i < h_le->magic_count; i++) if (h_le->magics[i] == 6555u) b_le_6555 = 1;
+            for (int i = 0; h_an && i < h_an->magic_count; i++) if (h_an->magics[i] == 6555u) b_an_6555 = 1;
+            has_m = (case_a && b_le_6555 && !b_an_6555);
+            lq[5] = has_m ? 1 : 0;
+            if (!lq[5]) fprintf(stderr, "[SelfTest] L6 diag: case_a=%d(xy=%d,%d an=%d,%d,%d le=%d st=%d) b_le=%d b_an=%d sc5224=%d sc5225=%d sc5233=%d\n",
+                case_a, xy_6505, xy_6605, an_6454, an_6654, an_6555, le_6555, statues_hidden, b_le_6555, b_an_6555,
+                pal_db_find_script(db, 5224) != NULL, pal_db_find_script(db, 5225) != NULL, pal_db_find_script(db, 5233) != NULL);
+        }
+        pal_talk_vm_free(&lvm);
+
+        late_sidequests_ok = 1;
+        for (int li = 0; li < 6; li++) {
+            if (!lq[li]) late_sidequests_ok = 0;
+        }
+        if (!late_sidequests_ok) {
+            fprintf(stderr, "[SelfTest] late_sidequests failed: lq1..6=%d,%d,%d,%d,%d,%d\n",
+                    lq[0],lq[1],lq[2],lq[3],lq[4],lq[5]);
+        }
+    }
+
+    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok || !early_sidequests_ok || !mid_sidequests_ok || !late_sidequests_ok) {
+        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d early_sidequests_ok=%d mid_sidequests_ok=%d late_sidequests_ok=%d\n",
+                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok, early_sidequests_ok, mid_sidequests_ok, late_sidequests_ok);
     }
 
     out_info->ok = (out_info->monster_count == 160 &&
-                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok && early_sidequests_ok && mid_sidequests_ok &&
+                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok && early_sidequests_ok && mid_sidequests_ok && late_sidequests_ok &&
                     out_info->zone_count == 265 &&
                     out_info->fight_script_count == 1056 &&
                     out_info->battle2801_bg_id == 1609 &&
@@ -21145,7 +21381,7 @@ static void pal_npc_ai_step(
                 const PalFieldActor *tgt = NULL;
                 if ((obj == 0xFFF1u || obj == 0xFFFEu) && party) tgt = &party[0];
                 else if (obj == 0xFFF0u) tgt = a;
-                else tgt = talk_find_actor_by_obj(ws, NULL, npcs, npc_cnt, obj, NULL);
+                else tgt = talk_find_actor_by_obj(ws, (PalFieldActor *)party, npcs, npc_cnt, obj, NULL);
                 if (!tgt) {
                     a->ai_pc += wcnt;
                     break;
@@ -21195,7 +21431,7 @@ static void pal_npc_ai_step(
                     const PalFieldActor *tgt = NULL;
                     if (is_party_tgt && party) tgt = &party[0];
                     else if (obj == 0xFFF0u) tgt = a;
-                    else tgt = talk_find_actor_by_obj(ws, NULL, npcs, npc_cnt, obj, NULL);
+                    else tgt = talk_find_actor_by_obj(ws, (PalFieldActor *)party, npcs, npc_cnt, obj, NULL);
                     if (tgt && tgt->active) {
                         int64_t dx = (int64_t)tgt->px - (int64_t)a->px;
                         int64_t dy = (int64_t)tgt->py - (int64_t)a->py;
