@@ -12055,7 +12055,8 @@ typedef enum {
     PAL_CPOSE_DEAD = 2,
     PAL_CPOSE_ATK  = 3,
     PAL_CPOSE_CAST = 4,
-    PAL_CPOSE_DEF  = 5
+    PAL_CPOSE_DEF  = 5,
+    PAL_CPOSE_STEAL = 6
 } PalCombatPose;
 
 typedef enum {
@@ -12070,13 +12071,15 @@ typedef enum {
 } PalCombatMagicScope;
 
 typedef enum {
-    PAL_MKIND_ATTACK = 0,
-    PAL_MKIND_HEAL   = 1,
-    PAL_MKIND_REVIVE = 2,
-    PAL_MKIND_BUFF   = 3,
-    PAL_MKIND_CURE   = 4,
-    PAL_MKIND_ESCAPE = 5,
-    PAL_MKIND_STEAL  = 6
+    PAL_MKIND_ATTACK  = 0,
+    PAL_MKIND_HEAL    = 1,
+    PAL_MKIND_REVIVE  = 2,
+    PAL_MKIND_BUFF    = 3,
+    PAL_MKIND_CURE    = 4,
+    PAL_MKIND_ESCAPE  = 5,
+    PAL_MKIND_STEAL   = 6,
+    PAL_MKIND_DEBUFF  = 7,
+    PAL_MKIND_CAPTURE = 8
 } PalCombatMagicKind;
 
 #define PAL_COMBAT_MAX_VFX_STEPS 32
@@ -12584,51 +12587,70 @@ static int32_t pal_combat_eval_hp_mp_delta(
             }
         }
     } else if (formula >= 1 && formula <= 10) {
-        /* Hero physical / weapon skill (modes 1..10) */
-        int32_t luck_div = (tgt->luck > 0) ? tgt->luck : 1;
+        /* Hero physical / weapon skill (Palgame.exe 0x4ae7c1..0x4aeb20, modes 1..10) */
+        int32_t luck_div = (tgt->luck != 0) ? tgt->luck : 1;
         double base = ((double)caster->atk / 0.72) / (double)luck_div * (1.0 - (double)tgt->def / 100.0);
         if (base < 0.0) base = 0.0;
         int32_t v = 5 - (int32_t)pal_combat_rand_n(cb, 11u); /* [-5..+5] */
-        double jf = 1.0 + (double)v / 100.0;
         switch (formula) {
-            case 2:  val = -(int32_t)llround(base * 0.4 - (double)v); break;
-            case 3:  val = -(int32_t)llround((double)llround(base * 0.4) * jf); break;
-            case 4:  val = -(int32_t)llround(base * 0.36 - (double)v); break;
-            case 5:  val = -(int32_t)llround((double)llround(base * 2.0) * jf); break;
-            case 7:  val = -(int32_t)llround(base * 0.9 - (double)v); break;
-            case 8:  val = -(int32_t)llround(base * 0.76 - (double)v); break;
+            case 2:  val = -(int32_t)(base * 0.4 - (double)v); break;
+            case 3: {
+                int32_t bn = -(int32_t)(base * 0.8 / 2.0);
+                val = (int32_t)((double)bn + (double)(bn * v) / 100.0);
+                break;
+            }
+            case 4:  val = -(int32_t)(base * 0.36 - (double)v); break;
+            case 5: {
+                int32_t bn = -(int32_t)(base * 2.0);
+                val = (int32_t)((double)bn + (double)(bn * v) / 100.0);
+                break;
+            }
+            case 7:  val = -(int32_t)(base * 0.9 - (double)v); break;
+            case 8:  val = -(int32_t)(base * 0.76 - (double)v); break;
             case 1:
             case 6:
-            default: val = -(int32_t)llround((double)llround(base) * jf); break;
+            default: {
+                int32_t bn = -(int32_t)base;
+                val = (int32_t)((double)bn + (double)(bn * v) / 100.0);
+                break;
+            }
         }
-        if (val >= 0) val = -1;
-    } else if (formula >= 11 && formula <= 26) {
-        /* Hero magic & throwing items (modes 0x0b..0x1a) */
-        double base_pos = (double)(-power) * 7.2 + (double)caster->atk / 4.0 + (double)caster->mag / 12.0;
+        if (val == 0) val = -1;
+        if (val > 0) val = -val;
+    } else if (formula >= 11 && formula <= 16) {
+        /* Hero sword/martial/summon magic (Palgame.exe 0x4aeb3e..0x4aeef6, modes 0x0b..0x10):
+         * base = (-power)*7.2 + (ATK / 4) + (MAG / 12) */
+        double base_pos = (double)(-power) * 7.2 + (double)(caster->atk / 4) + (double)(caster->mag / 12);
         if (base_pos < 0.0) base_pos = 0.0;
         int32_t v = 5 - (int32_t)pal_combat_rand_n(cb, 10u); /* [-4..+5] */
-        double jf = 1.0 + (double)v / 100.0;
+        int32_t bn = 0;
         if (formula == 12) {
-            val = -(int32_t)llround((double)(caster->cur_mp * 9) * jf);
+            bn = -(caster->cur_mp * 9);
         } else if (formula == 13) {
-            val = -(int32_t)llround(base_pos * 0.75 * jf);
+            bn = -(int32_t)(base_pos * 0.75);
         } else if (formula == 14) {
-            val = -(int32_t)llround(240.0 * jf);
+            bn = -240;
         } else if (formula == 15) {
-            val = -(int32_t)llround(2050.0 * jf);
-        } else if (formula >= 21 && formula <= 26) {
-            int elem = formula - 21;
-            int32_t rsum = tgt->res[elem];
-            if (rsum <= 0) {
-                val = 0;
-            } else {
-                double ebase = base_pos * ((double)rsum / 100.0);
-                val = -(int32_t)llround(ebase * jf);
-                if (val >= 0) val = -1;
-            }
+            bn = -2050;
         } else {
-            val = -(int32_t)llround(base_pos * jf);
+            bn = -(int32_t)base_pos;
         }
+        val = (int32_t)((double)bn + (double)(bn * v) / 100.0);
+        if (val == 0) val = -1;
+        if (val > 0) val = -val;
+    } else if (formula >= 21 && formula <= 26) {
+        /* Hero 5-element & poison magic (Palgame.exe 0x4aeefb..0x4af2d3, modes 0x15..0x1a):
+         * base = (-power)*7.2 + (ATK / 12) + (MAG / 4), scaled by target elemental resistance */
+        double base_pos = (double)(-power) * 7.2 + (double)(caster->atk / 12) + (double)(caster->mag / 4);
+        if (base_pos < 0.0) base_pos = 0.0;
+        int32_t v = 5 - (int32_t)pal_combat_rand_n(cb, 10u); /* [-4..+5] */
+        int elem = formula - 21;
+        int32_t rsum = tgt->res[elem];
+        float rfactor = -((((float)rsum + 1.0f) / 100.0f) - 0.01f);
+        int32_t bn = (int32_t)(base_pos * (double)rfactor);
+        val = (int32_t)((double)bn + (double)(bn * v) / 100.0);
+        if (val == 0) val = -1;
+        if (val > 0) val = -val;
     } else if (formula >= 31 && formula <= 42) {
         /* Level-scaled combo & Five-Gods summon formulas (Palgame.exe JumpTable 0x4b0547) */
         double lbase = (double)caster->lv;
@@ -12649,33 +12671,39 @@ static int32_t pal_combat_eval_hp_mp_delta(
         }
         int32_t base_neg = -(int32_t)lbase;
         int32_t v = 5 - (int32_t)pal_combat_rand_n(cb, 10u); /* [-4..+5] */
-        if (v > 0) {
-            val = (int32_t)((double)base_neg + (double)(base_neg * v) / 100.0);
-        } else {
-            int32_t av = -v;
-            val = (int32_t)((double)base_neg - (double)(base_neg * av) / 100.0);
-        }
-        if (val >= 0) val = -1;
+        val = (int32_t)((double)base_neg + (double)(base_neg * v) / 100.0);
+        if (val == 0) val = -1;
+        if (val > 0) val = -val;
     } else if (formula == 51 || formula == 52) {
-        /* Monster physical attack (modes 0x33..0x34) */
+        /* Monster physical attack (Palgame.exe 0x4afce0..0x4aff52, modes 0x33..0x34) */
         double base = ((double)caster->atk / 0.72) - (double)tgt->def;
         if (base < 0.0) base = 0.0;
         if (formula == 52) base *= 2.0;
         int32_t v = 5 - (int32_t)pal_combat_rand_n(cb, 11u);
-        val = -(int32_t)llround(base * (1.0 + (double)v / 100.0));
-        if (val >= 0) val = -1;
+        int32_t bn = -(int32_t)base;
+        if (bn != 0) {
+            val = (int32_t)((double)bn + (double)(bn * v) / 100.0);
+        }
+        if (val == 0) val = -1;
+        if (val > 0) val = -val;
     } else if (formula >= 61 && formula <= 67) {
-        /* Enemy magic (modes 0x3d..0x43) */
+        /* Enemy magic (Palgame.exe 0x4aff57..0x4b04f0, modes 0x3d..0x43) */
         double base = (double)(-power) * 7.2 + (double)caster->monster_mag - (double)tgt->def * 0.72;
-        if (base < 0.0) base = 0.0;
-        int32_t rsum = (formula >= 62) ? tgt->res[formula - 62] : 100;
-        if (formula >= 62 && rsum <= 0) {
-            val = 0;
+        if (base <= 0.0) {
+            val = -1;
         } else {
-            if (formula >= 62) base *= ((double)rsum / 100.0);
             int32_t v = 5 - (int32_t)pal_combat_rand_n(cb, 11u);
-            val = -(int32_t)llround(base * (1.0 + (double)v / 100.0));
-            if (val >= 0) val = -1;
+            int32_t bn = 0;
+            if (formula == 61) {
+                bn = -(int32_t)base;
+            } else {
+                int32_t rsum = tgt->res[formula - 62];
+                float rfactor = -((((float)rsum + 1.0f) / 100.0f) - 0.01f);
+                bn = (int32_t)(base * (double)rfactor);
+            }
+            val = (int32_t)((double)bn + (double)(bn * v) / 100.0);
+            if (val > 0) val = -val;
+            if (val == 0) val = -1;
         }
     } else {
         val = power;
@@ -12708,17 +12736,18 @@ static int32_t pal_combat_eval_hp_mp_delta(
 }
 
 static void pal_combat_scan_magic_script(
-    const PalScript7fRecord *sc, int *saw_atk, int32_t *max_rank, int32_t *elem_out,
+    const PalGameDatabase *db, const PalScript7fRecord *sc, int depth,
+    int *saw_atk, int32_t *max_rank, int32_t *elem_out,
     int32_t *formula_id_out, int32_t *formula_pow_out, int *has_formula_out,
     int *saw_heal, int32_t *max_heal, int *saw_revive, int32_t *revive_pct,
     int *saw_buff, int *saw_cure, int *saw_enemy_aoe, int *saw_ally_aoe,
     uint32_t *vfx_pref_act, int32_t *vfx_pref_sub, int *vfx_pref_fs, int *vfx_ax, int *vfx_ay,
     uint32_t *vfx_fallback_6060, int32_t *vfx_fallback_sub,
     PalCombatVfxStep *vfx_steps, int *vfx_step_count, int *vfx_phase_cursor,
-    uint32_t *caster_hidden_mask_out,
+    uint32_t *caster_hidden_phase_mask_out,
     uint32_t *sfx_ids, int *sfx_count
 ) {
-    if (!sc) return;
+    if (!sc || depth > 2) return;
     int has_step_in_phase = 0;
     int caster_hidden = 0;
     for (int32_t i = 0; i < sc->op_count; i++) {
@@ -12737,8 +12766,25 @@ static void pal_combat_scan_magic_script(
                 }
                 if (!dup) sfx_ids[(*sfx_count)++] = sid;
             }
-        } else if (op->tag == 0x7F50201Fu && op->arg_count >= 3) {
-            *saw_atk = 1;
+        } else if (op->tag == 0x7F102001u && op->arg_count >= 1 && db && depth < 2) {
+            int32_t sub_id = op->args[0];
+            if (sub_id > 0 && sub_id != sc->id && sub_id != 802 && sub_id != 1499 && sub_id != 1800 &&
+                sub_id != 718 && sub_id != 719 && sub_id != 570 && sub_id != 571 && sub_id != 1897) {
+                const PalScript7fRecord *sub_sc = pal_db_find_script_kind(db, sub_id, PAL_DB_KIND_FIGHT);
+                if (!sub_sc) sub_sc = pal_db_find_script(db, sub_id);
+                if (sub_sc) {
+                    pal_combat_scan_magic_script(db, sub_sc, depth + 1,
+                                                 saw_atk, max_rank, elem_out,
+                                                 formula_id_out, formula_pow_out, has_formula_out,
+                                                 saw_heal, max_heal, saw_revive, revive_pct,
+                                                 saw_buff, saw_cure, saw_enemy_aoe, saw_ally_aoe,
+                                                 vfx_pref_act, vfx_pref_sub, vfx_pref_fs, vfx_ax, vfx_ay,
+                                                 vfx_fallback_6060, vfx_fallback_sub,
+                                                 vfx_steps, vfx_step_count, vfx_phase_cursor,
+                                                 caster_hidden_phase_mask_out,
+                                                 sfx_ids, sfx_count);
+                }
+            }
         } else if (op->tag == 0x7F202015u && op->arg_count >= 2) {
             int32_t kind = op->args[0];
             int32_t val = op->args[1];
@@ -12758,7 +12804,7 @@ static void pal_combat_scan_magic_script(
                     *formula_pow_out = val;
                     *has_formula_out = 1;
                 }
-            } else if ((val < 0 && (kind == 11 || kind == 13 || kind == 16 || (kind >= 21 && kind <= 26) || (kind >= 31 && kind <= 42) || kind == 69 || kind == 74)) ||
+            } else if ((val < 0 && (kind == 0 || kind == 11 || kind == 13 || kind == 16 || (kind >= 21 && kind <= 26) || (kind >= 31 && kind <= 42) || kind == 69 || kind == 74)) ||
                        kind == 12 || kind == 14 || kind == 15) {
                 *saw_atk = 1;
                 if (formula_id_out && formula_pow_out && has_formula_out) {
@@ -12780,6 +12826,7 @@ static void pal_combat_scan_magic_script(
             }
             int32_t bit = op->args[1];
             if (((bit >= 20 && bit <= 31) || bit == PAL_CSTAT_BIT_DOUBLE_ATK) && op->args[2] != 0) *saw_buff = 1;
+            if (((bit >= 32 && bit <= 41) || (bit >= 64 && bit <= 67)) && op->args[2] == 0) *saw_cure = 1;
         } else if (op->tag == 0x7F30200Bu && op->arg_count >= 3) {
             uint32_t tgt = (uint32_t)op->args[0];
             if (tgt == 0x7EFF1016u) *saw_ally_aoe = 1;
@@ -12849,8 +12896,8 @@ static void pal_combat_scan_magic_script(
                         }
                         has_step_in_phase = 1;
                     }
-                    if (caster_hidden && caster_hidden_mask_out && ph >= 0 && ph < 32) {
-                        *caster_hidden_mask_out |= (1u << ph);
+                    if (caster_hidden && caster_hidden_phase_mask_out && ph >= 0 && ph < 32) {
+                        *caster_hidden_phase_mask_out |= (1u << ph);
                     }
                 }
             }
@@ -12907,7 +12954,7 @@ static void pal_combat_analyze_magic(
 
     if (db) {
         if (mg->battle_script > 0) {
-            pal_combat_scan_magic_script(pal_db_find_script_kind(db, mg->battle_script, PAL_DB_KIND_FIGHT),
+            pal_combat_scan_magic_script(db, pal_db_find_script_kind(db, mg->battle_script, PAL_DB_KIND_FIGHT), 0,
                                          &saw_atk, &max_rank, &elem_from_script,
                                          &formula_id, &formula_pow, &has_formula,
                                          &saw_heal, &max_heal, &saw_revive, &revive_pct,
@@ -12919,7 +12966,7 @@ static void pal_combat_analyze_magic(
                                          out->sfx_ids, &out->sfx_count);
         }
         if (mg->field_script > 0 && mg->field_script != mg->battle_script) {
-            pal_combat_scan_magic_script(pal_db_find_script_kind(db, mg->field_script, PAL_DB_KIND_MAGIC),
+            pal_combat_scan_magic_script(db, pal_db_find_script_kind(db, mg->field_script, PAL_DB_KIND_MAGIC), 0,
                                          &saw_atk, &max_rank, &elem_from_script,
                                          &formula_id, &formula_pow, &has_formula,
                                          &saw_heal, &max_heal, &saw_revive, &revive_pct,
@@ -12946,6 +12993,12 @@ static void pal_combat_analyze_magic(
     } else if (mg->id == 6252) { /* 飛龍探雲手 */
         out->kind = PAL_MKIND_STEAL;
         out->scope = PAL_MSCOPE_STEAL;
+    } else if (mg->id == 6251) { /* 靈葫咒 */
+        out->kind = PAL_MKIND_CAPTURE;
+        out->scope = PAL_MSCOPE_ENEMY_SINGLE;
+    } else if (mg->id == 6801 || mg->id == 6802 || mg->id == 6803) { /* 迴夢 / 鬼降 / 奪魂 */
+        out->kind = PAL_MKIND_DEBUFF;
+        out->scope = PAL_MSCOPE_ENEMY_SINGLE;
     } else if (mg->id == 6253) { /* 酒神 */
         out->kind = PAL_MKIND_ATTACK;
         out->scope = PAL_MSCOPE_ENEMY_ALL;
@@ -12984,10 +13037,16 @@ static void pal_combat_analyze_magic(
                 out->has_formula = 1;
             }
         }
-        out->scope = (saw_enemy_aoe || desc_aoe || mg->target_scope == 3 || mg->target_scope == 1) ? PAL_MSCOPE_ENEMY_ALL : PAL_MSCOPE_ENEMY_SINGLE;
+        /* Authoritative gmagic.dat prop[0] target_scope: 3=All enemies, 0=Single enemy (e.g. 6406 逍遙神劍 single+splash) */
+        out->scope = (mg->target_scope == 3) ? PAL_MSCOPE_ENEMY_ALL : PAL_MSCOPE_ENEMY_SINGLE;
     }
 
-    if (vfx_pref_act != 0u) {
+    if (out->kind == PAL_MKIND_STEAL || out->kind == PAL_MKIND_ESCAPE) {
+        /* 飛龍探雲手 (6252) uses caster sprite sub 50 dash & 金蟬脫殼 (6202) has no magic VFX sprite;
+         * never fall back to 6010 (御劍術) flying sword! */
+        out->vfx_act_id = 0u;
+        out->vfx_sub_idx = -1;
+    } else if (vfx_pref_act != 0u) {
         out->vfx_act_id = vfx_pref_act;
         out->vfx_sub_idx = vfx_pref_sub;
         out->vfx_fullscreen = vfx_pref_fs;
@@ -13020,7 +13079,7 @@ static void pal_combat_analyze_fight_script(
     if (db && pal_dat_has_script(script_id)) {
         const PalScript7fRecord *sc = pal_db_find_script_kind(db, script_id, PAL_DB_KIND_FIGHT);
         if (!sc) sc = pal_db_find_script(db, script_id);
-        pal_combat_scan_magic_script(sc, &saw_atk, &max_rank, &elem_from_script,
+        pal_combat_scan_magic_script(db, sc, 0, &saw_atk, &max_rank, &elem_from_script,
                                      &formula_id, &formula_pow, &has_formula,
                                      &saw_heal, &max_heal, &saw_revive, &revive_pct,
                                      &saw_buff, &saw_cure, &saw_enemy_aoe, &saw_ally_aoe,
@@ -13083,15 +13142,16 @@ static int pal_combat_set_actor_vm(
     const char *game_dir, uint32_t primary_act, uint32_t fallback_act, PalCombatPose pose,
     PalActVM *out_vm, int *out_vm_ok, PalActVM *out_shadow, int *out_shadow_ok, uint32_t *out_act_used
 ) {
-    static const int32_t kPosePrefs[6][4] = {
+    static const int32_t kPosePrefs[7][4] = {
         {35, 36, 33,  1}, /* PAL_CPOSE_IDLE: static standing stance (never fidgeting sub 36) */
         {37, 35, 36,  1}, /* PAL_CPOSE_WEAK: static wounded stance */
         {39, 37, 35,  1}, /* PAL_CPOSE_DEAD: fallen stance */
         {40, 41, 35,  1}, /* PAL_CPOSE_ATK: attack animation (one-shot) */
         {44, 40, 35,  1}, /* PAL_CPOSE_CAST: spell/item seal (one-shot) */
-        {58, 35, 36,  1}  /* PAL_CPOSE_DEF: defend stance (one-shot, holds final frame) */
+        {58, 35, 36,  1}, /* PAL_CPOSE_DEF: defend stance (one-shot, holds final frame) */
+        {50, 40, 35,  1}  /* PAL_CPOSE_STEAL: 飛龍探雲手 steal dash (GFight1[516] sub 50) */
     };
-    const int32_t *prefs = kPosePrefs[(int)pose % 6];
+    const int32_t *prefs = kPosePrefs[(int)pose % 7];
     /* All combat poses advance cleanly through their .act script once and hold without idle twitching */
     int loop = 0;
     uint32_t used = primary_act;
@@ -13118,7 +13178,7 @@ static int pal_combat_set_actor_vm(
     if (out_shadow && out_shadow_ok) {
         *out_shadow_ok = 0;
         if (ok) {
-            int32_t sprefs[3] = { vm.sub_action_idx + 36, 72, 71 };
+            int32_t sprefs[3] = { (pose == PAL_CPOSE_STEAL) ? 84 : (vm.sub_action_idx + 36), 72, 71 };
             PalActVM svm = {0};
             if (pal_act_vm_init_with_prefs(game_dir, "all_char.act", used, sprefs, 3, 0, &svm) == 0) {
                 pal_act_warm_start(&svm, loop);
@@ -13133,6 +13193,7 @@ static int pal_combat_set_actor_vm(
 static uint32_t pal_combat_resolve_magic_vfx_act(const PalTalkWorldState *ws, int action_type, uint16_t action_id, int32_t hero_id, int is_heal) {
     if (action_type == 2) return 6001u; /* Item use sparkle */
     if (action_type == 0) return 7070u; /* Physical slash hit */
+    if (action_id == 6252u || action_id == 6202u) return 0u; /* 飛龍探雲手 / 金蟬脫殼: no magic VFX sprite */
     const PalMagicRecord *mg = (ws && ws->db) ? pal_db_find_magic(ws->db, (int32_t)action_id) : NULL;
     if (mg && ws && ws->db) {
         PalCombatMagicPlan plan;
@@ -13487,14 +13548,22 @@ static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws,
                 cb->hero_anim_dx[hp] = -36.0f;
             }
         } else if (b->action_type == 0 || b->action_type == 1 || b->action_type == 2 || b->action_type == 3) {
-            PalCombatPose ap = (b->action_type == 0) ? PAL_CPOSE_ATK
-                             : ((b->action_type == 3) ? PAL_CPOSE_DEF : PAL_CPOSE_CAST);
+            int is_steal = (b->action_type == 1 && b->magic_id == 6252u);
+            PalCombatPose ap = is_steal ? PAL_CPOSE_STEAL
+                             : ((b->action_type == 0) ? PAL_CPOSE_ATK
+                             : ((b->action_type == 3) ? PAL_CPOSE_DEF : PAL_CPOSE_CAST));
             uint32_t hact = pal_hero_battle_act_id(ws->party_members[p].hero_id);
             cb->hero_poses[p] = ap;
             pal_combat_set_actor_vm(cb->game_dir, hact, 0u, ap,
                                     &cb->hero_vms[p], &cb->hero_vm_ok[p],
                                     &cb->hero_shadow_vms[p], &cb->hero_shadow_ok[p], NULL);
-            if (b->action_type == 0) cb->hero_anim_dx[p] = -36.0f;
+            if (is_steal && b->tgt_idx >= 0 && b->tgt_idx < cb->enemy_count) {
+                /* Authentic GFight1[516] 飛龍探雲手: dash directly in front of target enemy with sub 50 */
+                cb->hero_anim_dx[p] = (float)(cb->enemies[b->tgt_idx].screen_x + 36 - cb->slot_x[p]);
+                cb->hero_anim_dy[p] = (float)(cb->enemies[b->tgt_idx].screen_y + 4 - cb->slot_y[p]);
+            } else if (b->action_type == 0) {
+                cb->hero_anim_dx[p] = -36.0f;
+            }
         }
 
         int sum_x = 0, sum_y = 0, pos_cnt = 0;
@@ -13523,8 +13592,9 @@ static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws,
         }
 
         if (b->action_type == 0 || b->action_type == 1 || b->action_type == 2 || b->action_type == 5) {
+            int no_vfx_magic = (b->action_type == 1 && (b->magic_id == 6252u || b->magic_id == 6202u));
             cb->fx_cur_beat = *b;
-            if (cb->fx_cur_beat.vfx_act_id == 0u && cb->fx_cur_beat.vfx_step_count == 0) {
+            if (!no_vfx_magic && cb->fx_cur_beat.vfx_act_id == 0u && cb->fx_cur_beat.vfx_step_count == 0) {
                 cb->fx_cur_beat.vfx_act_id = pal_combat_resolve_magic_vfx_act(
                     ws, (b->action_type == 5) ? 1 : b->action_type,
                     b->magic_id, ws->party_members[p].hero_id, b->is_heal);
@@ -13534,11 +13604,13 @@ static void combat_activate_anim_beat(PalCombatState *cb, PalTalkWorldState *ws,
                     cb->fx_max_phase = cb->fx_cur_beat.vfx_steps[s].phase;
                 }
             }
-            cb->fx_has_cur_beat = 1;
-            combat_spawn_fx_phase(cb, ws, &cb->fx_cur_beat, 0);
-            while (cb->fx_active_count == 0 && cb->fx_has_cur_beat && cb->fx_cur_phase < cb->fx_max_phase) {
-                cb->fx_cur_phase++;
-                combat_spawn_fx_phase(cb, ws, &cb->fx_cur_beat, cb->fx_cur_phase);
+            if (!no_vfx_magic) {
+                cb->fx_has_cur_beat = 1;
+                combat_spawn_fx_phase(cb, ws, &cb->fx_cur_beat, 0);
+                while (cb->fx_active_count == 0 && cb->fx_has_cur_beat && cb->fx_cur_phase < cb->fx_max_phase) {
+                    cb->fx_cur_phase++;
+                    combat_spawn_fx_phase(cb, ws, &cb->fx_cur_beat, cb->fx_cur_phase);
+                }
             }
         }
     } else if (!b->is_hero && b->actor_idx >= 0 && b->actor_idx < cb->enemy_count) {
@@ -14149,19 +14221,38 @@ static int combat_exec_fight_script(
                 local_var_set[slot] = 0;
             }
         } else if (op->tag == 0x7F30201Eu && op->arg_count >= 3) {
+            /* Authentic Palgame.exe 0x4c32e4..0x4c343b: register ops (0..6) & actor prop read (vop >= 10 -> prop[vop-10]) */
             int32_t vop = op->args[0];
             int32_t slot = op->args[1];
             int32_t rhs = op->args[2];
+            if ((uint32_t)rhs >= 0x7EFFF000u && (uint32_t)rhs < 0x7EFFF010u) {
+                int32_t vs = (int32_t)((uint32_t)rhs - 0x7EFFF000u);
+                if (vs >= 0 && vs < 16) rhs = local_vars[vs];
+            }
             if (slot >= 0 && slot < 16) {
-                if (vop == 6 && rhs > 0) {
-                    local_vars[slot] = 1 + (int32_t)pal_combat_rand_n(cb, (uint32_t)rhs);
+                if (vop == 6) {
+                    local_vars[slot] = (rhs > 0) ? (int32_t)pal_combat_rand_n(cb, (uint32_t)rhs) : 0;
+                    local_var_set[slot] = 1;
+                } else if (vop == 0) {
+                    local_vars[slot] = rhs;
+                    local_var_set[slot] = 1;
+                } else if (vop == 1) {
+                    local_vars[slot] += rhs;
+                    local_var_set[slot] = 1;
+                } else if (vop == 2) {
+                    local_vars[slot] -= rhs;
+                    local_var_set[slot] = 1;
+                } else if (vop == 3) {
+                    local_vars[slot] *= rhs;
                     local_var_set[slot] = 1;
                 } else if (vop == 4 && rhs != 0) {
-                    /* Integer division: var[slot] /= rhs (used by 靈葫咒 GFight1[561]: max_hp / 4) */
-                    local_vars[slot] /= rhs;
+                    if (local_vars[slot] > 0) local_vars[slot] /= rhs;
                     local_var_set[slot] = 1;
-                } else if (vop == 26 || vop == 27) {
-                    /* Read actor max_hp (26) or cur_hp (27) into var[slot] (used by 靈葫咒 GFight1[561]) */
+                } else if (vop == 5 && rhs != 0) {
+                    if (local_vars[slot] > 0) local_vars[slot] %= rhs;
+                    local_var_set[slot] = 1;
+                } else if (vop >= 10) {
+                    int32_t pid = vop - 10;
                     int th = cur_tgt_is_hero, ti = cur_tgt_idx, tao = cur_tgt_aoe;
                     combat_resolve_script_target(cb, ws, (uint32_t)rhs,
                                                  caster_is_hero, caster_idx, init_tgt_is_hero, init_tgt_idx,
@@ -14169,9 +14260,35 @@ static int combat_exec_fight_script(
                     int32_t val = 0;
                     if (!tao && ti >= 0) {
                         if (th && ti < ws->party_member_count) {
-                            val = (vop == 26) ? ws->party_members[ti].eff_max_hp : ws->party_members[ti].cur_hp;
+                            const PalPartyMemberState *pm = &ws->party_members[ti];
+                            const PalCombatActorMods *hm = (ti < 4) ? &cb->hero_mods[ti] : NULL;
+                            switch (pid) {
+                                case 5:  val = pm->lv; break;
+                                case 16: val = pm->eff_max_hp; break;
+                                case 17: val = pm->cur_hp; break;
+                                case 22: val = pm->eff_max_mp; break;
+                                case 23: val = pm->cur_mp; break;
+                                case 29: val = pm->eff_atk + (hm ? hm->atk_mod : 0); break;
+                                case 35: val = pm->eff_mag + (hm ? hm->mag_mod : 0); break;
+                                case 41: val = pm->eff_def + (hm ? hm->def_mod : 0); break;
+                                case 47: val = pm->eff_spd + (hm ? hm->spd_mod : 0); break;
+                                case 53: val = pm->eff_luck + (hm ? hm->luck_mod : 0); break;
+                                default: break;
+                            }
                         } else if (!th && ti < cb->enemy_count) {
-                            val = (vop == 26) ? cb->enemies[ti].max_hp : cb->enemies[ti].cur_hp;
+                            const PalCombatEnemyUnit *eu = &cb->enemies[ti];
+                            switch (pid) {
+                                case 5:   val = eu->lv; break;
+                                case 16:  val = eu->max_hp; break;
+                                case 17:  val = eu->cur_hp; break;
+                                case 29:  val = eu->atk + eu->mods.atk_mod; break;
+                                case 35:  val = eu->mag + eu->mods.mag_mod; break;
+                                case 41:  val = eu->def + eu->mods.def_mod; break;
+                                case 47:  val = eu->spd + eu->mods.spd_mod; break;
+                                case 53:  val = eu->luck + eu->mods.luck_mod; break;
+                                case 125: val = eu->spirit_val; break;
+                                default: break;
+                            }
                         }
                     }
                     local_vars[slot] = val;
@@ -14213,7 +14330,7 @@ static int combat_exec_fight_script(
                 summary->combo_actor_mask |= (1 << cur_tgt_idx);
             }
         } else if (op->tag == 0x7F50201Fu && op->arg_count >= 5) {
-            /* Register comparison (slot 0..15 local, slot 100 player money) or standalone random chance branch. */
+            /* Authentic Palgame.exe 0x4c3455..0x4c352c: cmp 0=(v%t==0), 1=(v<t), 2=(v>t), 3=(v==t) */
             int32_t cmp = op->args[0];
             int32_t slot = op->args[1];
             int32_t thresh = op->args[2];
@@ -14228,15 +14345,15 @@ static int combat_exec_fight_script(
                 else if (cmp == 1) cond = (v < thresh);
                 else if (cmp == 2) cond = (v > thresh);
                 else if (cmp == 3) cond = (v == thresh);
-            } else if (slot >= 0 && slot < 16 && local_var_set[slot]) {
+            } else if (slot >= 0 && slot < 16) {
                 int32_t v = local_vars[slot];
                 if (cmp == 0) cond = (thresh != 0 && (v % thresh) == 0);
-                else if (cmp == 1) cond = (v <= thresh);
+                else if (cmp == 1) cond = (v < thresh);
                 else if (cmp == 2) cond = (v > thresh);
-                else cond = (v == thresh);
+                else if (cmp == 3) cond = (v == thresh);
             } else {
                 int32_t r = (int32_t)pal_combat_rand_n(cb, 100u);
-                cond = (slot == 3) ? (r >= thresh) : (r < thresh);
+                cond = (r < thresh);
             }
             int brc = combat_exec_branch_step(cb, ws, sc, &i, op->args[3], op->args[4], cond,
                                               prefer_kind, caster_is_hero, caster_idx,
@@ -14253,8 +14370,14 @@ static int combat_exec_fight_script(
                 pal_world_add_item(ws, (uint16_t)ref, delta);
             }
         } else if (op->tag == 0x7F40201Cu && op->arg_count >= 4) {
-            /* Party slot / story bit branch; negative IDs gate popup portraits (skip cleanly). */
-            int cond = (op->args[0] >= 1 && op->args[0] <= 5) ? (ws->party_member_count >= 2) : 0;
+            /* Authentic Palgame.exe 0x49f6a8 battle flags: 9/10=boss/no-capture, 16=flee_blocked, 1..5=party check */
+            int32_t fid = op->args[0];
+            int cond = 0;
+            if (fid == 9 || fid == 10 || fid == 16) {
+                cond = (cb->flee_blocked != 0) ? 1 : 0;
+            } else if (fid >= 1 && fid <= 5) {
+                cond = (ws->party_member_count >= 2) ? 1 : 0;
+            }
             int brc = combat_exec_branch_step(cb, ws, sc, &i, op->args[2], op->args[3], cond,
                                               prefer_kind, caster_is_hero, caster_idx,
                                               cur_tgt_is_hero, cur_tgt_idx, allow_revive, summary, depth);
@@ -15251,24 +15374,66 @@ static void pal_combat_execute_hero_action_ex(
                     beat.tgt_idx = tgt;
                     beat.tgt_count = 1;
                     beat.tgt_indices[0] = tgt;
+                    beat.tgt_values[0] = 0; /* 飛龍探雲手 deals 0 HP damage — never spawn a red damage popup */
                     if (stolen_item_id > 0) {
                         pal_world_add_item(ws, (uint16_t)stolen_item_id, 1);
                         const PalItemRecord *sit = pal_db_find_item(ws->db, stolen_item_id);
                         snprintf(cb->log_text, sizeof(cb->log_text), "%s 對 %s 施展「%s」，竊得「%s」！",
                                  hero->name_utf8, eu->name_utf8, mg->name_utf8, sit ? sit->name_utf8 : "物品");
-                        beat.tgt_values[0] = 1;
                     } else if (stolen_gold > 0) {
                         pal_world_add_money(ws, stolen_gold);
                         snprintf(cb->log_text, sizeof(cb->log_text), "%s 對 %s 施展「%s」，竊得 %d 文！",
                                  hero->name_utf8, eu->name_utf8, mg->name_utf8, stolen_gold);
-                        beat.tgt_values[0] = stolen_gold;
                     } else {
                         snprintf(cb->log_text, sizeof(cb->log_text), "%s 對 %s 施展「%s」，但什麼也沒偷到！",
                                  hero->name_utf8, eu->name_utf8, mg->name_utf8);
-                        beat.tgt_values[0] = 0;
                     }
                 } else {
                     snprintf(cb->log_text, sizeof(cb->log_text), "%s 施展「%s」卻沒有可偷取的目標。", hero->name_utf8, mg->name_utf8);
+                }
+                snprintf(beat.log_msg, sizeof(beat.log_msg), "%s", cb->log_text);
+                pal_combat_try_training(cb, ws, hidx, (pal_combat_rand_n(cb, 100u) < 60u) ? 1 : 3);
+                if (out_beat) *out_beat = beat;
+                return;
+            }
+            if (plan.kind == PAL_MKIND_DEBUFF || plan.kind == PAL_MKIND_CAPTURE) {
+                /* Authentic status / instant-kill / capture spells (6251 靈葫咒, 6801 迴夢, 6802 鬼降, 6803 奪魂):
+                 * execute real GFight1 script and NEVER deal fake F11 fallback damage on miss/resist! */
+                int tgt = target_idx;
+                if (tgt < 0 || tgt >= cb->enemy_count || !cb->enemies[tgt].alive) tgt = pal_combat_first_alive_enemy(cb);
+                PalCombatExecSummary sum = {0};
+                int was_alive = (tgt >= 0) ? cb->enemies[tgt].alive : 0;
+                int32_t spirit_before = ws->spirit_value;
+                if (tgt >= 0 && mg->battle_script > 0) {
+                    combat_exec_fight_script(cb, ws, mg->battle_script, PAL_DB_KIND_FIGHT, 1, hidx, 0, tgt, 0, &sum, 0);
+                    combat_beat_apply_plan_and_sum(&beat, &plan, &sum);
+                }
+                beat.tgt_is_hero = 0;
+                beat.tgt_idx = (tgt >= 0) ? tgt : 0;
+                beat.tgt_count = (tgt >= 0) ? 1 : 0;
+                beat.tgt_indices[0] = beat.tgt_idx;
+                beat.tgt_values[0] = 0;
+                const char *ename = (tgt >= 0 && tgt < cb->enemy_count) ? cb->enemies[tgt].name_utf8 : "敵人";
+                if (plan.kind == PAL_MKIND_CAPTURE) {
+                    if (tgt >= 0 && was_alive && (!cb->enemies[tgt].alive || ws->spirit_value > spirit_before)) {
+                        snprintf(cb->log_text, sizeof(cb->log_text), "%s 施展「%s」將 %s 收入紫金葫蘆！",
+                                 hero->name_utf8, mg->name_utf8, ename);
+                    } else {
+                        snprintf(cb->log_text, sizeof(cb->log_text), "%s 對 %s 施展「%s」，未能將其收入葫蘆！",
+                                 hero->name_utf8, ename, mg->name_utf8);
+                    }
+                } else if (mg->id == 6801) {
+                    int slept = (tgt >= 0 && pal_cstat_has(cb->enemies[tgt].mods.status_bits, PAL_CSTAT_BIT_SLEEP));
+                    snprintf(cb->log_text, sizeof(cb->log_text), slept ? "%s 施展「%s」，%s 陷入昏睡！" : "%s 對 %s 施展「%s」，但沒有奏效！",
+                             hero->name_utf8, slept ? mg->name_utf8 : ename, slept ? ename : mg->name_utf8);
+                } else if (mg->id == 6802) {
+                    int conf = (tgt >= 0 && pal_cstat_has(cb->enemies[tgt].mods.status_bits, PAL_CSTAT_BIT_CONFUSE));
+                    snprintf(cb->log_text, sizeof(cb->log_text), conf ? "%s 施展「%s」，%s 陷入瘋魔！" : "%s 對 %s 施展「%s」，但沒有奏效！",
+                             hero->name_utf8, conf ? mg->name_utf8 : ename, conf ? ename : mg->name_utf8);
+                } else { /* 6803 奪魂 */
+                    int killed = (tgt >= 0 && was_alive && !cb->enemies[tgt].alive);
+                    snprintf(cb->log_text, sizeof(cb->log_text), killed ? "%s 施展「%s」攝取 %s 魂魄，一擊斃命！" : "%s 對 %s 施展「%s」，但沒有奏效！",
+                             hero->name_utf8, killed ? mg->name_utf8 : ename, killed ? ename : mg->name_utf8);
                 }
                 snprintf(beat.log_msg, sizeof(beat.log_msg), "%s", cb->log_text);
                 pal_combat_try_training(cb, ws, hidx, (pal_combat_rand_n(cb, 100u) < 60u) ? 1 : 3);
@@ -15351,6 +15516,9 @@ static void pal_combat_execute_hero_action_ex(
                     if (plan.kind == PAL_MKIND_BUFF) {
                         snprintf(cb->log_text, sizeof(cb->log_text), "%s 對 %s 施展「%s」提升戰力與護體！",
                                  hero->name_utf8, tm->name_utf8, mg->name_utf8);
+                    } else if (plan.kind == PAL_MKIND_CURE) {
+                        snprintf(cb->log_text, sizeof(cb->log_text), "%s 對 %s 施展「%s」驅除異常狀態！",
+                                 hero->name_utf8, tm->name_utf8, mg->name_utf8);
                     } else {
                         snprintf(cb->log_text, sizeof(cb->log_text), "%s 施展「%s」恢復 %s %d 點體力！",
                                  hero->name_utf8, mg->name_utf8, tm->name_utf8, beat.value);
@@ -15372,10 +15540,14 @@ static void pal_combat_execute_hero_action_ex(
             if (mg->battle_script > 0) {
                 combat_exec_fight_script(cb, ws, mg->battle_script, PAL_DB_KIND_FIGHT, 1, hidx,
                                          0, is_all ? -1 : tgt, 0, &sum, 0);
+                /* GFight1[562] (乾坤一擲) has a boundary gap at money==4999..5000 (<4999 vs >5000): run tier 568 */
+                if (mg->id == 6152 && sum.tgt_count == 0 && ws->money >= 4999) {
+                    combat_exec_fight_script(cb, ws, 568, PAL_DB_KIND_FIGHT, 1, hidx, 0, -1, 0, &sum, 0);
+                }
                 combat_beat_apply_plan_and_sum(&beat, &plan, &sum);
             }
-            if (mg->id == 6152 && sum.tgt_count == 0) {
-                /* 乾坤一擲 (GFight1[562] -> 570): insufficient money (< 2300) */
+            if ((mg->id == 6152 || mg->id == 6153) && sum.tgt_count == 0) {
+                /* 乾坤一擲 (money < 2300) / 銅錢鏢 (money < 500): insufficient gold -> 0 damage */
                 snprintf(cb->log_text, sizeof(cb->log_text), "金錢不夠，無法使用「%s」！", mg->name_utf8);
                 snprintf(beat.log_msg, sizeof(beat.log_msg), "%s", cb->log_text);
                 if (out_beat) *out_beat = beat;
@@ -19678,7 +19850,10 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         if (pal_combat_init(cb, ws, game_dir, 2004) == 0 && cb->enemy_count > 0) {
             pal_combat_execute_hero_action_ex(cb, ws, 0, 1, 6401u, 0, &b_mob2004);
         }
-        combat_dmg_ok = (dream_stats_ok && b_dream.value >= 800 && b_early.value >= 55 && b_mob2004.value >= 80) ? 1 : 0;
+        /* Authentic Palgame.exe 0x4aeefb / 0x4aeb3e:
+         * - 6405 逍遙神劍: F22(-50) = 50*7.2 + 797/12 + 243/4 = 486 * wind_res (vs #2001)
+         * - 6401 御劍術: F11(-10) = 10*7.2 + 22/4 + 20/12 = 78 (+/-5% -> 74..82) */
+        combat_dmg_ok = (dream_stats_ok && b_dream.value >= 450 && b_early.value >= 74 && b_mob2004.value >= 74) ? 1 : 0;
         if (!combat_dmg_ok) {
             fprintf(stderr, "[SelfTest] combat_dmg failed: dream_stats=%d atk=%d mag=%d def=%d b_dream=%d b_early=%d b_mob2004=%d\n",
                     dream_stats_ok, ws->party_members[0].eff_atk, ws->party_members[0].eff_mag, ws->party_members[0].eff_def,
@@ -21897,13 +22072,149 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         }
     }
 
-    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok || !early_sidequests_ok || !mid_sidequests_ok || !late_sidequests_ok || !npc_all_scenes_audit_ok || !monsters_all_scenes_audit_ok || !training_and_cutscene_ok) {
-        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d early_sidequests_ok=%d mid_sidequests_ok=%d late_sidequests_ok=%d npc_all_scenes_audit_ok=%d monsters_all_scenes_audit_ok=%d training_and_cutscene_ok=%d\n",
-                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok, early_sidequests_ok, mid_sidequests_ok, late_sidequests_ok, npc_all_scenes_audit_ok, monsters_all_scenes_audit_ok, training_and_cutscene_ok);
+    /* Exhaustive ALL-66-MAGICS + Palgame.exe formula parity audit */
+    int all_magics_audit_ok = 0;
+    {
+        int audited_cnt = 0;
+        int plan_errs = 0;
+        for (int mi = 0; mi < db->magic_count; mi++) {
+            const PalMagicRecord *mg = &db->magics[mi];
+            PalCombatMagicPlan mp;
+            pal_combat_analyze_magic(db, mg, 2000, &mp);
+            audited_cnt++;
+
+            int ok_one = 1;
+            int is_sword_school = (mg->id >= 6401 && mg->id <= 6407);
+            if (!is_sword_school && mp.vfx_act_id == 6010u) {
+                fprintf(stderr, "[SelfTest] Magic %d (%s) wrongly fell back to 6010 (御劍術)!\n", mg->id, mg->name_utf8);
+                ok_one = 0;
+            }
+            if (mg->id == 6252) { /* 飛龍探雲手 */
+                if (mp.kind != PAL_MKIND_STEAL || mp.scope != PAL_MSCOPE_STEAL || mp.vfx_act_id != 0u || mp.vfx_step_count != 0) ok_one = 0;
+            } else if (mg->id == 6202) { /* 金蟬脫殼 */
+                if (mp.kind != PAL_MKIND_ESCAPE || mp.scope != PAL_MSCOPE_ESCAPE || mp.vfx_act_id != 0u || mp.vfx_step_count != 0) ok_one = 0;
+            } else if (mg->id == 6251) { /* 靈葫咒 */
+                if (mp.kind != PAL_MKIND_CAPTURE || mp.scope != PAL_MSCOPE_ENEMY_SINGLE || mp.vfx_act_id != 6002u) ok_one = 0;
+            } else if (mg->id == 6801 || mg->id == 6802 || mg->id == 6803) { /* 迴夢 / 鬼降 / 奪魂 */
+                if (mp.kind != PAL_MKIND_DEBUFF || mp.scope != PAL_MSCOPE_ENEMY_SINGLE || mp.vfx_act_id != 6045u) ok_one = 0;
+            } else if (mg->id == 6751 || mg->id == 6752 || mg->id == 6753) { /* 冰心訣 / 淨衣咒 / 靈血咒 */
+                if (mp.kind != PAL_MKIND_CURE || mp.scope != PAL_MSCOPE_ALLY_SINGLE || mp.vfx_act_id != 6006u) ok_one = 0;
+            } else if (mg->id == 6851 || mg->id == 6852) { /* 還魂咒 / 贖魂 */
+                if (mp.kind != PAL_MKIND_REVIVE || mp.scope != PAL_MSCOPE_ALLY_REVIVE || mp.vfx_act_id != 6006u) ok_one = 0;
+            } else if (mg->id >= 6901 && mg->id <= 6905) { /* 氣療..五氣朝元 */
+                PalCombatMagicScope exp_sc = (mg->id == 6905) ? PAL_MSCOPE_ALLY_ALL : PAL_MSCOPE_ALLY_SINGLE;
+                if (mp.kind != PAL_MKIND_HEAL || mp.scope != exp_sc || mp.vfx_act_id != 6005u) ok_one = 0;
+            } else if (mg->id == 6951) { /* 夢蛇 */
+                if (mp.kind != PAL_MKIND_BUFF || mp.scope != PAL_MSCOPE_SELF || mp.vfx_act_id != 6002u) ok_one = 0;
+            } else if (mg->id == 6201 || mg->id == 6203 || (mg->id >= 6701 && mg->id <= 6703)) { /* Buffs */
+                if (mp.kind != PAL_MKIND_BUFF || mp.scope != PAL_MSCOPE_ALLY_SINGLE || mp.vfx_act_id != 6001u) ok_one = 0;
+            } else { /* Offensive spells: verify exact scope from gmagic.dat prop[0] & non-zero VFX */
+                PalCombatMagicScope exp_sc = (mg->target_scope == 3) ? PAL_MSCOPE_ENEMY_ALL : PAL_MSCOPE_ENEMY_SINGLE;
+                if (mp.kind != PAL_MKIND_ATTACK || mp.scope != exp_sc || mp.vfx_act_id == 0u) ok_one = 0;
+                if (mg->id == 6152 && mp.vfx_act_id != 6001u) ok_one = 0;
+                if (mg->id == 6406 && mp.scope != PAL_MSCOPE_ENEMY_SINGLE) ok_one = 0;
+            }
+            if (!ok_one) {
+                fprintf(stderr, "[SelfTest] Magic audit mismatch: id=%d (%s) kind=%d scope=%d vfx=%u steps=%d prop0=%d\n",
+                        mg->id, mg->name_utf8, (int)mp.kind, (int)mp.scope, mp.vfx_act_id, mp.vfx_step_count, mg->target_scope);
+                plan_errs++;
+            }
+        }
+
+        /* Exact Palgame.exe formula 11..16 (ATK/4 + MAG/12) vs 21..26 (ATK/12 + MAG/4) & immune=1 parity */
+        PalCombatState *mcb = (PalCombatState *)calloc(1, sizeof(PalCombatState));
+        int f_parity_ok = 0, exec_audit_ok = 0;
+        if (mcb) {
+            PalCombatUnitView caster_mag = {0}, tgt_norm = {0}, tgt_imm = {0};
+            caster_mag.is_hero = 1; caster_mag.lv = 20; caster_mag.atk = 36; caster_mag.mag = 240; /* atk/4=9, mag/12=20 vs atk/12=3, mag/4=60 */
+            tgt_norm.is_hero = 0; tgt_imm.is_hero = 0;
+            for (int r = 0; r < 6; r++) { tgt_norm.res[r] = 100; tgt_imm.res[r] = 0; }
+            int is_mp = 0;
+            mcb->rng_state = 0x13579u;
+            int32_t d_f11 = -pal_combat_eval_hp_mp_delta(mcb, &caster_mag, &tgt_norm, 11, -10, &is_mp); /* base=72+9+20=101 (+/-5%) */
+            mcb->rng_state = 0x13579u;
+            int32_t d_f25 = -pal_combat_eval_hp_mp_delta(mcb, &caster_mag, &tgt_norm, 25, -10, &is_mp); /* base=72+3+60=135 (+/-5%) */
+            mcb->rng_state = 0x13579u;
+            int32_t d_imm = -pal_combat_eval_hp_mp_delta(mcb, &caster_mag, &tgt_imm,  25, -10, &is_mp); /* Palgame.exe 0x4af2be: 1 */
+            f_parity_ok = (d_f11 >= 95 && d_f11 <= 107 &&
+                           d_f25 >= 128 && d_f25 <= 143 &&
+                           d_f25 > d_f11 + 25 &&
+                           d_imm == 1) ? 1 : 0;
+
+            /* Live execution checks: 6252 steal (no 6010 VFX, no fake dmg), 6751 cure (ally, 0 enemy dmg),
+             * 6251/6801/6802/6803 (0 fake dmg on miss), 6951 夢蛇 (+80% ATK, +50% MAG), 6152 at 5000g, 6153 at 100g (0 dmg) */
+            memset(ws, 0, sizeof(*ws));
+            ws->db = db;
+            pal_party_init_from_db(ws, db, 0);
+            ws->party_members[0].cur_mp = 500;
+            ws->party_members[0].eff_max_mp = 500;
+            ws->party_members[0].eff_atk = 100;
+            ws->party_members[0].eff_mag = 100;
+            ws->party_members[0].eff_def = 100;
+            ws->party_members[0].eff_spd = 100;
+            ws->money = 100;
+            pal_combat_init_ex(mcb, ws, game_dir, 2004, 17, 10, 10);
+            mcb->enemies[0].max_hp = 5000;
+            mcb->enemies[0].cur_hp = 5000;
+
+            /* 6252 飛龍探雲手 */
+            PalCombatAnimBeat b6252 = {0};
+            pal_combat_execute_hero_action_ex(mcb, ws, 0, 1, 6252u, 0, &b6252);
+            int ok_6252 = (b6252.vfx_act_id == 0u && b6252.vfx_step_count == 0 && b6252.tgt_values[0] == 0 && mcb->enemies[0].cur_hp == 5000);
+
+            /* 6751 冰心訣: clears sleep bit 66 on ally, deals 0 enemy dmg */
+            pal_cstat_set(mcb->hero_mods[0].status_bits, PAL_CSTAT_BIT_SLEEP, 1);
+            PalCombatAnimBeat b6751 = {0};
+            pal_combat_execute_hero_action_ex(mcb, ws, 0, 1, 6751u, 0, &b6751);
+            int ok_6751 = (!pal_cstat_has(mcb->hero_mods[0].status_bits, PAL_CSTAT_BIT_SLEEP) &&
+                           b6751.tgt_is_hero == 1 && mcb->enemies[0].cur_hp == 5000);
+
+            /* 6251 靈葫咒 on full-HP enemy: must fail cleanly with 0 fake damage */
+            PalCombatAnimBeat b6251 = {0};
+            pal_combat_execute_hero_action_ex(mcb, ws, 0, 1, 6251u, 0, &b6251);
+            int ok_6251_nofake = (mcb->enemies[0].alive && mcb->enemies[0].cur_hp == 5000 && b6251.tgt_values[0] == 0);
+
+            /* 6801 迴夢 & 6802 鬼降: must never deal fake HP damage */
+            PalCombatAnimBeat b6801 = {0}, b6802 = {0};
+            pal_combat_execute_hero_action_ex(mcb, ws, 0, 1, 6801u, 0, &b6801);
+            pal_combat_execute_hero_action_ex(mcb, ws, 0, 1, 6802u, 0, &b6802);
+            int ok_6801_6802 = (mcb->enemies[0].cur_hp == 5000 && b6801.tgt_values[0] == 0 && b6802.tgt_values[0] == 0);
+
+            /* 6153 銅錢鏢 with only 100 gold: must deal 0 damage */
+            PalCombatAnimBeat b6153 = {0};
+            pal_combat_execute_hero_action_ex(mcb, ws, 0, 1, 6153u, 0, &b6153);
+            int ok_6153_low = (mcb->enemies[0].cur_hp == 5000 && ws->money == 100);
+
+            /* 6152 乾坤一擲 at exact boundary money == 5000: must succeed (2000 dmg, deduct 3200 -> 1800 left) */
+            ws->money = 5000;
+            PalCombatAnimBeat b6152 = {0};
+            pal_combat_execute_hero_action_ex(mcb, ws, 0, 1, 6152u, 0, &b6152);
+            int ok_6152_5k = (mcb->enemies[0].cur_hp == 3000 && ws->money == 1800);
+
+            /* 6951 夢蛇: +80% ATK, +50% MAG, -10% DEF */
+            PalCombatAnimBeat b6951 = {0};
+            pal_combat_execute_hero_action_ex(mcb, ws, 0, 1, 6951u, 0, &b6951);
+            int ok_6951 = (mcb->hero_mods[0].atk_mod == 80 && mcb->hero_mods[0].mag_mod == 50 && mcb->hero_mods[0].def_mod == -10);
+
+            exec_audit_ok = (ok_6252 && ok_6751 && ok_6251_nofake && ok_6801_6802 && ok_6153_low && ok_6152_5k && ok_6951) ? 1 : 0;
+            if (!f_parity_ok || !exec_audit_ok) {
+                fprintf(stderr, "[SelfTest] all_magics_audit failed: f_par=%d(f11=%d,f25=%d,imm=%d) exec=%d(6252=%d,6751=%d,6251=%d,6801_2=%d,6153=%d,6152_5k=%d,6951=%d)\n",
+                        f_parity_ok, d_f11, d_f25, d_imm, exec_audit_ok,
+                        ok_6252, ok_6751, ok_6251_nofake, ok_6801_6802, ok_6153_low, ok_6152_5k, ok_6951);
+            }
+            combat_free_textures(mcb);
+            free(mcb);
+        }
+        all_magics_audit_ok = (audited_cnt == 66 && plan_errs == 0 && f_parity_ok && exec_audit_ok) ? 1 : 0;
+    }
+
+    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok || !early_sidequests_ok || !mid_sidequests_ok || !late_sidequests_ok || !npc_all_scenes_audit_ok || !monsters_all_scenes_audit_ok || !training_and_cutscene_ok || !all_magics_audit_ok) {
+        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d early_sidequests_ok=%d mid_sidequests_ok=%d late_sidequests_ok=%d npc_all_scenes_audit_ok=%d monsters_all_scenes_audit_ok=%d training_and_cutscene_ok=%d all_magics_audit_ok=%d\n",
+                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok, early_sidequests_ok, mid_sidequests_ok, late_sidequests_ok, npc_all_scenes_audit_ok, monsters_all_scenes_audit_ok, training_and_cutscene_ok, all_magics_audit_ok);
     }
 
     out_info->ok = (out_info->monster_count == 160 &&
-                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok && early_sidequests_ok && mid_sidequests_ok && late_sidequests_ok && npc_all_scenes_audit_ok && monsters_all_scenes_audit_ok && training_and_cutscene_ok &&
+                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok && early_sidequests_ok && mid_sidequests_ok && late_sidequests_ok && npc_all_scenes_audit_ok && monsters_all_scenes_audit_ok && training_and_cutscene_ok && all_magics_audit_ok &&
                     out_info->zone_count == 265 &&
                     out_info->fight_script_count == 1056 &&
                     out_info->battle2801_bg_id == 1609 &&
