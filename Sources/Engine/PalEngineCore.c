@@ -7686,6 +7686,74 @@ static int pal_npc_touch_hit_px(const PalFieldActor *a, int ppx, int ppy, int fo
     return (dx * dx + dy * dy <= r * r) ? 1 : 0;
 }
 
+/* Authentic Palgame.exe 0x41784e & 0x41dc83:
+ * Active, visible ((flags & 0x8400) == 0x8000) NPCs with bit 0x4000 block movement across
+ * their ACT HW (hitbox_w x hitbox_h) tile footprint (minimum 1x1 tile = 16x16 px). */
+static int pal_npc_is_solid_blocker(const PalFieldActor *a) {
+    if (!a || !a->active) return 0;
+    if ((a->npc_flags & 0x0400u) != 0u) return 0; /* hidden via OP 0x45 */
+    if ((a->npc_flags & 0x4000u) == 0u) return 0; /* non-solid (birds, sparkles, floor decals) */
+    if (pal_npc_is_touch_event(a)) return 0;      /* step-in trigger box must remain steppable */
+    if (a->act_id == 700u && a->talk_id > 0u) return 0;
+    if ((a->npc_flags & 0x2000u) != 0u && (a->talk_id >= 5001u || a->sight > 0)) return 0; /* combat trigger on contact */
+    return 1;
+}
+
+static void pal_npc_solid_rect_px(const PalFieldActor *a, int *x0, int *y0, int *x1, int *y1) {
+    int hw = (a && a->vm_ok && a->vm.hitbox_w > 0 && a->vm.hitbox_w <= 8) ? a->vm.hitbox_w : 1;
+    int hh = (a && a->vm_ok && a->vm.hitbox_h > 0 && a->vm.hitbox_h <= 8) ? a->vm.hitbox_h : 1;
+    int ax = a ? a->px : 0;
+    int ay = a ? a->py : 0;
+    if (x0) *x0 = ax;
+    if (y0) *y0 = ay;
+    if (x1) *x1 = ax + hw * 16;
+    if (y1) *y1 = ay + hh * 16;
+}
+
+static int pal_npcs_find_blocking_idx(
+    const PalFieldActor *npcs, int npc_cnt, int px, int py, int foot_w, int ignore_idx
+) {
+    if (!npcs || npc_cnt <= 0) return -1;
+    int fw_px = (foot_w > 0 ? foot_w : 1) * 16;
+    int px0 = px, py0 = py, px1 = px + fw_px, py1 = py + 16;
+    for (int i = 0; i < npc_cnt; i++) {
+        if (i == ignore_idx) continue;
+        if (!pal_npc_is_solid_blocker(&npcs[i])) continue;
+        int ax0, ay0, ax1, ay1;
+        pal_npc_solid_rect_px(&npcs[i], &ax0, &ay0, &ax1, &ay1);
+        if (px0 < ax1 && px1 > ax0 && py0 < ay1 && py1 > ay0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int pal_field_can_step_with_npcs(
+    const PalLoadedMap *m, const PalFieldActor *npcs, int npc_cnt,
+    int cur_px, int cur_py, int cand_px, int cand_py,
+    int foot_w, int noclip, int esc_valid, int esc_px, int esc_py,
+    int wp_valid, int wp_px, int wp_py
+) {
+    if (!pal_field_can_step_px(m, cur_px, cur_py, cand_px, cand_py, foot_w, noclip,
+                               esc_valid, esc_px, esc_py, wp_valid, wp_px, wp_py)) {
+        return 0;
+    }
+    if (noclip || !npcs || npc_cnt <= 0) return 1;
+    int blk = pal_npcs_find_blocking_idx(npcs, npc_cnt, cand_px, cand_py, foot_w, -1);
+    if (blk < 0) return 1;
+    /* Soft-lock guard: if the player is already overlapping this same NPC, allow stepping away from it. */
+    int ax0, ay0, ax1, ay1;
+    pal_npc_solid_rect_px(&npcs[blk], &ax0, &ay0, &ax1, &ay1);
+    int fw_px = (foot_w > 0 ? foot_w : 1) * 16;
+    if (cur_px < ax1 && cur_px + fw_px > ax0 && cur_py < ay1 && cur_py + 16 > ay0) {
+        int cx = (ax0 + ax1) / 2, cy = (ay0 + ay1) / 2;
+        int cur_d = (cur_px + fw_px / 2 - cx) * (cur_px + fw_px / 2 - cx) + (cur_py + 8 - cy) * (cur_py + 8 - cy);
+        int new_d = (cand_px + fw_px / 2 - cx) * (cand_px + fw_px / 2 - cx) + (cand_py + 8 - cy) * (cand_py + 8 - cy);
+        if (new_d > cur_d) return 1;
+    }
+    return 0;
+}
+
 static void pal_init_npc_actor_from_def(
     PalFieldActor *a, const PalMapNpcDef *nd, const PalTalkWorldState *ws,
     const char *game_dir, uint32_t map_id
@@ -7954,6 +8022,9 @@ static void pal_talk_vm_step_ex(
                 int ndir = (int)(rd_u16(ins + 4u) & 7u);
                 int is_p = 0;
                 PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, &is_p);
+                if (!is_p && obj < PAL_OBJ_CAP && ws) {
+                    ws->npc_dir_override[obj] = (int8_t)(ndir + 1);
+                }
                 if (a) {
                     int was_active = a->active;
                     a->dir = ndir;
@@ -7994,6 +8065,9 @@ static void pal_talk_vm_step_ex(
                         if (w5 == 0u && w6 < 8u) ndir = (int)w6;
                     }
                     a->dir = ndir;
+                    if (!is_p && obj < PAL_OBJ_CAP && ws) {
+                        ws->npc_dir_override[obj] = (int8_t)((ndir & 7) + 1);
+                    }
                     if (auto_advance_wait) {
                         a->px = wtx;
                         a->py = wty;
@@ -8470,13 +8544,19 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x78u: { /* Set actor sprite act_id / sub / dir */
+            case 0x78u: { /* Set actor sprite act_id / sub / dir (Palgame.exe 0x44cfa4..0x44d172: persists to slot 0) */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 uint16_t aid = rd_u16(ins + 4u);
                 uint16_t sub = rd_u16(ins + 6u);
                 uint16_t dir = rd_u16(ins + 8u);
                 int is_p = 0;
                 PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, &is_p);
+                if (!is_p && obj < PAL_OBJ_CAP && ws) {
+                    if (aid != 0xFFFFu) ws->npc_act_override[obj] = aid;
+                    if (sub != 0xFFFFu) ws->npc_sub_override[obj] = (uint16_t)(sub + 1u);
+                    if (dir != 0xFFFFu) ws->npc_dir_override[obj] = (int8_t)((dir & 7u) + 1);
+                    pal_talk_toggle_flag_bit(ws, party, npcs, npc_cnt, obj, 0x1000u, 1);
+                }
                 if (a) {
                     if (aid != 0xFFFFu) a->act_id = aid;
                     if (dir != 0xFFFFu) a->dir = (int)(dir & 7u);
@@ -8487,6 +8567,9 @@ static void pal_talk_vm_step_ex(
                     } else if (dir != 0xFFFFu) {
                         int base = is_p ? a->action_base : (int)a->orig_sub_state;
                         field_actor_set_sub(a, game_dir, a->act_id, base + a->dir, 1);
+                    } else if (aid != 0xFFFFu) {
+                        int base = is_p ? a->action_base : (int)a->orig_sub_state;
+                        field_actor_set_sub(a, game_dir, a->act_id, base + (a->dir & 7), 1);
                     }
                     a->active = 1;
                 }
@@ -9026,9 +9109,9 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x44u: case 0x45u: { /* Set/clear 0x400 collision skip flag */
+            case 0x44u: case 0x45u: { /* Authentic Palgame.exe 0x44a7f4/0x44a8d7: 0x44 clears 0x400 (show), 0x45 sets 0x400 (hide) */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
-                pal_talk_toggle_flag_bit(ws, party, npcs, npc_cnt, obj, 0x400u, (op == 0x44u));
+                pal_talk_toggle_flag_bit(ws, party, npcs, npc_cnt, obj, 0x400u, (op == 0x45u));
                 vm->ip += ilen;
                 break;
             }
@@ -11113,7 +11196,7 @@ static int pal_save_slot_read_summary(const char *game_dir, int slot, PalSaveSlo
     if (sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV1)) {
         PalNpalSaveFooterHdr hdr;
         memcpy(&hdr, buf + PAL_LEGACY_SAVE_SIZE, sizeof(hdr));
-        if (hdr.magic == PAL_NPAL_SAVE_MAGIC && (hdr.version >= 1u && hdr.version <= 6u)) {
+        if (hdr.magic == PAL_NPAL_SAVE_MAGIC && (hdr.version >= 1u && hdr.version <= 7u)) {
             out_sum->has_npal_ext = 1;
             out_sum->map_id = hdr.map_id;
             out_sum->px = hdr.px;
@@ -11218,7 +11301,7 @@ static int pal_save_game_slot(
 
     PalNpalSaveFooterV4 *ft = &ft5->v4;
     ft->magic = PAL_NPAL_SAVE_MAGIC;
-    ft->version = 6u;
+    ft->version = 7u;
     ft->map_id = map_id;
     ft->px = px;
     ft->py = py;
@@ -11292,15 +11375,17 @@ static int pal_load_game_slot(
 
     size_t legacy_len = sz;
     int has_ext = 0;
+    uint32_t loaded_ext_ver = 0u;
     if (sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV1)) {
         PalNpalSaveFooterHdr hdr;
         memcpy(&hdr, buf + PAL_LEGACY_SAVE_SIZE, sizeof(hdr));
-        if (hdr.magic == PAL_NPAL_SAVE_MAGIC && hdr.version == 6u &&
+        if (hdr.magic == PAL_NPAL_SAVE_MAGIC && (hdr.version == 6u || hdr.version == 7u) &&
             sz >= (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV6)) {
             PalNpalSaveFooterV6 *ft6 = (PalNpalSaveFooterV6 *)calloc(1, sizeof(PalNpalSaveFooterV6));
             if (ft6) {
                 memcpy(ft6, buf + PAL_LEGACY_SAVE_SIZE, sizeof(*ft6));
                 has_ext = 1;
+                loaded_ext_ver = hdr.version;
                 legacy_len = PAL_LEGACY_SAVE_SIZE;
                 pal_load_footer_v4_fields(&ft6->v5.v4, ws, out_map_id, out_px, out_py, out_dir);
                 memcpy(ws->obj_rv, ft6->v5.obj_rv, sizeof(ws->obj_rv));
@@ -11315,6 +11400,7 @@ static int pal_load_game_slot(
             if (ft5) {
                 memcpy(ft5, buf + PAL_LEGACY_SAVE_SIZE, sizeof(*ft5));
                 has_ext = 1;
+                loaded_ext_ver = hdr.version;
                 legacy_len = PAL_LEGACY_SAVE_SIZE;
                 pal_load_footer_v4_fields(&ft5->v4, ws, out_map_id, out_px, out_py, out_dir);
                 memcpy(ws->obj_rv, ft5->obj_rv, sizeof(ws->obj_rv));
@@ -11327,6 +11413,7 @@ static int pal_load_game_slot(
             if (ft4) {
                 memcpy(ft4, buf + PAL_LEGACY_SAVE_SIZE, sizeof(*ft4));
                 has_ext = 1;
+                loaded_ext_ver = hdr.version;
                 legacy_len = PAL_LEGACY_SAVE_SIZE;
                 pal_load_footer_v4_fields(ft4, ws, out_map_id, out_px, out_py, out_dir);
                 free(ft4);
@@ -11335,6 +11422,7 @@ static int pal_load_game_slot(
             PalNpalSaveFooterV3 *ft3 = (PalNpalSaveFooterV3 *)calloc(1, sizeof(PalNpalSaveFooterV3));
             if (ft3) {
                 has_ext = 1;
+                loaded_ext_ver = hdr.version;
                 legacy_len = PAL_LEGACY_SAVE_SIZE;
                 size_t avail = sz - PAL_LEGACY_SAVE_SIZE;
                 size_t cp_sz = avail < sizeof(*ft3) ? avail : sizeof(*ft3);
@@ -11366,6 +11454,23 @@ static int pal_load_game_slot(
                 }
                 free(ft3);
             }
+        }
+    }
+    if (has_ext && loaded_ext_ver <= 6u) {
+        /* Migrate legacy NPAL v1..v6 saves written before OP 0x44/0x45 polarity fix & OP 0x78 persistence:
+         * 1) Strip poisoned 0x0400 hide bit that old inverted OP 0x44 (SHOW) set on visible actors (e.g. 聖姑/靈兒/月如).
+         * 2) Restore 阿奴 (obj=4) act=312 cradling baby 李憶如 when post-talk-1153 state (talk_override==1154) lost OP 0x78. */
+        for (int i = 0; i < PAL_OBJ_CAP; i++) {
+            if (ws->npc_flags_has[i]) ws->npc_flags_val[i] &= ~0x0400u;
+        }
+        if (ws->npc_talk_override[4] == 1154u && ws->npc_act_override[4] == 4u) {
+            ws->npc_act_override[4] = 312u;
+            ws->npc_sub_override[4] = 1u;
+            ws->npc_dir_override[4] = 6; /* dir = 5 */
+        }
+        if (ws->npc_pos_map[3] == 241u && ws->npc_sub_override[3] == 62u &&
+            (ws->story_flags[1629] != 0u || ws->npc_talk_override[3] == 1197u || ws->npc_talk_override[3] == 1199u)) {
+            ws->npc_sub_override[3] = 63u; /* sub = 62 (林月如獨自躺床, from talk 1153 OP 0x78 [3,3,62,0]) */
         }
     }
     if (!has_ext) {
@@ -21115,6 +21220,41 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
             ai_wall_ok = (!hit_wall && reached) ? 1 : 0;
         }
 
+        /* OP 0x44/0x45 polarity (0x45 hides via 0x0400, 0x44 shows by clearing 0x0400) + OP 0x78 persistence + solid NPC collision */
+        int op44_78_col_ok = 0;
+        {
+            /* Test OP 0x45 (hide) -> OP 0x44 (show) on talk 190 (which runs 0x45 then 0x44 on obj=4) and talk 1153 (0x78 on obj=4 -> act 312) */
+            memset(ws, 0, sizeof(*ws)); ws->db = db; pal_party_init_from_db(ws, db, 0);
+            PalTalkVM tvm = {0};
+            uint8_t syn_45[6] = { 0x45u, 0x00u, 80u, 0u, 0xFFu, 0xFFu };
+            uint8_t syn_44[6] = { 0x44u, 0x00u, 80u, 0u, 0xFFu, 0xFFu };
+            uint8_t syn_78[12] = { 0x78u, 0x00u, 4u, 0u, 0x38u, 0x01u, 0u, 0u, 5u, 0u, 0xFFu, 0xFFu };
+            PalFieldActor snpc = {0};
+            snpc.active = 1; snpc.obj_id = 80u; snpc.npc_flags = 0xD100u; snpc.px = 5 << 4; snpc.py = 5 << 4;
+            tvm.active = 1; tvm.chunk = syn_45; tvm.chunk_len = sizeof(syn_45); tvm.ip = 0u;
+            pal_talk_vm_step(&tvm, ws, game_dir, 241u, NULL, &snpc, 1, 1);
+            int hid_45 = ((snpc.npc_flags & 0x0400u) != 0u && (ws->npc_flags_val[80] & 0x0400u) != 0u);
+            tvm.active = 1; tvm.chunk = syn_44; tvm.chunk_len = sizeof(syn_44); tvm.ip = 0u;
+            pal_talk_vm_step(&tvm, ws, game_dir, 241u, NULL, &snpc, 1, 1);
+            int shw_44 = ((snpc.npc_flags & 0x0400u) == 0u && (ws->npc_flags_val[80] & 0x0400u) == 0u);
+            tvm.active = 1; tvm.chunk = syn_78; tvm.chunk_len = sizeof(syn_78); tvm.ip = 0u;
+            pal_talk_vm_step(&tvm, ws, game_dir, 241u, NULL, &snpc, 1, 1);
+            int p78_ok = (ws->npc_act_override[4] == 312u && ws->npc_sub_override[4] == 1u && ws->npc_dir_override[4] == 6);
+            /* Solid NPC collision check: solid 0xD100 blocks, non-solid 0x9040 / hidden 0xD500 pass, stepping away from overlap allowed */
+            uint32_t open_wg[12 * 12] = {0};
+            PalLoadedMap cm = {0};
+            cm.w_tiles = 12; cm.h_tiles = 12; cm.tile_sz = 16; cm.w_px = 192; cm.h_px = 192; cm.walk_grid = open_wg;
+            PalFieldActor cnpcs[3] = {0};
+            cnpcs[0].active = 1; cnpcs[0].obj_id = 80u; cnpcs[0].npc_flags = 0xD100u; cnpcs[0].px = 5 << 4; cnpcs[0].py = 5 << 4;
+            cnpcs[1].active = 1; cnpcs[1].obj_id = 81u; cnpcs[1].npc_flags = 0x9040u; cnpcs[1].px = 7 << 4; cnpcs[1].py = 5 << 4;
+            cnpcs[2].active = 1; cnpcs[2].obj_id = 82u; cnpcs[2].npc_flags = 0xD500u; cnpcs[2].px = 9 << 4; cnpcs[2].py = 5 << 4;
+            int blk_solid = !pal_field_can_step_with_npcs(&cm, cnpcs, 3, 4 << 4, 5 << 4, (4 << 4) + 4, 5 << 4, 1, 0, 0, 0, 0, 0, 0, 0);
+            int pass_nonsolid = pal_field_can_step_with_npcs(&cm, cnpcs, 3, 6 << 4, 5 << 4, (6 << 4) + 4, 5 << 4, 1, 0, 0, 0, 0, 0, 0, 0);
+            int pass_hidden = pal_field_can_step_with_npcs(&cm, cnpcs, 3, 8 << 4, 5 << 4, (8 << 4) + 4, 5 << 4, 1, 0, 0, 0, 0, 0, 0, 0);
+            int escape_overlap = pal_field_can_step_with_npcs(&cm, cnpcs, 3, (5 << 4) - 4, 5 << 4, (5 << 4) - 8, 5 << 4, 1, 0, 0, 0, 0, 0, 0, 0);
+            op44_78_col_ok = (hid_45 && shw_44 && p78_ok && blk_solid && pass_nonsolid && pass_hidden && escape_overlap) ? 1 : 0;
+        }
+
         npc_all_scenes_audit_ok = (
             unique_npc_maps == 460 &&
             total_npcs >= 4115 &&
@@ -21130,12 +21270,13 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
             cs_512_ok == 1 &&
             clamp507_ok == 1 &&
             sort_ok == 1 &&
-            ai_wall_ok == 1
+            ai_wall_ok == 1 &&
+            op44_78_col_ok == 1
         ) ? 1 : 0;
         if (!npc_all_scenes_audit_ok) {
-            fprintf(stderr, "[SelfTest] npc_all_scenes_audit failed: maps=%d total=%d u16=%d b1=%d b2=%d sh=%d hid=%d inv=%d iv=%d m8iv=%d oxoy=%d cs=%d c507=%d sort=%d wall=%d\n",
+            fprintf(stderr, "[SelfTest] npc_all_scenes_audit failed: maps=%d total=%d u16=%d b1=%d b2=%d sh=%d hid=%d inv=%d iv=%d m8iv=%d oxoy=%d cs=%d c507=%d sort=%d wall=%d c44=%d\n",
                     unique_npc_maps, total_npcs, flags_u16_ok, bucket1_cnt, bucket2_cnt, shadow_cnt, hidden_cnt,
-                    invisible_vm_cnt, iv_visible_cnt, map8_iv_ok, oxoy_ok_cnt, cs_512_ok, clamp507_ok, sort_ok, ai_wall_ok);
+                    invisible_vm_cnt, iv_visible_cnt, map8_iv_ok, oxoy_ok_cnt, cs_512_ok, clamp507_ok, sort_ok, ai_wall_ok, op44_78_col_ok);
         }
     }
 
@@ -26309,16 +26450,22 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     int ddx = wtx - party[0].px;
                     int ddy = wty - party[0].py;
                     if (abs(ddx) <= step_px && abs(ddy) <= step_px) {
-                        if (party[0].px != wtx || party[0].py != wty) astar_snapped = 1;
-                        party[0].px = wtx;
-                        party[0].py = wty;
-                        astar_cursor++;
-                        if (astar_cursor < astar_count) {
-                            wtx = astar_tx[astar_cursor] << 4;
-                            wty = astar_ty[astar_cursor] << 4;
-                            ddx = wtx - party[0].px;
-                            ddy = wty - party[0].py;
+                        if (noclip_mode || pal_npcs_find_blocking_idx(map_npcs, map_npc_actor_cnt, wtx, wty, 1, -1) < 0) {
+                            if (party[0].px != wtx || party[0].py != wty) astar_snapped = 1;
+                            party[0].px = wtx;
+                            party[0].py = wty;
+                            astar_cursor++;
+                            if (astar_cursor < astar_count) {
+                                wtx = astar_tx[astar_cursor] << 4;
+                                wty = astar_ty[astar_cursor] << 4;
+                                ddx = wtx - party[0].px;
+                                ddy = wty - party[0].py;
+                            } else {
+                                ddx = 0; ddy = 0;
+                            }
                         } else {
+                            astar_count = 0;
+                            astar_cursor = 0;
                             ddx = 0; ddy = 0;
                         }
                     }
@@ -26349,14 +26496,14 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         }
                     }
 
-                    if (pal_field_can_step_px(&map, party[0].px, party[0].py, bump_nx, bump_ny, foot_w, noclip_mode, esc_valid, esc_px, esc_py, wp_valid, wp_px, wp_py)) {
+                    if (pal_field_can_step_with_npcs(&map, map_npcs, map_npc_actor_cnt, party[0].px, party[0].py, bump_nx, bump_ny, foot_w, noclip_mode, esc_valid, esc_px, esc_py, wp_valid, wp_px, wp_py)) {
                         party[0].px = bump_nx;
                         party[0].py = bump_ny;
                         moved = 1;
-                    } else if (move_dx != 0 && pal_field_can_step_px(&map, party[0].px, party[0].py, party[0].px + move_dx, party[0].py, foot_w, noclip_mode, esc_valid, esc_px, esc_py, wp_valid, wp_px, wp_py)) {
+                    } else if (move_dx != 0 && pal_field_can_step_with_npcs(&map, map_npcs, map_npc_actor_cnt, party[0].px, party[0].py, party[0].px + move_dx, party[0].py, foot_w, noclip_mode, esc_valid, esc_px, esc_py, wp_valid, wp_px, wp_py)) {
                         party[0].px += move_dx;
                         moved = 1;
-                    } else if (move_dy != 0 && pal_field_can_step_px(&map, party[0].px, party[0].py, party[0].px, party[0].py + move_dy, foot_w, noclip_mode, esc_valid, esc_px, esc_py, wp_valid, wp_px, wp_py)) {
+                    } else if (move_dy != 0 && pal_field_can_step_with_npcs(&map, map_npcs, map_npc_actor_cnt, party[0].px, party[0].py, party[0].px, party[0].py + move_dy, foot_w, noclip_mode, esc_valid, esc_px, esc_py, wp_valid, wp_px, wp_py)) {
                         party[0].py += move_dy;
                         moved = 1;
                     } else {
