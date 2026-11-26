@@ -6145,6 +6145,17 @@ static int pal_world_has_item(const PalTalkWorldState *ws, uint16_t item_id) {
     return pal_world_total_item_count(ws, item_id) > 0 ? 1 : 0;
 }
 
+static int pal_world_has_equipped_item(const PalTalkWorldState *ws, uint16_t item_id) {
+    if (!ws || item_id == 0u) return 0;
+    for (int32_t p = 0; p < ws->party_member_count && p < 4; p++) {
+        if (!ws->party_members[p].active) continue;
+        for (int s = 0; s < PAL_EQUIP_SLOT_COUNT; s++) {
+            if (ws->party_members[p].equips[s] == item_id) return 1;
+        }
+    }
+    return 0;
+}
+
 #define PAL_MONEY_MAX 9999999 /* Palgame.exe 0x498aa8: 0x98967f */
 #define PAL_ITEM_STACK_MAX 99 /* Palgame.exe 0x487d84 / 0x48e217: 0x63 */
 
@@ -6154,6 +6165,9 @@ static void pal_world_add_money(PalTalkWorldState *ws, int32_t delta) {
     if (next < 0) next = 0;
     if (next > PAL_MONEY_MAX) next = PAL_MONEY_MAX;
     ws->money = (int32_t)next;
+    /* Keep script_vars[0] (exclusively money-synced across all 7394 Talk scripts) coherent so
+     * scripts like talk_id=612 (Liu Mother 1st 30000 gift) never clobber battle/shop gold. */
+    ws->script_vars[0] = ws->money;
 }
 
 static void pal_world_add_item(PalTalkWorldState *ws, uint16_t item_id, int32_t delta) {
@@ -6334,6 +6348,7 @@ static void pal_party_init_from_db(PalTalkWorldState *ws, PalGameDatabase *db, i
     }
     if (preset == 0 && ws->inventory_count == 0) {
         ws->money = 500;
+        ws->script_vars[0] = 500;
         pal_world_add_item(ws, 4401u, 3); /* 止血草 */
         pal_world_add_item(ws, 4402u, 2); /* 行軍丹 */
         pal_world_add_item(ws, 4301u, 2); /* 鼠兒果 */
@@ -8434,9 +8449,13 @@ static void pal_talk_vm_step_ex(
             }
 
             case 0x81u: case 0x82u: case 0xA7u: case 0xA8u: {
+                /* Authentic Palgame.exe 0x446212..0x446466:
+                 * 0x81/0x82 check inventory + equipped; 0xA7/0xA8 clear inv count and check equipped ONLY. */
                 uint16_t item_id = rd_u16(ins + 2u);
                 uint32_t tgt = rd_u32(ins + 4u);
-                int has = pal_world_has_item(ws, item_id);
+                int has = (op == 0xA7u || op == 0xA8u)
+                              ? pal_world_has_equipped_item(ws, item_id)
+                              : pal_world_has_item(ws, item_id);
                 int expect_has = (op == 0x82u || op == 0xA8u) ? 1 : 0;
                 if (has == expect_has) {
                     vm->ip += ilen;
@@ -8618,12 +8637,19 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x30Bu: { /* Sync script_var <-> money */
+            case 0x30Bu: { /* Sync script_var <-> money (Palgame.exe 0x446a03 + 0x498aa8 clamp) */
                 uint16_t idx = rd_u16(ins + 2u);
                 uint16_t dir = rd_u16(ins + 4u);
                 if (idx < PAL_SCRIPT_VAR_CAP) {
-                    if (dir == 0u) ws->script_vars[idx] = ws->money;
-                    else ws->money = ws->script_vars[idx];
+                    if (dir == 0u) {
+                        ws->script_vars[idx] = ws->money;
+                    } else {
+                        int32_t v = ws->script_vars[idx];
+                        if (v < 0) v = 0;
+                        if (v > PAL_MONEY_MAX) v = PAL_MONEY_MAX;
+                        ws->money = v;
+                        ws->script_vars[0] = v;
+                    }
                 }
                 vm->ip += ilen;
                 break;
@@ -9064,13 +9090,15 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x8Eu: { /* Start countdown timer [min, sec, talk_id, slot] */
+            case 0x8Eu: { /* Start countdown timer [min, sec, talk_id] (Palgame.exe 0x458234: *30 ticks, sets flags 16 & 18) */
                 int mins = (int)rd_u16(ins + 2u);
                 int secs = (int)rd_u16(ins + 4u);
                 uint16_t tid = rd_u16(ins + 6u);
                 ws->timer_active = 1;
-                ws->timer_rem_ticks = (mins * 60 + secs) * 28;
+                ws->timer_rem_ticks = (mins * 60 + secs) * 30;
                 ws->timer_talk_id = (int32_t)tid;
+                ws->story_flags[16] = 1u;
+                ws->story_flags[18] = 1u;
                 vm->ip += ilen;
                 break;
             }
@@ -9293,17 +9321,23 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x9Au: { /* Wait until active one-shot screen overlay count < arg0 */
+            case 0x9Au: { /* Wait until active 0x99 screen overlay finishes or reaches frame/AP > arg0 (Palgame.exe 0x44c654..0x44c6cb) */
                 if (!auto_advance_wait) {
-                    uint16_t limit = (ilen >= 4u) ? rd_u16(ins + 2u) : 1u;
-                    int active_fx = 0;
-                    for (int s = 0; s < PAL_MAX_OVERLAYS; s++) {
+                    uint16_t target_fr = (ilen >= 4u) ? rd_u16(ins + 2u) : 0u;
+                    int still_waiting = 0;
+                    for (int s = PAL_MAX_OVERLAYS - 1; s >= 0; s--) {
                         if (vm->overlays[s].active && vm->overlays[s].is_oneshot_fx &&
                             vm->overlays[s].vm_ok && !vm->overlays[s].vm.finished) {
-                            active_fx++;
+                            int cur_fr = vm->overlays[s].vm.ap_step > vm->overlays[s].vm.frame_index
+                                             ? vm->overlays[s].vm.ap_step
+                                             : vm->overlays[s].vm.frame_index;
+                            if (cur_fr <= (int)target_fr) {
+                                still_waiting = 1;
+                            }
+                            break;
                         }
                     }
-                    if (active_fx >= (int)limit && vm->wait_guard_ticks < 90) {
+                    if (still_waiting && vm->wait_guard_ticks < 600) {
                         vm->wait_guard_ticks++;
                         vm->wait_ticks = 1;
                         return;
@@ -18168,6 +18202,12 @@ static void camp_activate_current(
 
         case CAMP_STATE_SYSTEM:
             if (cm->sys_cursor == 0) {
+                if (ws->story_flags[16] != 0u && (ws->story_flags[3002] != 0u || ws->story_flags[3003] != 0u)) {
+                    camp_set_feedback(cm, "使用香類道具期間無法記錄！", 2.0f);
+                    cm->dirty = 1;
+                    if (sfx_pool && game_dir) play_ui_sfx(game_dir, 1u, sfx_pool, sfx_vol, runtime_mute);
+                    return;
+                }
                 camp_refresh_save_slots(cm, game_dir);
                 cm->state = CAMP_STATE_SAVE;
                 cm->confirm_open = 0;
@@ -19923,13 +19963,188 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         }
     }
 
-    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok) {
-        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d\n",
-                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok);
+    int p3_authentic_ok = 0;
+    {
+        /* #17..#21: Liu Mother 3x30000 (talk_id=612), Ling'er & Yueru hidden endings (1195/1199/1192/1201/1212/1301/1311),
+         * 0xA7/0xA8 equipped-only, 0x8E *30 ticks + flags 16/18, and 0x9A overlay frame wait. */
+        int ok_liu612 = 0, ok_linger_end = 0, ok_yueru_end = 0, ok_a7a8 = 0, ok_timer8e = 0, ok_wait9a = 0;
+        PalTalkVM tvm;
+        memset(&tvm, 0, sizeof(tvm));
+
+        /* 1. Liu Mother 3x 30000 (talk_id=612): preserves existing gold on 1st talk, refuses >=15000, grants <15000 twice more, stops at 3 */
+        memset(ws, 0, sizeof(*ws));
+        ws->db = db;
+        pal_party_init_from_db(ws, db, 2);
+        pal_world_add_money(ws, 5000);
+        if (pal_talk_vm_start(&tvm, game_dir, 612, 59u) == 0) {
+            pal_talk_vm_step(&tvm, ws, game_dir, 148u, NULL, NULL, 0, 1); /* 1st: 5000 -> 35000, obj_rv[59][2] = 1 */
+        }
+        int m1 = ws->money, rv1 = ws->obj_rv[59][2];
+        if (pal_talk_vm_start(&tvm, game_dir, 612, 59u) == 0) {
+            pal_talk_vm_step(&tvm, ws, game_dir, 148u, NULL, NULL, 0, 1); /* 35000 >= 15000 -> refused, stays 35000, rv=1 */
+        }
+        int m1_ref = ws->money, rv1_ref = ws->obj_rv[59][2];
+        pal_world_add_money(ws, -(ws->money - 14999)); /* spend down to 14999 */
+        if (pal_talk_vm_start(&tvm, game_dir, 612, 59u) == 0) {
+            pal_talk_vm_step(&tvm, ws, game_dir, 148u, NULL, NULL, 0, 1); /* 2nd: 14999 -> 44999, rv=2 */
+        }
+        int m2 = ws->money, rv2 = ws->obj_rv[59][2];
+        pal_world_add_money(ws, -ws->money); /* spend down to 0 */
+        if (pal_talk_vm_start(&tvm, game_dir, 612, 59u) == 0) {
+            pal_talk_vm_step(&tvm, ws, game_dir, 148u, NULL, NULL, 0, 1); /* 3rd: 0 -> 30000, rv=3 */
+        }
+        int m3 = ws->money, rv3 = ws->obj_rv[59][2];
+        pal_world_add_money(ws, -ws->money); /* spend down to 0 */
+        if (pal_talk_vm_start(&tvm, game_dir, 612, 59u) == 0) {
+            pal_talk_vm_step(&tvm, ws, game_dir, 148u, NULL, NULL, 0, 1); /* 4th: rv==3 -> refused, stays 0 */
+        }
+        int endm_liu = ws->money;
+        ok_liu612 = (m1 == 35000 && rv1 == 1 && m1_ref == 35000 && rv1_ref == 1 &&
+                     m2 == 44999 && rv2 == 2 && m3 == 30000 && rv3 == 3 && endm_liu == 0) ? 1 : 0;
+
+        /* 2. Zhao Ling'er hidden ending: 3075 -> field talk 1195 -> flag 1602 -> 1192 jumps to 1201 (end_2.Bik) -> 1212 returns to title */
+        memset(ws, 0, sizeof(*ws));
+        ws->db = db;
+        pal_party_init_from_db(ws, db, 2); /* Ling'er detached as sleeping NPC obj 2 on map 241 */
+        ws->story_flags[101] = 1u;
+        pal_world_add_item(ws, 3075u, 1); /* 青龍碧血玉 */
+        pal_world_add_item(ws, 3957u, 7); /* 女媧石 x7 */
+        static const uint16_t kLingItems[30] = {
+            4355,3062,3063,3064,3057,3113,3255,3054,3455,3252,3152,3459,3451,
+            3751,3752,3753,3754,3755,3756,3602,3603,3604,3607,3608,3611,3612,3613,3623,3624,3625
+        };
+        for (int i = 0; i < 30; i++) pal_world_add_item(ws, kLingItems[i], 1);
+        int cls_l = 0; int32_t tid_l = 0;
+        int rc_3075 = pal_camp_use_item_direct(ws, 0, 3075u, NULL, 0, &cls_l, &tid_l);
+        PalFieldActor l_party[4], l_npcs[2];
+        memset(l_party, 0, sizeof(l_party));
+        memset(l_npcs, 0, sizeof(l_npcs));
+        l_party[0].active = 1; l_party[0].px = 160; l_party[0].py = 160;
+        l_npcs[0].active = 1; l_npcs[0].obj_id = 2u; l_npcs[0].px = 192; l_npcs[0].py = 160;
+        int l_ncnt = 1;
+        if (rc_3075 == 0 && tid_l == 1195 && pal_talk_vm_start(&tvm, game_dir, tid_l, 0u) == 0) {
+            pal_talk_vm_step_ex(&tvm, ws, game_dir, 241u, l_party, l_npcs, &l_ncnt, 2, 1);
+        }
+        int saw_end2 = 0, linger_1212_title = 0;
+        if (ws->story_flags[1602] == 1u && pal_talk_vm_start(&tvm, game_dir, 1192, 0u) == 0) {
+            for (int st = 0; st < 200 && tvm.active; st++) {
+                pal_talk_vm_step(&tvm, ws, game_dir, 791u, NULL, NULL, 0, 1);
+                if (tvm.pending_bink_rel[0]) {
+                    if (strstr(tvm.pending_bink_rel, "end_2") != NULL) saw_end2 = 1;
+                    tvm.pending_bink_rel[0] = '\0';
+                    tvm.waiting_bink = 0;
+                }
+            }
+            if (strstr(tvm.pending_bink_rel, "end_2") != NULL) saw_end2 = 1;
+        }
+        if (pal_talk_vm_start(&tvm, game_dir, 1212, 0u) == 0) {
+            pal_talk_vm_step(&tvm, ws, game_dir, 831u, NULL, NULL, 0, 1);
+            linger_1212_title = (tvm.request_return_title == 1);
+        }
+        int fl1602_l = (int)ws->story_flags[1602], q3957_l = pal_world_item_qty(ws, 3957u);
+        ok_linger_end = (rc_3075 == 0 && tid_l == 1195 && fl1602_l == 1 &&
+                         q3957_l == 0 && saw_end2 && linger_1212_title) ? 1 : 0;
+
+        /* 3. Lin Yueru hidden ending: money==0 + 66x3902 + 9x3959 + 26 items -> talk 1199 sets flag 1601 & forgets 6253 -> 1192 -> 1301 -> 1311 */
+        memset(ws, 0, sizeof(*ws));
+        ws->db = db;
+        pal_party_init_from_db(ws, db, 0);
+        pal_party_teach_magic(&ws->party_members[0], 6253u); /* 酒神 */
+        ws->money = 0; ws->script_vars[0] = 0;
+        pal_world_add_item(ws, 3902u, 66); /* 傀儡蟲 x66 */
+        pal_world_add_item(ws, 3959u, 9);  /* 金蠶王 x9 */
+        static const uint16_t kYueruItems[26] = {
+            3072,3073,3074,3616,3617,3618,3619,3620,3621,3622,3351,3352,3353,
+            3462,3461,3456,3409,3801,3802,3803,3804,3805,3701,3702,3703,3704
+        };
+        for (int i = 0; i < 26; i++) pal_world_add_item(ws, kYueruItems[i], 1);
+        if (pal_talk_vm_start(&tvm, game_dir, 1199, 3u) == 0) {
+            pal_talk_vm_step(&tvm, ws, game_dir, 241u, NULL, NULL, 0, 1);
+        }
+        int forgot_6253 = 1;
+        for (int mi = 0; mi < ws->party_members[0].magic_count; mi++) {
+            if (ws->party_members[0].magics[mi] == 6253u) forgot_6253 = 0;
+        }
+        int saw_1301 = 0, yueru_1311_title = 0;
+        if (ws->story_flags[1601] == 1u && pal_talk_vm_start(&tvm, game_dir, 1192, 0u) == 0) {
+            for (int st = 0; st < 200 && tvm.active; st++) {
+                pal_talk_vm_step(&tvm, ws, game_dir, 791u, NULL, NULL, 0, 1);
+                if (tvm.pending_bink_rel[0]) { tvm.pending_bink_rel[0] = '\0'; tvm.waiting_bink = 0; }
+                if (ws->story_flags[1700] == 1u) saw_1301 = 1; /* talk_id=1301 @320 sets flag 1700 */
+            }
+            if (ws->story_flags[1700] == 1u) saw_1301 = 1;
+        }
+        if (pal_talk_vm_start(&tvm, game_dir, 1311, 0u) == 0) {
+            pal_talk_vm_step(&tvm, ws, game_dir, 818u, NULL, NULL, 0, 1);
+            yueru_1311_title = (tvm.request_return_title == 1);
+        }
+        ok_yueru_end = (ws->story_flags[1601] == 1u && forgot_6253 &&
+                        pal_world_item_qty(ws, 3902u) == 0 && saw_1301 && yueru_1311_title) ? 1 : 0;
+
+        /* 4. 0xA7/0xA8 equipped-only check (3065 玉佛珠 in bag vs equipped) */
+        memset(ws, 0, sizeof(*ws));
+        ws->db = db;
+        pal_party_init_from_db(ws, db, 0);
+        pal_world_add_item(ws, 3065u, 1);
+        int eq0 = pal_world_has_equipped_item(ws, 3065u);
+        int has0 = pal_world_has_item(ws, 3065u);
+        ws->party_members[0].equips[4] = 3065u;
+        int eq1 = pal_world_has_equipped_item(ws, 3065u);
+        ok_a7a8 = (eq0 == 0 && has0 == 1 && eq1 == 1) ? 1 : 0;
+
+        /* 5. 0x8E timer = (min*60+sec)*30 ticks + sets story_flags[16]/[18], 0x8F clears */
+        if (pal_talk_vm_start(&tvm, game_dir, 4995, 0u) == 0) { /* 驅魔香: 0x8E [1, 0, 4996] */
+            pal_talk_vm_step(&tvm, ws, game_dir, 200u, NULL, NULL, 0, 1);
+        }
+        int t_ok = (ws->timer_active == 1 && ws->timer_rem_ticks == 1800 &&
+                    ws->story_flags[16] == 1u && ws->story_flags[18] == 1u && ws->story_flags[3002] == 1u);
+        if (pal_talk_vm_start(&tvm, game_dir, 4996, 0u) == 0) {
+            pal_talk_vm_step(&tvm, ws, game_dir, 200u, NULL, NULL, 0, 1);
+        }
+        ok_timer8e = (t_ok && ws->timer_active == 0 && ws->story_flags[16] == 0u && ws->story_flags[3002] == 0u) ? 1 : 0;
+
+        /* 6. 0x9A waits while 0x99 overlay ap_step <= arg0, advances once ap_step > arg0 */
+        {
+            uint8_t syn[8] = { 0x9Au, 0x00u, 0x14u, 0x00u, 0xFFu, 0xFFu }; /* 0x9A [20] */
+            pal_talk_vm_free(&tvm);
+            tvm.chunk = (uint8_t *)malloc(sizeof(syn));
+            if (tvm.chunk) {
+                memcpy(tvm.chunk, syn, sizeof(syn));
+                tvm.chunk_len = 6u;
+                tvm.active = 1;
+                tvm.ip = 0u;
+                tvm.overlays[0].active = 1;
+                tvm.overlays[0].is_oneshot_fx = 1;
+                tvm.overlays[0].vm_ok = 1;
+                tvm.overlays[0].vm.finished = 0;
+                tvm.overlays[0].vm.ap_step = 5;
+                pal_talk_vm_step(&tvm, ws, game_dir, 831u, NULL, NULL, 0, 0);
+                int waited = (tvm.ip == 0u && tvm.wait_ticks == 1);
+                tvm.wait_ticks = 0;
+                tvm.overlays[0].vm.ap_step = 21;
+                pal_talk_vm_step(&tvm, ws, game_dir, 831u, NULL, NULL, 0, 0);
+                int passed = (tvm.ip >= 4u);
+                ok_wait9a = (waited && passed) ? 1 : 0;
+            }
+        }
+        pal_talk_vm_free(&tvm);
+
+        p3_authentic_ok = (ok_liu612 && ok_linger_end && ok_yueru_end && ok_a7a8 && ok_timer8e && ok_wait9a) ? 1 : 0;
+        if (!p3_authentic_ok) {
+            fprintf(stderr, "[SelfTest] p3_authentic failed: liu612=%d(m1=%d rv1=%d ref=%d/%d m2=%d rv2=%d m3=%d rv3=%d endm=%d) linger=%d(rc=%d tid=%d fl1602=%d q3957=%d end2=%d t1212=%d) yueru=%d a7a8=%d timer8e=%d wait9a=%d\n",
+                    ok_liu612, m1, rv1, m1_ref, rv1_ref, m2, rv2, m3, rv3, endm_liu,
+                    ok_linger_end, rc_3075, tid_l, fl1602_l, q3957_l, saw_end2, linger_1212_title,
+                    ok_yueru_end, ok_a7a8, ok_timer8e, ok_wait9a);
+        }
+    }
+
+    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok) {
+        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d\n",
+                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok);
     }
 
     out_info->ok = (out_info->monster_count == 160 &&
-                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok &&
+                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok &&
                     out_info->zone_count == 265 &&
                     out_info->fight_script_count == 1056 &&
                     out_info->battle2801_bg_id == 1609 &&
@@ -20440,6 +20655,9 @@ static void pal_npc_ai_step(
                 break;
             case 37:
             case 45: {
+                /* Authentic Palgame.exe City.cpp 0x40eaa2..0x40ebc2:
+                 * path2..7.dat already selects 30-tile radius on flag[3003] (十里香) vs 15-tile normal;
+                 * do NOT double dist_px again here. */
                 if (!AI_HAS_W(4)) { a->ai_script_id = 0u; return; }
                 uint16_t obj = AI_U16(1);
                 int dist_px = (int)AI_U16(2) * 16;
@@ -20447,7 +20665,6 @@ static void pal_npc_ai_step(
                 int in_range = 0;
                 int is_party_tgt = (obj == 0xFFF1u || obj == 0xFFFEu) ? 1 : 0;
                 if (!(is_party_tgt && (ws->combat_cooldown_ticks > 0 || repel || (a->aggro & 0x80u)))) {
-                    if (is_party_tgt && attract) dist_px *= 2;
                     const PalFieldActor *tgt = NULL;
                     if (is_party_tgt && party) tgt = &party[0];
                     else if (obj == 0xFFF0u) tgt = a;
@@ -20456,25 +20673,33 @@ static void pal_npc_ai_step(
                         int64_t dx = (int64_t)tgt->px - (int64_t)a->px;
                         int64_t dy = (int64_t)tgt->py - (int64_t)a->py;
                         in_range = (dx * dx + dy * dy <= (int64_t)dist_px * (int64_t)dist_px) ? 1 : 0;
-                        if (obj == 216u) {
-                            fprintf(stderr, "[AI_TRAP_CHECK] deer=(%d,%d) trap=(%d,%d) dist_px=%d in_range=%d\n",
-                                    a->px >> 4, a->py >> 4, tgt->px >> 4, tgt->py >> 4, dist_px, in_range);
-                        }
-                    } else if (obj == 216u) {
-                        fprintf(stderr, "[AI_TRAP_CHECK] tgt=%p active=%d\n", (void*)tgt, tgt ? tgt->active : 0);
                     }
                 }
                 int take = (op == 37) ? in_range : !in_range;
                 if (take) {
-                    if (obj == 216u) fprintf(stderr, "[AI_TRAP_TRIGGERED] JUMPING to %u\n", toff);
                     AI_JUMP(toff);
+                } else {
+                    a->ai_pc += 5;
                 }
-                else a->ai_pc += 5;
+                break;
+            }
+            case 38: {
+                /* Authentic Palgame.exe City.cpp 0x40ebce: random branch [n_choices, u32 tgt[0..n-1]] */
+                if (!AI_HAS_W(1)) { a->ai_script_id = 0u; return; }
+                uint16_t n = AI_U16(1);
+                if (n == 0u || !AI_HAS_W(1 + (int32_t)n * 2)) {
+                    a->ai_script_id = 0u;
+                    return;
+                }
+                s_ai_rng = s_ai_rng * 1664525u + 1013904223u;
+                uint32_t pick = (s_ai_rng >> 16) % (uint32_t)n;
+                uint32_t toff = AI_U32(2 + (int32_t)pick * 2);
+                AI_JUMP(toff);
                 break;
             }
             case 39:
-            case 40:
-            case 41: {
+            case 40: {
+                /* Authentic Palgame.exe City.cpp 0x40ec20 / 0x40ec91: set / add obj_rv[obj][rv] */
                 if (!AI_HAS_W(3)) { a->ai_script_id = 0u; return; }
                 uint16_t raw_obj = AI_U16(1);
                 uint16_t robj = (raw_obj == 0xFFF0u) ? a->obj_id : raw_obj;
@@ -20482,25 +20707,45 @@ static void pal_npc_ai_step(
                 int16_t val = (int16_t)AI_U16(3);
                 if (robj < PAL_OBJ_CAP && rv < 4u) {
                     if (op == 39) ws->obj_rv[robj][rv] = val;
-                    else if (op == 40) ws->obj_rv[robj][rv] = (int16_t)(ws->obj_rv[robj][rv] + val);
-                    else ws->obj_rv[robj][rv] = (int16_t)(ws->obj_rv[robj][rv] - val);
+                    else ws->obj_rv[robj][rv] = (int16_t)(ws->obj_rv[robj][rv] + val);
                 }
                 a->ai_pc += 4;
                 break;
             }
+            case 41:
             case 42:
-            case 43:
-            case 44: {
+            case 43: {
+                /* Authentic Palgame.exe City.cpp 0x40ed2d..0x40edec:
+                 * 41 (0x29): cur >= val; 42 (0x2a): cur <= val; 43 (0x2b): cur == val (unsigned u16) */
                 if (!AI_HAS_W(5)) { a->ai_script_id = 0u; return; }
                 uint16_t raw_obj = AI_U16(1);
                 uint16_t robj = (raw_obj == 0xFFF0u) ? a->obj_id : raw_obj;
                 uint16_t rv = AI_U16(2);
-                int16_t val = (int16_t)AI_U16(3);
+                uint16_t val = AI_U16(3);
                 uint32_t toff = AI_U32(4);
-                int16_t cur = (robj < PAL_OBJ_CAP && rv < 4u) ? ws->obj_rv[robj][rv] : 0;
-                int take = (op == 42) ? (cur < val) : (op == 43 ? (cur == val) : (cur > val));
+                uint16_t cur = (robj < PAL_OBJ_CAP && rv < 4u) ? (uint16_t)ws->obj_rv[robj][rv] : 0u;
+                int take = (op == 41) ? (cur >= val) : (op == 42 ? (cur <= val) : (cur == val));
                 if (take) AI_JUMP(toff);
                 else a->ai_pc += 6;
+                break;
+            }
+            case 44: {
+                /* Authentic Palgame.exe City.cpp 0x40edee: switch on obj_rv[obj][rv], 0xFF00FF00-terminated u32 table */
+                if (!AI_HAS_W(3)) { a->ai_script_id = 0u; return; }
+                uint16_t raw_obj = AI_U16(1);
+                uint16_t robj = (raw_obj == 0xFFF0u) ? a->obj_id : raw_obj;
+                uint16_t rv = AI_U16(2);
+                uint16_t idx = (robj < PAL_OBJ_CAP && rv < 4u) ? (uint16_t)ws->obj_rv[robj][rv] : 0xFFFFu;
+                int32_t cnt = 0;
+                while (cnt < 64 && AI_HAS_W(3 + cnt * 2 + 1)) {
+                    if (AI_U32(3 + cnt * 2) == 0xFF00FF00u) break;
+                    cnt++;
+                }
+                if ((int32_t)idx < cnt) {
+                    AI_JUMP(AI_U32(3 + (int32_t)idx * 2));
+                } else {
+                    a->ai_pc += 3 + cnt * 2 + 2;
+                }
                 break;
             }
             case 0xFFFFu:
@@ -24960,7 +25205,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 if (world_state && world_state->shake_ticks > 0) {
                     world_state->shake_ticks--;
                 }
-                if (world_state && world_state->timer_active && world_state->timer_rem_ticks > 0) {
+                if (world_state && world_state->timer_active && world_state->timer_rem_ticks > 0 &&
+                    !camp_menu.open && !shop_menu.open && !talk_vm.active) {
                     world_state->timer_rem_ticks--;
                     if (world_state->timer_rem_ticks == 0) {
                         world_state->timer_active = 0;
