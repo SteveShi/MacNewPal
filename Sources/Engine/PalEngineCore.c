@@ -7442,7 +7442,7 @@ static void pal_world_party_detach_obj(
         ws->npc_act_override[obj_id] = act_id;
         ws->npc_sub_override[obj_id] = (uint16_t)(sub_state + 1u);
         ws->npc_dir_override[obj_id] = (int8_t)(eff_dir + 1);
-        if (talk_id != 0xFFFFu) ws->npc_talk_override[obj_id] = talk_id;
+        if (talk_id != 0xFFFFu) ws->npc_talk_override[obj_id] = (talk_id == 0u) ? 0xFFFFu : talk_id;
         ws->npc_ai_override[obj_id] = (ai_script_id == 0u) ? 0xFFFFu : ai_script_id;
         ws->npc_flags_has[obj_id] = 1u;
         ws->npc_flags_val[obj_id] = flags;
@@ -7762,9 +7762,8 @@ static void pal_init_npc_actor_from_def(
     memset(a, 0, sizeof(*a));
     uint16_t oid = nd->obj_id;
     a->obj_id = oid;
-    a->talk_id = (ws && oid < PAL_OBJ_CAP && ws->npc_talk_override[oid] != 0u)
-                     ? ws->npc_talk_override[oid]
-                     : nd->talk_id;
+    uint16_t talk_ov = (ws && oid < PAL_OBJ_CAP) ? ws->npc_talk_override[oid] : 0u;
+    a->talk_id = (talk_ov == 0xFFFFu) ? 0u : ((talk_ov != 0u) ? talk_ov : nd->talk_id);
     uint32_t eff_flags = nd->flags;
     if (nd->sight != 0 && !(nd->aggro & 0x80u)) {
         eff_flags |= 0x8000u;
@@ -8288,8 +8287,18 @@ static void pal_talk_vm_step_ex(
                         if (vis && a) a->active = 1;
                     }
                 } else {
-                    if (obj < PAL_OBJ_CAP) ws->npc_visibility_override[obj] = vis ? 1u : 2u;
-                    if (a) a->active = suppress_dup ? 0 : vis;
+                    if (obj < PAL_OBJ_CAP) {
+                        ws->npc_visibility_override[obj] = vis ? 1u : 2u;
+                        if (ws->npc_flags_has[obj]) {
+                            if (vis) ws->npc_flags_val[obj] |= 0x8000u;
+                            else ws->npc_flags_val[obj] &= ~0x8000u;
+                        }
+                    }
+                    if (a) {
+                        a->active = suppress_dup ? 0 : vis;
+                        if (a->active) a->npc_flags |= 0x8000u;
+                        else a->npc_flags &= ~0x8000u;
+                    }
                 }
                 if (vis && a && a->active && a->act_id > 0u && !a->vm_ok && game_dir) {
                     int sub_idx = (int)a->orig_sub_state + ((a->dir >= 0 && a->dir < 126) ? a->dir : (a->dir & 7));
@@ -8486,6 +8495,7 @@ static void pal_talk_vm_step_ex(
                 if (a1 && a2) {
                     int ndir = dir_from_delta(a2->px - a1->px, a2->py - a1->py, a1->dir);
                     a1->dir = ndir;
+                    if (!p1 && o1 < PAL_OBJ_CAP && ws) ws->npc_dir_override[o1] = (int8_t)((ndir & 7) + 1);
                     if (p1) {
                         field_actor_set_sub(a1, game_dir, a1->act_id, ndir, 0);
                     } else {
@@ -8493,6 +8503,7 @@ static void pal_talk_vm_step_ex(
                     }
                 } else if (a1 && o2 < 8u) {
                     a1->dir = (int)(o2 & 7u);
+                    if (!p1 && o1 < PAL_OBJ_CAP && ws) ws->npc_dir_override[o1] = (int8_t)((a1->dir & 7) + 1);
                 }
                 vm->ip += ilen;
                 break;
@@ -8527,10 +8538,10 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x64u: { /* Set NPC talk_id */
+            case 0x64u: { /* Set NPC talk_id (0xFFFF sentinel persists explicit clear to 0) */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 uint16_t tid = rd_u16(ins + 4u);
-                if (obj < PAL_OBJ_CAP) ws->npc_talk_override[obj] = tid;
+                if (obj < PAL_OBJ_CAP) ws->npc_talk_override[obj] = (tid == 0u) ? 0xFFFFu : tid;
                 PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, NULL);
                 if (a) {
                     a->talk_id = tid;
@@ -8931,7 +8942,7 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x2Du: /* Change actor act_id [obj, act_id] */
+            case 0x2Du: /* Change actor act_id [obj, act_id] (Palgame.exe 0x4490e9: persists off-map too) */
             case 0x2Eu: /* Restore backup act_id/sub/dir [obj] */
             case 0x2Fu: /* Restore backup sub [obj] */
             case 0x30u: /* Restore backup dir [obj] */
@@ -8939,6 +8950,12 @@ static void pal_talk_vm_step_ex(
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 int is_p = 0;
                 PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, &is_p);
+                if (op == 0x2Du) {
+                    uint16_t new_aid = rd_u16(ins + 4u);
+                    if (!is_p && obj < PAL_OBJ_CAP && new_aid > 0u && ws) {
+                        ws->npc_act_override[obj] = new_aid;
+                    }
+                }
                 if (a) {
                     int was_active = a->active;
                     if (op == 0x2Du) {
@@ -9579,8 +9596,47 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
+            case 0x36u: { /* Authentic Palgame.exe 0x449aa7: reset actor ACT VM to frame 0 and advance N steps */
+                if (ilen >= 6u) {
+                    uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
+                    int16_t steps = (int16_t)rd_u16(ins + 4u);
+                    PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, NULL);
+                    if (a && a->vm_ok && a->act_id > 0u && game_dir) {
+                        field_actor_set_sub(a, game_dir, a->act_id, a->sub_action, 1);
+                        int lim = (steps > 0 && steps <= 256) ? (int)steps : 0;
+                        for (int s = 0; s < lim; s++) {
+                            pal_act_vm_step_tick(&a->vm);
+                        }
+                    }
+                }
+                vm->ip += ilen;
+                break;
+            }
+
+            case 0x37u: /* Authentic Palgame.exe 0x449c9a: set actor render bucket = 1 (Pass 3: above roofs) */
+            case 0x38u: /* set actor render bucket = 0 (Pass 2: normal Y-sort) */
+            case 0x39u: { /* set actor render bucket = 2 (Pass 1: below actors) */
+                uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
+                uint32_t new_b = (op == 0x37u) ? 1u : ((op == 0x39u) ? 2u : 0u);
+                int is_p = 0;
+                PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, &is_p);
+                if (a) {
+                    a->npc_flags = (a->npc_flags & ~3u) | new_b;
+                }
+                if (!is_p && obj < PAL_OBJ_CAP && ws) {
+                    uint32_t cur = ws->npc_flags_has[obj] ? ws->npc_flags_val[obj] : 0x8000u;
+                    if (!ws->npc_flags_has[obj] && ws->db) {
+                        const PalMapNpcDef *gd = pal_db_find_global_npc(ws->db, obj, 0u);
+                        if (gd) cur = gd->flags;
+                    }
+                    ws->npc_flags_has[obj] = 1u;
+                    ws->npc_flags_val[obj] = (cur & ~3u) | new_b;
+                }
+                vm->ip += ilen;
+                break;
+            }
+
             /* UI/VRAM/particle/weather/input framing opcodes (handled inherently by runtime) */
-            case 0x36u: case 0x37u: case 0x38u: case 0x39u:
             case 0x3Cu: case 0x3Du:
             case 0x50u: case 0x5Eu: case 0x5Fu:
             case 0x68u: case 0x69u: case 0x6Au:
@@ -10397,8 +10453,8 @@ static void pal_push_actor_render_item(
     PalTswCache *tsw_cache, int is_party, int is_leader
 ) {
     if (!items || !io_cnt || *io_cnt >= cap || !actor || !actor->active || !actor->vm_ok || !actor->vm.visible) return;
-    /* Authentic Palgame.exe 0x42499c: (flags & 0x8400) == 0x8000; bit 0x0400 suppresses rendering */
-    if (!is_party && (actor->npc_flags & 0x0400u) != 0u) return;
+    /* Authentic Palgame.exe 0x42499c: (flags & 0x8400) == 0x8000; bit 0x0400 suppresses rendering for all actors */
+    if ((actor->npc_flags & 0x0400u) != 0u) return;
     PalLoadedSprite *sp = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, actor->vm.fr_tsw_id);
     if (!sp || sp->nframes <= 0) return;
     int fi = actor->vm.frame_index;
@@ -21240,6 +21296,30 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
             tvm.active = 1; tvm.chunk = syn_78; tvm.chunk_len = sizeof(syn_78); tvm.ip = 0u;
             pal_talk_vm_step(&tvm, ws, game_dir, 241u, NULL, &snpc, 1, 1);
             int p78_ok = (ws->npc_act_override[4] == 312u && ws->npc_sub_override[4] == 1u && ws->npc_dir_override[4] == 6);
+            /* Test OP 0x64 [obj, 0] explicit clear + OP 0x37/0x38/0x39 layer buckets + OP 0x2D off-map persist */
+            uint8_t syn_64_0[8] = { 0x64u, 0x00u, 80u, 0u, 0u, 0u, 0xFFu, 0xFFu };
+            uint8_t syn_37[6] = { 0x37u, 0x00u, 80u, 0u, 0xFFu, 0xFFu };
+            uint8_t syn_39[6] = { 0x39u, 0x00u, 80u, 0u, 0xFFu, 0xFFu };
+            uint8_t syn_38[6] = { 0x38u, 0x00u, 80u, 0u, 0xFFu, 0xFFu };
+            uint8_t syn_2d[8] = { 0x2Du, 0x00u, 99u, 0u, 0x38u, 0x01u, 0xFFu, 0xFFu };
+            tvm.active = 1; tvm.chunk = syn_64_0; tvm.chunk_len = sizeof(syn_64_0); tvm.ip = 0u;
+            pal_talk_vm_step(&tvm, ws, game_dir, 241u, NULL, &snpc, 1, 1);
+            PalMapNpcDef fake_def = {0}; fake_def.obj_id = 80u; fake_def.talk_id = 1193u; fake_def.flags = 0xD100u;
+            PalFieldActor reloaded = {0};
+            pal_init_npc_actor_from_def(&reloaded, &fake_def, ws, game_dir, 241u);
+            int clr64_ok = (reloaded.talk_id == 0u && ws->npc_talk_override[80] == 0xFFFFu);
+            tvm.active = 1; tvm.chunk = syn_37; tvm.chunk_len = sizeof(syn_37); tvm.ip = 0u;
+            pal_talk_vm_step(&tvm, ws, game_dir, 241u, NULL, &snpc, 1, 1);
+            int b37 = ((snpc.npc_flags & 3u) == 1u && (ws->npc_flags_val[80] & 3u) == 1u);
+            tvm.active = 1; tvm.chunk = syn_39; tvm.chunk_len = sizeof(syn_39); tvm.ip = 0u;
+            pal_talk_vm_step(&tvm, ws, game_dir, 241u, NULL, &snpc, 1, 1);
+            int b39 = ((snpc.npc_flags & 3u) == 2u && (ws->npc_flags_val[80] & 3u) == 2u);
+            tvm.active = 1; tvm.chunk = syn_38; tvm.chunk_len = sizeof(syn_38); tvm.ip = 0u;
+            pal_talk_vm_step(&tvm, ws, game_dir, 241u, NULL, &snpc, 1, 1);
+            int b38 = ((snpc.npc_flags & 3u) == 0u && (ws->npc_flags_val[80] & 3u) == 0u);
+            tvm.active = 1; tvm.chunk = syn_2d; tvm.chunk_len = sizeof(syn_2d); tvm.ip = 0u;
+            pal_talk_vm_step(&tvm, ws, game_dir, 241u, NULL, &snpc, 1, 1);
+            int off2d_ok = (ws->npc_act_override[99] == 312u);
             /* Solid NPC collision check: solid 0xD100 blocks, non-solid 0x9040 / hidden 0xD500 pass, stepping away from overlap allowed */
             uint32_t open_wg[12 * 12] = {0};
             PalLoadedMap cm = {0};
@@ -21252,7 +21332,8 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
             int pass_nonsolid = pal_field_can_step_with_npcs(&cm, cnpcs, 3, 6 << 4, 5 << 4, (6 << 4) + 4, 5 << 4, 1, 0, 0, 0, 0, 0, 0, 0);
             int pass_hidden = pal_field_can_step_with_npcs(&cm, cnpcs, 3, 8 << 4, 5 << 4, (8 << 4) + 4, 5 << 4, 1, 0, 0, 0, 0, 0, 0, 0);
             int escape_overlap = pal_field_can_step_with_npcs(&cm, cnpcs, 3, (5 << 4) - 4, 5 << 4, (5 << 4) - 8, 5 << 4, 1, 0, 0, 0, 0, 0, 0, 0);
-            op44_78_col_ok = (hid_45 && shw_44 && p78_ok && blk_solid && pass_nonsolid && pass_hidden && escape_overlap) ? 1 : 0;
+            op44_78_col_ok = (hid_45 && shw_44 && p78_ok && clr64_ok && b37 && b39 && b38 && off2d_ok &&
+                              blk_solid && pass_nonsolid && pass_hidden && escape_overlap) ? 1 : 0;
         }
 
         npc_all_scenes_audit_ok = (
@@ -21662,10 +21743,19 @@ static void pal_npc_ai_step(
             case 28: {
                 if (!AI_HAS_W(1)) { a->ai_script_id = 0u; return; }
                 uint16_t obj = AI_U16(1);
+                uint16_t eff_obj = (obj == 0xFFF0u) ? a->obj_id : obj;
                 PalFieldActor *tgt = (obj == 0xFFF0u) ? a : talk_find_actor_by_obj(ws, NULL, npcs, npc_cnt, obj, NULL);
-                if (tgt) tgt->active = (op == 28) ? 1 : 0;
-                if (obj < PAL_OBJ_CAP && obj != 0xFFF0u) {
-                    ws->npc_visibility_override[obj] = (op == 28) ? 1u : 2u;
+                if (tgt) {
+                    tgt->active = (op == 28) ? 1 : 0;
+                    if (tgt->active) tgt->npc_flags |= 0x8000u;
+                    else tgt->npc_flags &= ~0x8000u;
+                }
+                if (eff_obj < PAL_OBJ_CAP && ws) {
+                    ws->npc_visibility_override[eff_obj] = (op == 28) ? 1u : 2u;
+                    if (ws->npc_flags_has[eff_obj]) {
+                        if (op == 28) ws->npc_flags_val[eff_obj] |= 0x8000u;
+                        else ws->npc_flags_val[eff_obj] &= ~0x8000u;
+                    }
                 }
                 if (op == 28 && tgt && tgt->active && tgt->act_id > 0u && !tgt->vm_ok && game_dir) {
                     int sub_idx = (int)tgt->orig_sub_state + (tgt->act_id == 700u ? tgt->dir : (tgt->dir & 7));
@@ -27059,10 +27149,17 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             /* Pass 0: Map Background Layer (with water/heat strip shimmer when story_flags[7]) */
             pal_field_env_draw_bg(renderer, &field_env, world_state, &map, cam_x, cam_y);
 
+            int pmax = party_follow_enabled ? 4 : 1;
+            if (party_follow_enabled && leader_hero_idx == 0u && world_state &&
+                world_state->party_member_count > 0 && world_state->party_member_count < 4) {
+                pmax = world_state->party_member_count;
+            }
+            if (map.map_id == 532u || map.map_id == 533u) pmax = 0;
+
             /* Authentic Palgame.exe 0x424883..0x42498b 3-bucket render passes:
              * Pass 1 (bucket 2): below actors (ground decals / floor effects / flags&3 == 2)
              * Pass 2 (bucket 0): Y-sorted map props + party + normal NPCs (flags&3 == 0 or 3)
-             * Pass 3 (bucket 1): above actors (roofs / canopies / flying birds / flags&3 == 1) */
+             * Pass 3 (bucket 1): above actors (roofs / canopies / flying birds & leaping heroes / flags&3 == 1) */
             PalRenderItem items[1024];
             int item_cnt = 0;
             for (int k = 0; k < map.fg_inst_count && item_cnt < 1024; k++) {
@@ -27083,6 +27180,11 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         break;
                     }
                 }
+            }
+            for (int p = 0; p < pmax && item_cnt < 1024; p++) {
+                if ((party[p].npc_flags & 3u) != 2u) continue;
+                pal_push_actor_render_item(items, &item_cnt, 1024, &map, &party[p],
+                                           cfg->game_dir, renderer, scale_mode, &tsw_cache, 1, (p == 0));
             }
             for (int n = 0; n < map_npc_actor_cnt && item_cnt < 1024; n++) {
                 if ((map_npcs[n].npc_flags & 3u) != 2u) continue;
@@ -27114,13 +27216,9 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                 }
             }
 
-            int pmax = party_follow_enabled ? 4 : 1;
-            if (party_follow_enabled && leader_hero_idx == 0u && world_state &&
-                world_state->party_member_count > 0 && world_state->party_member_count < 4) {
-                pmax = world_state->party_member_count;
-            }
-            if (map.map_id == 532u || map.map_id == 533u) pmax = 0;
             for (int p = 0; p < pmax && item_cnt < 1024; p++) {
+                uint32_t plb = party[p].npc_flags & 3u;
+                if (plb == 1u || plb == 2u) continue;
                 pal_push_actor_render_item(items, &item_cnt, 1024, &map, &party[p],
                                            cfg->game_dir, renderer, scale_mode, &tsw_cache, 1, (p == 0));
             }
@@ -27135,7 +27233,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             if (item_cnt > 1) qsort(items, (size_t)item_cnt, sizeof(PalRenderItem), cmp_render_item);
             pal_draw_render_items_pass2(renderer, items, item_cnt, &map, cfg->game_dir, scale_mode, &tsw_cache, cam_x, cam_y);
 
-            /* Pass 3: Bucket 1 (above actors: overhead roofs / tree canopies / flying NPCs flags&3 == 1) */
+            /* Pass 3: Bucket 1 (above actors: overhead roofs / tree canopies / flying NPCs & heroes flags&3 == 1) */
             item_cnt = 0;
             for (int k = 0; k < map.fg_inst_count && item_cnt < 1024; k++) {
                 const PalMapFgInst *inst = &map.fg_insts[k];
@@ -27155,6 +27253,11 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         break;
                     }
                 }
+            }
+            for (int p = 0; p < pmax && item_cnt < 1024; p++) {
+                if ((party[p].npc_flags & 3u) != 1u) continue;
+                pal_push_actor_render_item(items, &item_cnt, 1024, &map, &party[p],
+                                           cfg->game_dir, renderer, scale_mode, &tsw_cache, 1, (p == 0));
             }
             for (int n = 0; n < map_npc_actor_cnt && item_cnt < 1024; n++) {
                 if ((map_npcs[n].npc_flags & 3u) != 1u) continue;
