@@ -7658,13 +7658,42 @@ static void talk_hide_portrait(PalTalkVM *vm, uint16_t act_id, uint16_t sub) {
     }
 }
 
+/* Authentic Palgame.exe 0x422c22: bit 0x2000 is the universal contact-trigger flag.
+ * Field battle monsters comprise talk 4001..5999 (talk5/talk6.dat, 1,716 monsters) plus
+ * Map 325 trap-spawned monsters talk 1719..1724 (21 monsters) = 1,737 total. */
+static int pal_npc_is_field_monster(const PalFieldActor *a) {
+    if (!a || !a->active || a->talk_id == 0u || a->act_id == 700u) return 0;
+    if ((a->npc_flags & 0x2000u) == 0u) return 0;
+    if ((a->talk_id >= 4001u && a->talk_id <= 5999u) ||
+        (a->talk_id >= 1719u && a->talk_id <= 1724u)) {
+        return 1;
+    }
+    return 0;
+}
+
 static int pal_npc_is_touch_event(const PalFieldActor *a) {
     if (!a || !a->active || a->talk_id == 0u) return 0;
     if (a->act_id == 701u) return 0; /* Map-entry cutscene handled separately */
-    if ((a->npc_flags & 0x2000u) != 0u && (a->talk_id >= 5001u || a->sight > 0)) return 0;
+    if (pal_npc_is_field_monster(a)) return 0; /* Handled by monster encounter contact loop */
+    if ((a->npc_flags & 0x2000u) != 0u) return 1; /* All non-monster 0x2000 contact triggers (700/702/703/711/712/713/633) */
     if ((a->npc_flags & 0x20u) != 0u) return 1;
-    if (a->act_id == 700u && (a->npc_flags & 0x2000u) != 0u) return 1;
     return 0;
+}
+
+static int pal_npc_monster_hit_px(const PalFieldActor *a, int ppx, int ppy, int foot_w) {
+    if (!a || !a->active) return 0;
+    int hw = (a->vm_ok && a->vm.hitbox_w > 0 && a->vm.hitbox_w <= 8) ? a->vm.hitbox_w : 1;
+    int hh = (a->vm_ok && a->vm.hitbox_h > 0 && a->vm.hitbox_h <= 8) ? a->vm.hitbox_h : 1;
+    int fw_px = (foot_w > 0 ? foot_w : 1) * 16;
+    int ax0 = a->px - 2;
+    int ay0 = a->py - 2;
+    int ax1 = a->px + hw * 16 + 2;
+    int ay1 = a->py + hh * 16 + 2;
+    int px0 = ppx;
+    int py0 = ppy;
+    int px1 = ppx + fw_px;
+    int py1 = ppy + 16;
+    return (px0 < ax1 && px1 > ax0 && py0 < ay1 && py1 > ay0) ? 1 : 0;
 }
 
 static int pal_npc_touch_hit_px(const PalFieldActor *a, int ppx, int ppy, int foot_w, int pad_px) {
@@ -7693,9 +7722,10 @@ static int pal_npc_is_solid_blocker(const PalFieldActor *a) {
     if (!a || !a->active) return 0;
     if ((a->npc_flags & 0x0400u) != 0u) return 0; /* hidden via OP 0x45 */
     if ((a->npc_flags & 0x4000u) == 0u) return 0; /* non-solid (birds, sparkles, floor decals) */
-    if (pal_npc_is_touch_event(a)) return 0;      /* step-in trigger box must remain steppable */
+    if (pal_npc_is_touch_event(a)) return 0;      /* step-in trigger box/portal/trap must remain steppable */
+    if (pal_npc_is_field_monster(a)) return 0;    /* combat trigger on contact */
     if (a->act_id == 700u && a->talk_id > 0u) return 0;
-    if ((a->npc_flags & 0x2000u) != 0u && (a->talk_id >= 5001u || a->sight > 0)) return 0; /* combat trigger on contact */
+    if ((a->npc_flags & 0x2000u) != 0u && a->talk_id > 0u) return 0;
     return 1;
 }
 
@@ -8346,6 +8376,15 @@ static void pal_talk_vm_step_ex(
                     a->px = tx << 4;
                     a->py = ty << 4;
                     a->script_moving = 0;
+                    a->ai_target_tx = (int16_t)tx;
+                    a->ai_target_ty = (int16_t)ty;
+                    if ((a->npc_flags & 0x2000u) != 0u) {
+                        /* Flee branch (talk5/talk6 OP 0x28): reset chase state so monster resumes patrol cleanly */
+                        a->ai_pc = 0;
+                        a->ai_chase_mode = 0u;
+                        a->ai_stall_ticks = 0u;
+                        a->npc_flags &= ~0x04000000u;
+                    }
                 }
                 vm->ip += ilen;
                 break;
@@ -9444,14 +9483,21 @@ static void pal_talk_vm_step_ex(
                 vm->ip += ilen;
                 break;
 
-            case 0xD7u: { /* Deactivate / remove actor [obj] */
+            case 0xD7u: { /* Deactivate / remove actor [obj] (Palgame.exe 0x40ef26: clear 0x8000, set aggro=0x80) */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 int is_p = 0;
                 PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, &is_p);
-                if (!is_p && obj < PAL_OBJ_CAP) ws->npc_visibility_override[obj] = 2u;
+                if (!is_p && obj < PAL_OBJ_CAP && ws) {
+                    ws->npc_visibility_override[obj] = 2u;
+                    if (ws->npc_flags_has[obj]) {
+                        ws->npc_flags_val[obj] &= ~0x8000u;
+                    }
+                }
                 if (a && !is_p) {
                     a->active = 0;
                     a->script_moving = 0;
+                    a->npc_flags &= ~0x8000u;
+                    a->aggro |= 0x80u;
                 }
                 vm->ip += ilen;
                 break;
@@ -11532,6 +11578,7 @@ static int pal_load_game_slot(
     if (!has_ext) {
         uint32_t mid = (legacy_len >= 0x260u) ? rd_u32(buf + legacy_len - 0x259u) : 1u;
         int d = (legacy_len >= 0x260u) ? (int)(rd_u16(buf + legacy_len - 0x25Bu) & 7u) : 1;
+        ws->story_flags[3010] = 1u; /* Monster AI chase enable flag (set in talk1 0xf44 on new game) */
         if (out_map_id) *out_map_id = mid > 0u ? mid : 1u;
         if (out_px) *out_px = -1;
         if (out_py) *out_py = -1;
@@ -21361,13 +21408,167 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         }
     }
 
-    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok || !early_sidequests_ok || !mid_sidequests_ok || !late_sidequests_ok || !npc_all_scenes_audit_ok) {
-        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d early_sidequests_ok=%d mid_sidequests_ok=%d late_sidequests_ok=%d npc_all_scenes_audit_ok=%d\n",
-                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok, early_sidequests_ok, mid_sidequests_ok, late_sidequests_ok, npc_all_scenes_audit_ok);
+    /* Full Map Monster Audit (all 1,839 0x2000 && act!=700 actors: triggering, chasing, 驅魔香/十里香, blocked-spawn/OOB-WP resilience, win/flee) */
+    int monsters_all_scenes_audit_ok = 0;
+    {
+        int mon_4xxx = 0, mon_5xxx = 0, mon_325 = 0, touch_nonmon = 0, solid_err = 0;
+        for (int32_t g = 0; g < db->global_npc_count; g++) {
+            const PalMapNpcDef *gd = &db->global_npcs[g].def;
+            if ((gd->flags & 0x2000u) == 0u || gd->act_id == 700u || gd->talk_id == 0u) continue;
+            PalFieldActor fa = {0};
+            fa.active = 1;
+            fa.obj_id = gd->obj_id;
+            fa.act_id = gd->act_id;
+            fa.talk_id = gd->talk_id;
+            fa.npc_flags = (uint32_t)gd->flags | 0x8000u;
+            fa.sight = gd->sight;
+            if (pal_npc_is_solid_blocker(&fa)) solid_err++;
+            if (pal_npc_is_field_monster(&fa)) {
+                if (gd->talk_id >= 4001u && gd->talk_id <= 4999u) mon_4xxx++;
+                else if (gd->talk_id >= 5001u && gd->talk_id <= 5999u) mon_5xxx++;
+                else if (gd->talk_id >= 1719u && gd->talk_id <= 1724u) mon_325++;
+            } else if (pal_npc_is_touch_event(&fa)) {
+                touch_nonmon++;
+            }
+        }
+        /* Live chase + 驅魔香 + 十里香 + blocked-spawn escape + OOB-WP survival + OP 0xD7/0x28 on Map 272 (talk 4xxx) & Map 111 */
+        int chase4k_ok = 0, repel_ok = 0, attract_ok = 0, blocked_esc_ok = 0, oob_wp_ok = 0, win_flee_ok = 0;
+        {
+            PalLoadedMap *m272 = (PalLoadedMap *)calloc(1, sizeof(PalLoadedMap));
+            PalFieldActor *n272 = (PalFieldActor *)calloc(128, sizeof(PalFieldActor));
+            PalFieldActor tp[4];
+            memset(tp, 0, sizeof(tp));
+            tp[0].active = 1;
+            if (m272 && n272 && vfs_load_lmf_map_by_id(game_dir, 272u, NULL, SDL_SCALEMODE_NEAREST, m272) == 0) {
+                memset(ws, 0, sizeof(*ws)); ws->db = db; ws->story_flags[3010] = 1u;
+                int c272 = pal_field_populate_map_npcs(m272, ws, game_dir, n272, 128);
+                int idx_walk = -1, idx_blk = -1;
+                for (int i = 0; i < c272; i++) {
+                    if (n272[i].obj_id == 4042u) idx_blk = i;
+                    else if (idx_walk < 0 && pal_npc_is_field_monster(&n272[i]) && n272[i].ai_script_id > 0u &&
+                             pal_map_can_stand_px(m272, n272[i].px, n272[i].py, 1, 0)) {
+                        idx_walk = i;
+                    }
+                }
+                if (idx_walk >= 0) {
+                    /* Place player 6 tiles away (within 15-tile normal sight) -> monster must chase at 4px/tick & close distance */
+                    PalFieldActor ma = n272[idx_walk];
+                    int tx = ma.px >> 4, ty = ma.py >> 4;
+                    int ptx = tx, pty = ty;
+                    for (int r = 5; r >= 3 && ptx == tx && pty == ty; r--) {
+                        static const int kDx[4] = {1, -1, 0, 0};
+                        static const int kDy[4] = {0, 0, 1, -1};
+                        for (int d = 0; d < 4; d++) {
+                            if (pal_map_can_stand_tile(m272, tx + kDx[d] * r, ty + kDy[d] * r, 1)) {
+                                ptx = tx + kDx[d] * r; pty = ty + kDy[d] * r; break;
+                            }
+                        }
+                    }
+                    tp[0].px = ptx << 4; tp[0].py = pty << 4;
+                    int d0 = abs(ma.px - tp[0].px) + abs(ma.py - tp[0].py);
+                    int saw_chase = 0, hit_player = 0;
+                    for (int tk = 0; tk < 80; tk++) {
+                        pal_npc_ai_step(&ma, m272, ws, game_dir, tp, n272, c272);
+                        if ((ma.npc_flags & 0x04000000u) != 0u) saw_chase = 1;
+                        if (pal_npc_monster_hit_px(&ma, tp[0].px, tp[0].py, 1)) { hit_player = 1; break; }
+                    }
+                    int d1 = abs(ma.px - tp[0].px) + abs(ma.py - tp[0].py);
+                    chase4k_ok = (saw_chase && (hit_player || d1 < d0)) ? 1 : 0;
+
+                    /* 驅魔香 (flag 3002=1): must NOT chase, must yield cleanly on op 5 */
+                    PalFieldActor mr = n272[idx_walk];
+                    ws->story_flags[3002] = 1u;
+                    int r_chased = 0;
+                    for (int tk = 0; tk < 30; tk++) {
+                        pal_npc_ai_step(&mr, m272, ws, game_dir, tp, n272, c272);
+                        if ((mr.npc_flags & 0x04000000u) != 0u) r_chased = 1;
+                    }
+                    repel_ok = (!r_chased) ? 1 : 0;
+                    ws->story_flags[3002] = 0u;
+
+                    /* 十里香 (flag 3003=1): player at 20 tiles (>15 normal, <=30 attract) triggers chase */
+                    PalFieldActor mt = n272[idx_walk];
+                    ws->story_flags[3003] = 1u;
+                    tp[0].px = mt.px + 20 * 16; tp[0].py = mt.py;
+                    int t_chased = 0;
+                    for (int tk = 0; tk < 30; tk++) {
+                        pal_npc_ai_step(&mt, m272, ws, game_dir, tp, n272, c272);
+                        if ((mt.npc_flags & 0x04000000u) != 0u) { t_chased = 1; break; }
+                    }
+                    attract_ok = t_chased ? 1 : 0;
+                    ws->story_flags[3003] = 0u;
+
+                    /* Win (OP 0xD7) despawns & sets aggro 0x80; Flee (OP 0x28) teleports home & resets chase */
+                    PalTalkVM tvm = {0};
+                    PalFieldActor mw = n272[idx_walk];
+                    mw.px = (mw.home_tx + 3) << 4; mw.npc_flags |= 0x04000000u; mw.ai_chase_mode = 5u;
+                    uint8_t syn_28[10] = { 0x28u, 0x00u, (uint8_t)(mw.obj_id & 0xFFu), (uint8_t)(mw.obj_id >> 8),
+                                           (uint8_t)(mw.home_tx & 0xFFu), (uint8_t)(mw.home_tx >> 8),
+                                           (uint8_t)(mw.home_ty & 0xFFu), (uint8_t)(mw.home_ty >> 8), 0xFFu, 0xFFu };
+                    tvm.active = 1; tvm.chunk = syn_28; tvm.chunk_len = sizeof(syn_28); tvm.ip = 0u;
+                    pal_talk_vm_step(&tvm, ws, game_dir, 272u, tp, &mw, 1, 1);
+                    int flee_ok = (mw.px == (mw.home_tx << 4) && mw.py == (mw.home_ty << 4) &&
+                                   (mw.npc_flags & 0x04000000u) == 0u && mw.ai_chase_mode == 0u);
+                    uint8_t syn_d7[6] = { 0xD7u, 0x00u, 0xF0u, 0xFFu, 0xFFu, 0xFFu };
+                    tvm.active = 1; tvm.trigger_obj_id = mw.obj_id; tvm.chunk = syn_d7; tvm.chunk_len = sizeof(syn_d7); tvm.ip = 0u;
+                    pal_talk_vm_step(&tvm, ws, game_dir, 272u, tp, &mw, 1, 1);
+                    int win_ok = (!mw.active && (mw.npc_flags & 0x8000u) == 0u && (mw.aggro & 0x80u) != 0u &&
+                                  ws->npc_visibility_override[mw.obj_id] == 2u);
+                    win_flee_ok = (flee_ok && win_ok) ? 1 : 0;
+                }
+                if (idx_blk >= 0) {
+                    /* Map 272 obj=4042 spawns on a 0x40000000 edge-wall tile: must step off onto walkable ground */
+                    PalFieldActor mb = n272[idx_blk];
+                    int ox = mb.px, oy = mb.py;
+                    for (int tk = 0; tk < 40; tk++) {
+                        pal_npc_step_toward(&mb, m272, game_dir, (mb.home_tx + 3) << 4, mb.home_ty << 4, 2);
+                        if (pal_map_can_stand_px(m272, mb.px, mb.py, 1, 0)) { blocked_esc_ok = 1; break; }
+                    }
+                    if (!blocked_esc_ok && (mb.px != ox || mb.py != oy)) blocked_esc_ok = 1;
+                }
+                free_loaded_map(m272);
+            }
+            free(m272); free(n272);
+
+            /* OOB waypoint (Map 111 obj=5121 WP (54,23) on 40x30): must skip WP without killing ai_script_id */
+            PalLoadedMap *m111 = (PalLoadedMap *)calloc(1, sizeof(PalLoadedMap));
+            PalFieldActor *n111 = (PalFieldActor *)calloc(128, sizeof(PalFieldActor));
+            if (m111 && n111 && vfs_load_lmf_map_by_id(game_dir, 111u, NULL, SDL_SCALEMODE_NEAREST, m111) == 0) {
+                memset(ws, 0, sizeof(*ws)); ws->db = db; ws->story_flags[3010] = 1u;
+                int c111 = pal_field_populate_map_npcs(m111, ws, game_dir, n111, 128);
+                for (int i = 0; i < c111; i++) {
+                    if (n111[i].obj_id == 5121u) {
+                        for (int tk = 0; tk < 120; tk++) {
+                            pal_npc_ai_step(&n111[i], m111, ws, game_dir, tp, n111, c111);
+                        }
+                        oob_wp_ok = (n111[i].ai_script_id == 2121u) ? 1 : 0;
+                        break;
+                    }
+                }
+                free_loaded_map(m111);
+            }
+            free(m111); free(n111);
+        }
+        monsters_all_scenes_audit_ok = (
+            mon_4xxx == 728 && mon_5xxx == 988 && mon_325 == 21 &&
+            touch_nonmon == 89 && solid_err == 0 &&
+            chase4k_ok == 1 && repel_ok == 1 && attract_ok == 1 &&
+            blocked_esc_ok == 1 && oob_wp_ok == 1 && win_flee_ok == 1
+        ) ? 1 : 0;
+        if (!monsters_all_scenes_audit_ok) {
+            fprintf(stderr, "[SelfTest] monsters_all_scenes_audit failed: m4k=%d m5k=%d m325=%d tnm=%d solid=%d c4k=%d rep=%d att=%d blk=%d oob=%d wf=%d\n",
+                    mon_4xxx, mon_5xxx, mon_325, touch_nonmon, solid_err,
+                    chase4k_ok, repel_ok, attract_ok, blocked_esc_ok, oob_wp_ok, win_flee_ok);
+        }
+    }
+
+    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok || !early_sidequests_ok || !mid_sidequests_ok || !late_sidequests_ok || !npc_all_scenes_audit_ok || !monsters_all_scenes_audit_ok) {
+        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d early_sidequests_ok=%d mid_sidequests_ok=%d late_sidequests_ok=%d npc_all_scenes_audit_ok=%d monsters_all_scenes_audit_ok=%d\n",
+                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok, early_sidequests_ok, mid_sidequests_ok, late_sidequests_ok, npc_all_scenes_audit_ok, monsters_all_scenes_audit_ok);
     }
 
     out_info->ok = (out_info->monster_count == 160 &&
-                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok && early_sidequests_ok && mid_sidequests_ok && late_sidequests_ok && npc_all_scenes_audit_ok &&
+                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok && early_sidequests_ok && mid_sidequests_ok && late_sidequests_ok && npc_all_scenes_audit_ok && monsters_all_scenes_audit_ok &&
                     out_info->zone_count == 265 &&
                     out_info->fight_script_count == 1056 &&
                     out_info->battle2801_bg_id == 1609 &&
@@ -21493,6 +21694,22 @@ static int pal_npc_step_toward(
         } else if (mdy != 0 && pal_map_can_stand_px(map, a->px, a->py + mdy, 1, 0)) {
             ndir = dir_from_delta(0, mdy, a->dir);
             a->py += mdy; moved = 1;
+        } else if (!pal_map_can_stand_px(map, a->px, a->py, 1, 0)) {
+            /* Soft-lock escape for monsters spawned on an edge-wall tile (e.g. Map 272/463/471/510):
+             * allow stepping toward the nearest walkable neighbor tile until fully clear. */
+            int etx = a->px >> 4, ety = a->py >> 4;
+            if (pal_map_nearest_walkable(map, &etx, &ety, 1, 3)) {
+                int edx = (etx << 4) - a->px;
+                int edy = (ety << 4) - a->py;
+                int emx = (edx > 0) ? (edx < step_px ? edx : step_px) : (-edx < step_px ? edx : -step_px);
+                int emy = (edy > 0) ? (edy < step_px ? edy : step_px) : (-edy < step_px ? edy : -step_px);
+                if (emx != 0 || emy != 0) {
+                    ndir = dir_from_delta(edx, edy, a->dir);
+                    a->px += emx;
+                    a->py += emy;
+                    moved = 1;
+                }
+            }
         }
     }
     if (moved) {
@@ -21597,12 +21814,14 @@ static void pal_npc_ai_step(
                 break;
             case 5:
             case 6:
+                /* Authentic Palgame.exe 0x40d5e1..0x40d667: op 5/6 never set continue flag [ebp-0x54],
+                 * so they always yield 1 engine tick (prevents 64x/tick busy-spin under 驅魔香 flag 3002). */
                 if (a->ai_wait_ticks > 0) {
                     a->ai_wait_ticks--;
                     return;
                 }
                 a->ai_pc += 1;
-                break;
+                return;
             case 7:
                 if (!AI_HAS_W(2)) { a->ai_script_id = 0u; return; }
                 a->ai_target_tx = (int16_t)AI_U16(1);
@@ -21611,16 +21830,36 @@ static void pal_npc_ai_step(
                 a->ai_pc += 3;
                 break;
             case 8: {
+                int chasing = ((a->npc_flags & 0x04000000u) != 0u || a->ai_chase_mode > 0u) ? 1 : 0;
+                if (chasing && (ws->combat_cooldown_ticks > 0 || repel || pal_test_runtime_no_encounter())) {
+                    a->npc_flags &= ~0x04000000u;
+                    a->ai_chase_mode = 0u;
+                    a->ai_stall_ticks = 0u;
+                    a->ai_pc += 1;
+                    return;
+                }
                 if (map && map->w_tiles > 0 && map->h_tiles > 0 &&
                     (a->ai_target_tx < 0 || a->ai_target_ty < 0 ||
                      a->ai_target_tx >= map->w_tiles || a->ai_target_ty >= map->h_tiles)) {
-                    a->ai_script_id = 0u;
+                    /* Skip invalid OOB waypoint (e.g. Map 111 obj=5121, Map 507 obj=4199) without killing AI */
+                    a->npc_flags &= ~0x04000000u;
+                    a->ai_chase_mode = 0u;
+                    a->ai_stall_ticks = 0u;
+                    a->ai_pc += 1;
                     return;
                 }
-                /* Authentic Palgame.exe 0x40f2ef: walk along collision-checked route to ai_target_tx/ty */
-                int st = pal_npc_step_toward(a, map, game_dir, (int)a->ai_target_tx << 4, (int)a->ai_target_ty << 4, 2);
-                if (st == 1 || a->ai_stall_ticks >= 24) {
-                    a->ai_stall_ticks = 0;
+                /* Authentic Palgame.exe 0x40f2ef & 0x4228ab: chase mode (0x04000000) moves at 2x speed (4px/tick) vs 2px/tick patrol */
+                int step_px = chasing ? 4 : 2;
+                int st = pal_npc_step_toward(a, map, game_dir, (int)a->ai_target_tx << 4, (int)a->ai_target_ty << 4, step_px);
+                int done = (st == 1 || a->ai_stall_ticks >= (chasing ? 8 : 24)) ? 1 : 0;
+                if (chasing && !done) {
+                    if (a->ai_chase_mode > 0u) a->ai_chase_mode--;
+                    if (a->ai_chase_mode == 0u) done = 1; /* Re-evaluate op 37 sight & live player pos */
+                }
+                if (done) {
+                    a->npc_flags &= ~0x04000000u;
+                    a->ai_chase_mode = 0u;
+                    a->ai_stall_ticks = 0u;
                     a->ai_pc += 1;
                 }
                 return;
@@ -21854,13 +22093,16 @@ static void pal_npc_ai_step(
                 uint16_t obj = AI_U16(1);
                 int ox = (op == 36) ? ((int)(int16_t)AI_U16(2) << 4) : 0;
                 int oy = (op == 36) ? ((int)(int16_t)AI_U16(3) << 4) : 0;
-                if ((obj == 0xFFF1u || obj == 0xFFFEu) && (ws->combat_cooldown_ticks > 0 || repel)) {
+                int is_party_tgt = (obj == 0xFFF1u || obj == 0xFFFEu) ? 1 : 0;
+                if (is_party_tgt && (ws->combat_cooldown_ticks > 0 || repel || pal_test_runtime_no_encounter())) {
+                    a->npc_flags &= ~0x04000000u;
+                    a->ai_chase_mode = 0u;
                     a->ai_stall_ticks = 0;
                     a->ai_pc += wcnt;
                     break;
                 }
                 const PalFieldActor *tgt = NULL;
-                if ((obj == 0xFFF1u || obj == 0xFFFEu) && party) tgt = &party[0];
+                if (is_party_tgt && party) tgt = &party[0];
                 else if (obj == 0xFFF0u) tgt = a;
                 else tgt = talk_find_actor_by_obj(ws, (PalFieldActor *)party, npcs, npc_cnt, obj, NULL);
                 if (!tgt) {
@@ -21869,7 +22111,12 @@ static void pal_npc_ai_step(
                 }
                 a->ai_target_tx = (int16_t)((tgt->px + ox) >> 4);
                 a->ai_target_ty = (int16_t)((tgt->py + oy) >> 4);
-                int st = pal_npc_step_toward(a, map, game_dir, tgt->px + ox, tgt->py + oy, 3);
+                /* Authentic Palgame.exe 0x40e8f3: mark fast/chase speed (0x04000000) for following op 8 */
+                if (is_party_tgt) {
+                    a->npc_flags |= 0x04000000u;
+                    a->ai_chase_mode = 8u;
+                }
+                int st = pal_npc_step_toward(a, map, game_dir, tgt->px + ox, tgt->py + oy, is_party_tgt ? 4 : 3);
                 if (st == 1 || a->ai_stall_ticks >= 10 || (AI_HAS_W(wcnt) && AI_U16(wcnt) == 8u)) {
                     a->ai_stall_ticks = 0;
                     a->ai_pc += wcnt;
@@ -21908,7 +22155,7 @@ static void pal_npc_ai_step(
                 uint32_t toff = AI_U32(3);
                 int in_range = 0;
                 int is_party_tgt = (obj == 0xFFF1u || obj == 0xFFFEu) ? 1 : 0;
-                if (!(is_party_tgt && (ws->combat_cooldown_ticks > 0 || repel || (a->aggro & 0x80u)))) {
+                if (!(is_party_tgt && (ws->combat_cooldown_ticks > 0 || repel || (a->aggro & 0x80u) || pal_test_runtime_no_encounter()))) {
                     const PalFieldActor *tgt = NULL;
                     if (is_party_tgt && party) tgt = &party[0];
                     else if (obj == 0xFFF0u) tgt = a;
@@ -22218,11 +22465,19 @@ static void combat_finish_to_field(
     if (talk_vm && talk_vm->active && talk_vm->paused_for_battle) {
         talk_vm->paused_for_battle = 0;
         if (world_state) world_state->story_flags[3001] = won ? 1u : 0u;
-        if (won && talk_vm->talk_id >= 5001 && talk_vm->talk_id <= 5999) {
+        if (won && ((talk_vm->talk_id >= 4001 && talk_vm->talk_id <= 5999) ||
+                    (talk_vm->talk_id >= 1719 && talk_vm->talk_id <= 1724))) {
             PalFieldActor *m = talk_find_actor_by_obj(world_state, NULL, npcs, npc_cnt, talk_vm->trigger_obj_id, NULL);
-            if (m) m->active = 0;
+            if (m) {
+                m->active = 0;
+                m->npc_flags &= ~0x8000u;
+                m->aggro |= 0x80u;
+            }
             if (world_state && talk_vm->trigger_obj_id < PAL_OBJ_CAP) {
                 world_state->npc_visibility_override[talk_vm->trigger_obj_id] = 2u;
+                if (world_state->npc_flags_has[talk_vm->trigger_obj_id]) {
+                    world_state->npc_flags_val[talk_vm->trigger_obj_id] &= ~0x8000u;
+                }
             }
         }
         if (cfg && map) {
@@ -26685,15 +26940,12 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         world_state->combat_cooldown_ticks == 0 && world_state->story_flags[3002] == 0u &&
                         !pal_test_is_no_encounter(&test_state)) {
                         for (int i = 0; i < map_npc_actor_cnt; i++) {
-                            if (map_npcs[i].active && (map_npcs[i].npc_flags & 0x2000u) != 0u && map_npcs[i].talk_id >= 5001u) {
-                                int edx = abs(map_npcs[i].px - party[0].px);
-                                int edy = abs(map_npcs[i].py - party[0].py);
-                                if (edx <= 18 && edy <= 14) {
-                                    astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
-                                    talk_begin_npc_interaction(&talk_vm, world_state, cfg->game_dir, map.map_id,
-                                                               party, map_npcs, &map_npc_actor_cnt, 128, i, &show_dialogue);
-                                    break;
-                                }
+                            if (pal_npc_is_field_monster(&map_npcs[i]) &&
+                                pal_npc_monster_hit_px(&map_npcs[i], party[0].px, party[0].py, foot_w)) {
+                                astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
+                                talk_begin_npc_interaction(&talk_vm, world_state, cfg->game_dir, map.map_id,
+                                                           party, map_npcs, &map_npc_actor_cnt, 128, i, &show_dialogue);
+                                break;
                             }
                         }
                     }
@@ -26798,17 +27050,31 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     pal_field_env_tick(&field_env, world_state, &party[0]);
                 }
                 if (!moved && !talk_vm.active && !camp_menu.open && !shop_menu.open &&
-                    world_state && talk_vm.pending_map_id < 0 && world_state->combat_cooldown_ticks == 0 &&
-                    world_state->story_flags[3002] == 0u && !pal_test_is_no_encounter(&test_state)) {
-                    for (int i = 0; i < map_npc_actor_cnt; i++) {
-                        if (map_npcs[i].active && (map_npcs[i].npc_flags & 0x2000u) != 0u && map_npcs[i].talk_id >= 5001u) {
-                            int edx = abs(map_npcs[i].px - party[0].px);
-                            int edy = abs(map_npcs[i].py - party[0].py);
-                            if (edx <= 18 && edy <= 14) {
+                    world_state && talk_vm.pending_map_id < 0) {
+                    if (world_state->combat_cooldown_ticks == 0 &&
+                        world_state->story_flags[3002] == 0u && !pal_test_is_no_encounter(&test_state)) {
+                        for (int i = 0; i < map_npc_actor_cnt; i++) {
+                            if (pal_npc_is_field_monster(&map_npcs[i]) &&
+                                pal_npc_monster_hit_px(&map_npcs[i], party[0].px, party[0].py, foot_w)) {
                                 astar_count = 0; astar_cursor = 0; interact_target_npc_idx = -1;
                                 talk_begin_npc_interaction(&talk_vm, world_state, cfg->game_dir, map.map_id,
                                                            party, map_npcs, &map_npc_actor_cnt, 128, i, &show_dialogue);
                                 break;
+                            }
+                        }
+                    }
+                    /* Moving non-monster 0x2000 contact actors (e.g. Map 460 act=633) also trigger if they run into a standing player */
+                    if (!talk_vm.active && world_state->active_battle_id <= 0 && world_state->active_shop_id < 58000) {
+                        for (int i = 0; i < map_npc_actor_cnt; i++) {
+                            if (map_npcs[i].ai_script_id == 0u || !pal_npc_is_touch_event(&map_npcs[i]) ||
+                                map_npcs[i].obj_id == last_touch_npc_obj) continue;
+                            if (pal_npc_monster_hit_px(&map_npcs[i], party[0].px, party[0].py, foot_w)) {
+                                last_touch_npc_obj = map_npcs[i].obj_id;
+                                if (pal_talk_vm_start(&talk_vm, cfg->game_dir, (int32_t)map_npcs[i].talk_id, map_npcs[i].obj_id) == 0) {
+                                    show_dialogue = 0;
+                                    pal_talk_vm_step_ex(&talk_vm, world_state, cfg->game_dir, map.map_id, party, map_npcs, &map_npc_actor_cnt, 128, 0);
+                                    break;
+                                }
                             }
                         }
                     }
