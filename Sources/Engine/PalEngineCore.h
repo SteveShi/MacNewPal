@@ -98,7 +98,9 @@ typedef struct {
     int32_t fr_tsw_id;       /* FR operand, e.g. 9054 -> all_sys.tsw slot_id 54 */
     int32_t duration_ticks;  /* DS base duration in 35ms ticks */
     int32_t delay_rem;       /* Countdown ticks before advancing */
-    int32_t visible;         /* ON=1, NO=0 */
+    int32_t visible;         /* Always 1 by default (Palgame.exe: 0x4E4F/0x5649 toggle H-flip, not visibility) */
+    int32_t flip_h;          /* 1 = horizontal mirror flip (IV 0x5649 -> [act+0x18]|=1, NO 0x4E4F -> &=~1) */
+    int32_t act_scale_fp;    /* CS (0x5343) sprite scale in 10.10 fixed-point (default 1024 = 1.0x) */
     int32_t blend_mode;      /* 0=normal, 4=additive (MA), 8=half (AH) */
     uint8_t alpha_scale;     /* SG 16-level per-frame alpha (255=opaque) */
     int32_t hit_flag;        /* AT hit trigger count */

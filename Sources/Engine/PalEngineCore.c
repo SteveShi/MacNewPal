@@ -1294,8 +1294,7 @@ static void free_loaded_map(PalLoadedMap *m) {
 
 static int pal_map_scale_row(const PalLoadedMap *m, int row) {
     if (!m || m->scale_mode != 2 || !m->scale_rows || m->scale_count <= 0) return 1024;
-    if (row < 0) row = 0;
-    if (row >= m->scale_count) row = m->scale_count - 1;
+    if (row < 0 || row >= m->scale_count) return 1024; /* Palgame.exe 0x444f15: out-of-range returns [this+0x610] = 1024 */
     return (int)m->scale_rows[row];
 }
 
@@ -1460,7 +1459,7 @@ static void vfs_lookup_map_metadata(
                             nd->talk_id = rd_u16(p + pos + 14);
                             nd->ai_script_id = rd_u16(p + pos + 16);
                             nd->ai_pc = rd_u16(p + pos + 18);
-                            nd->flags = rd_u32(p + pos + 20);
+                            nd->flags = rd_u16(p + pos + 20);
                             nd->sight = (int8_t)p[pos + 24];
                             nd->aggro = p[pos + 25];
                         }
@@ -2583,11 +2582,13 @@ static int apply_act_opcode(PalActVM *vm, const PalActInsn *in) {
         case 0x5344u: /* DS: set base duration ticks (35ms/tick) */
             vm->duration_ticks = in->args[0] > 0 ? in->args[0] : 1;
             return 0;
-        case 0x4E4Fu: /* ON: visible on (clear hidden bit 0) */
+        case 0x4E4Fu: /* NO ('ON'): normal orientation (clear H-flip bit 0, Palgame.exe 0x45c869) */
+            vm->flip_h = 0;
             vm->visible = 1;
             return 0;
-        case 0x5649u: /* IV: visible off / hidden */
-            vm->visible = 0;
+        case 0x5649u: /* IV: invert / horizontal mirror flip (set H-flip bit 0, Palgame.exe 0x45c855) */
+            vm->flip_h = 1;
+            vm->visible = 1;
             return 0;
         case 0x414Du: /* MA: additive glow blend (flag |= 4) */
         case 0x414Eu: /* AN: additive blend */
@@ -2625,16 +2626,15 @@ static int apply_act_opcode(PalActVM *vm, const PalActInsn *in) {
             vm->hitbox_w = in->args[0];
             vm->hitbox_h = in->args[1];
             return 0;
-        case 0x4F58u: /* OX */
-            vm->offset_x = in->args[0];
+        case 0x4F58u: /* OX: writes separate [act+0x62] in Palgame.exe 0x45cc2b; MUST NOT overwrite XY offset_x */
             return 0;
-        case 0x4F59u: /* OY */
-            vm->offset_y = in->args[0];
+        case 0x4F59u: /* OY: writes separate [act+0x64] in Palgame.exe 0x45cc5c; MUST NOT overwrite XY offset_y */
             return 0;
         case 0x524Fu: /* OR: orientation */
             vm->orientation = in->args[0];
             return 0;
-        case 0x5343u: /* CS: sprite display scale */
+        case 0x5343u: /* CS: sprite display scale (10.10 fixed-point, Palgame.exe 0x45ca47) */
+            if (in->args[0] > 0) vm->act_scale_fp = in->args[0];
             return 0;
         case 0x5756u: /* VW: trigger sound wave ID in all.snd */
             vm->last_sfx_id = in->args[0];
@@ -2725,6 +2725,9 @@ static int32_t pal_act_vm_init_with_prefs(
     memset(out_vm, 0, sizeof(*out_vm));
     out_vm->act_slot_id = act_slot_id;
     out_vm->duration_ticks = 1;
+    out_vm->visible = 1;
+    out_vm->flip_h = 0;
+    out_vm->act_scale_fp = 1024;
     out_vm->loop_remaining = 0;
     out_vm->alpha_scale = 255;
 
@@ -4407,14 +4410,17 @@ static void draw_act_sprite_node(SDL_Renderer *renderer, const PalActSpriteNode 
     fi %= node->sprite.nframes;
     SDL_Texture *tex = node->sprite.frames[fi];
     if (!tex) return;
+    float fw = 0.0f, fh = 0.0f;
+    pal_sprite_frame_size(&node->sprite, fi, &fw, &fh);
     SDL_SetTextureBlendMode(tex, node->vm.blend_mode == 4 ? SDL_BLENDMODE_ADD : SDL_BLENDMODE_BLEND);
     SDL_FRect dst = {
         node->base_x + (float)node->vm.offset_x,
         node->base_y + (float)node->vm.offset_y,
-        (float)node->sprite.w,
-        (float)node->sprite.h
+        fw,
+        fh
     };
-    SDL_RenderTexture(renderer, tex, NULL, &dst);
+    SDL_RenderTextureRotated(renderer, tex, NULL, &dst, 0.0, NULL,
+                             node->vm.flip_h ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
 }
 
 #define PAL_SFX_VOICES 12
@@ -7715,10 +7721,11 @@ static void pal_init_npc_actor_from_def(
     a->backup_dir = eff_dir;
     if (ws && oid < PAL_OBJ_CAP && ws->npc_ai_override[oid] != 0u) {
         a->ai_script_id = (ws->npc_ai_override[oid] == 0xFFFFu) ? 0u : ws->npc_ai_override[oid];
+        a->ai_pc = 0;
     } else {
         a->ai_script_id = nd->ai_script_id;
+        a->ai_pc = (a->ai_script_id > 0u) ? (int32_t)nd->ai_pc : 0; /* Palgame.exe 0x41a582 */
     }
-    a->ai_pc = 0;
     a->ai_wait_ticks = 0;
     a->sight = nd->sight;
     a->aggro = nd->aggro;
@@ -7767,7 +7774,23 @@ static int pal_field_populate_map_npcs(
             ws->npc_pos_map[nd->obj_id] != map->map_id) {
             continue;
         }
-        pal_init_npc_actor_from_def(&npcs[cnt++], nd, ws, game_dir, map->map_id);
+        PalFieldActor *na = &npcs[cnt++];
+        pal_init_npc_actor_from_def(na, nd, ws, game_dir, map->map_id);
+        /* Authentic Palgame.exe 0x41a425..0x41a46e: clamp out-of-bounds (tx > w_tiles || ty > h_tiles) to (w-1, h-1) */
+        if (map->w_tiles > 0 && map->h_tiles > 0) {
+            int ntx = na->px >> 4;
+            int nty = na->py >> 4;
+            if (ntx > map->w_tiles || nty > map->h_tiles) {
+                ntx = map->w_tiles - 1;
+                nty = map->h_tiles - 1;
+                na->px = ntx << 4;
+                na->py = nty << 4;
+                na->home_tx = (int16_t)ntx;
+                na->home_ty = (int16_t)nty;
+                na->ai_target_tx = (int16_t)ntx;
+                na->ai_target_ty = (int16_t)nty;
+            }
+        }
     }
     if (ws && ws->db && ws->db->global_npcs) {
         for (int32_t g = 0; g < ws->db->global_npc_count && cnt < max_npcs; g++) {
@@ -8206,18 +8229,35 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x28u: { /* Teleport actor on current map to tile (tx, ty) */
+            case 0x28u: { /* Teleport actor on current map (or off-map persistent slot 0, Palgame.exe 0x448dd9) to tile (tx, ty) */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 int tx = (int)rd_u16(ins + 4u);
                 int ty = (int)rd_u16(ins + 6u);
                 int is_p = 0;
                 PalFieldActor *a = talk_find_actor_by_obj(ws, party, npcs, npc_cnt, obj, &is_p);
-                if (!is_p && obj < PAL_OBJ_CAP && cur_map_id > 0u &&
-                    (a != NULL || npcs == NULL) &&
-                    (ws->npc_pos_map[obj] == 0u || ws->npc_pos_map[obj] == (uint16_t)cur_map_id)) {
-                    ws->npc_pos_map[obj] = (uint16_t)cur_map_id;
-                    ws->npc_pos_tx[obj] = (int16_t)tx;
-                    ws->npc_pos_ty[obj] = (int16_t)ty;
+                if (!is_p && obj < PAL_OBJ_CAP && ws) {
+                    if (a != NULL && cur_map_id > 0u &&
+                        (ws->npc_pos_map[obj] == 0u || ws->npc_pos_map[obj] == (uint16_t)cur_map_id)) {
+                        ws->npc_pos_map[obj] = (uint16_t)cur_map_id;
+                        ws->npc_pos_tx[obj] = (int16_t)tx;
+                        ws->npc_pos_ty[obj] = (int16_t)ty;
+                    } else if (a == NULL) {
+                        uint16_t eff_mid = ws->npc_pos_map[obj];
+                        if (eff_mid == 0u && ws->db) {
+                            for (int32_t g = 0; g < ws->db->global_npc_count; g++) {
+                                if (ws->db->global_npcs[g].def.obj_id == obj) {
+                                    eff_mid = ws->db->global_npcs[g].orig_map_id;
+                                    break;
+                                }
+                            }
+                        }
+                        if (eff_mid == 0u && npcs == NULL) eff_mid = (uint16_t)cur_map_id;
+                        if (eff_mid > 0u) {
+                            ws->npc_pos_map[obj] = eff_mid;
+                            ws->npc_pos_tx[obj] = (int16_t)tx;
+                            ws->npc_pos_ty[obj] = (int16_t)ty;
+                        }
+                    }
                 }
                 if (a) {
                     a->px = tx << 4;
@@ -8228,9 +8268,10 @@ static void pal_talk_vm_step_ex(
                 break;
             }
 
-            case 0x3Eu: { /* Relocate NPC: [obj, map_id, unk2, tx, ty, act_id, sub_state, dir] */
+            case 0x3Eu: { /* Relocate NPC: [obj, map_id, ai_script_id, tx, ty, act_id, sub_state, dir] (Palgame.exe 0x449fa0..0x44a224) */
                 uint16_t obj = talk_resolve_obj_id(vm, rd_u16(ins + 2u));
                 uint16_t mid = rd_u16(ins + 4u);
+                uint16_t raw_ai = rd_u16(ins + 6u);
                 uint16_t raw_tx = rd_u16(ins + 8u);
                 uint16_t raw_ty = rd_u16(ins + 10u);
                 uint16_t raw_act = rd_u16(ins + 12u);
@@ -8239,12 +8280,13 @@ static void pal_talk_vm_step_ex(
                 uint16_t eff_mid = (mid != 0xFFFFu && mid > 0u) ? mid : (uint16_t)cur_map_id;
                 const PalMapNpcDef *gd = ws->db ? pal_db_find_global_npc(ws->db, obj, eff_mid) : NULL;
                 int party_pos = (party != NULL && (raw_tx == 0xFFFFu || raw_ty == 0xFFFFu));
+                /* Palgame.exe 0x44a178 / 0x44a1b3: tx/ty == 0xFFFF ALWAYS substitutes leader's tile regardless of mid */
                 int16_t tx = (raw_tx != 0xFFFFu) ? (int16_t)raw_tx
-                             : ((mid == 0xFFFFu && party) ? (int16_t)(party[0].px >> 4)
+                             : (party ? (int16_t)(party[0].px >> 4)
                              : (obj < PAL_OBJ_CAP && ws->npc_pos_map[obj] > 0u ? ws->npc_pos_tx[obj]
                              : (gd ? (int16_t)gd->tx : 0)));
                 int16_t ty = (raw_ty != 0xFFFFu) ? (int16_t)raw_ty
-                             : ((mid == 0xFFFFu && party) ? (int16_t)(party[0].py >> 4)
+                             : (party ? (int16_t)(party[0].py >> 4)
                              : (obj < PAL_OBJ_CAP && ws->npc_pos_map[obj] > 0u ? ws->npc_pos_ty[obj]
                              : (gd ? (int16_t)gd->ty : 0)));
                 int has_map_or_pos = (mid != 0xFFFFu || raw_tx != 0xFFFFu || raw_ty != 0xFFFFu || party_pos);
@@ -8255,7 +8297,9 @@ static void pal_talk_vm_step_ex(
                         ws->npc_pos_tx[obj] = tx;
                         ws->npc_pos_ty[obj] = ty;
                     }
-                    if (mid != 0xFFFFu && mid > 0u && (uint32_t)mid != cur_map_id) {
+                    if (raw_ai != 0xFFFFu) {
+                        ws->npc_ai_override[obj] = (raw_ai == 0u) ? 0xFFFFu : raw_ai;
+                    } else if (mid != 0xFFFFu && mid > 0u && (uint32_t)mid != cur_map_id) {
                         ws->npc_ai_override[obj] = 0xFFFFu;
                     }
                     if (raw_dir != 0xFFFFu) {
@@ -8284,6 +8328,12 @@ static void pal_talk_vm_step_ex(
                             a->py = (int)ty << 4;
                         }
                         a->script_moving = 0;
+                        if (raw_ai != 0xFFFFu) {
+                            a->ai_script_id = raw_ai;
+                            a->ai_pc = 0;
+                            a->ai_wait_ticks = 0;
+                            a->ai_stall_ticks = 0;
+                        }
                         if (raw_act != 0xFFFFu && raw_act > 0u) a->act_id = raw_act;
                         if (raw_sub != 0xFFFFu) a->orig_sub_state = raw_sub;
                         if (raw_dir != 0xFFFFu) a->dir = (raw_dir < 126u) ? (int)raw_dir : (int)(raw_dir & 7u);
@@ -9484,6 +9534,10 @@ static void pal_talk_vm_advance_input_ex(
 
 static void step_script_moving_actor(PalFieldActor *a, const char *game_dir, int is_party, int rem_ticks);
 static const char *pal_resolve_map_bgm(const PalTalkWorldState *ws, const PalLoadedMap *map);
+static int pal_npc_step_toward(
+    PalFieldActor *a, const PalLoadedMap *map, const char *game_dir,
+    int target_px, int target_py, int step_px
+);
 static void pal_npc_ai_step(
     PalFieldActor *a, const PalLoadedMap *map, PalTalkWorldState *ws, const char *game_dir,
     const PalFieldActor *party, PalFieldActor *npcs, int npc_cnt
@@ -9824,11 +9878,12 @@ int32_t pal_talk_vm_probe_m3(const char *game_dir, PalTalkM3ProbeInfo *out_info)
                 int r3 = vfs_load_lmf_map_by_id(game_dir, 2u,   NULL, SDL_SCALEMODE_NEAREST, &ms2);
                 if (r1 == 0 && r2 == 0 && r3 == 0 &&
                     ms501.scale_mode == 2 && ms502.scale_mode == 2 && ms2.scale_mode == 2) {
-                    int s501_top = pal_map_scale_fp(&ms501, 0);
+                    int s501_oob = pal_map_scale_fp(&ms501, 0);
+                    int s501_top = pal_map_scale_fp(&ms501, 16);
                     int s501_bot = pal_map_scale_fp(&ms501, 400);
                     int s502 = pal_map_scale_fp(&ms502, 448);
                     int s2 = pal_map_scale_fp(&ms2, 400);
-                    ok_map_scale = (s501_top < s501_bot && s501_top == 112 && s502 == 624 && s2 == 816) ? 1 : 0;
+                    ok_map_scale = (s501_oob == 1024 && s501_top < s501_bot && s501_top == 112 && s502 == 624 && s2 == 816) ? 1 : 0;
                 }
                 free_loaded_map(&ms501);
                 free_loaded_map(&ms502);
@@ -10234,6 +10289,7 @@ typedef struct {
     int foot_px;
     int foot_py;
     int scale_fp;
+    int hflip;
     SDL_Texture *tex;
     const PalFieldActor *actor;
     int is_leader;
@@ -10244,7 +10300,10 @@ static int cmp_render_item(const void *a, const void *b) {
     const PalRenderItem *ra = (const PalRenderItem *)a;
     const PalRenderItem *rb = (const PalRenderItem *)b;
     if (ra->sort_y != rb->sort_y) return (ra->sort_y < rb->sort_y) ? -1 : 1;
-    /* Tie-break slightly: map props before actors at exact same Y? Or kind order */
+    /* Authentic Palgame.exe 0x41e640: on identical Y, higher obj_id draws first (FG props have obj_id=0xFFFF) */
+    uint32_t oa = (ra->kind == PAL_RENDER_ACTOR && ra->actor) ? (uint32_t)ra->actor->obj_id : 0xFFFFu;
+    uint32_t ob = (rb->kind == PAL_RENDER_ACTOR && rb->actor) ? (uint32_t)rb->actor->obj_id : 0xFFFFu;
+    if (oa != ob) return (oa > ob) ? -1 : 1;
     return (int)ra->kind - (int)rb->kind;
 }
 
@@ -10255,11 +10314,20 @@ static void pal_push_actor_render_item(
     PalTswCache *tsw_cache, int is_party, int is_leader
 ) {
     if (!items || !io_cnt || *io_cnt >= cap || !actor || !actor->active || !actor->vm_ok || !actor->vm.visible) return;
+    /* Authentic Palgame.exe 0x42499c: (flags & 0x8400) == 0x8000; bit 0x0400 suppresses rendering */
+    if (!is_party && (actor->npc_flags & 0x0400u) != 0u) return;
     PalLoadedSprite *sp = tsw_cache_get(tsw_cache, game_dir, renderer, scale_mode, actor->vm.fr_tsw_id);
     if (!sp || sp->nframes <= 0) return;
     int fi = actor->vm.frame_index;
     if (fi < 0) fi = 0;
     fi %= sp->nframes;
+
+    /* Per-frame dimensions (Palgame.exe 0x424cc2..0x424cd0 uses current frame's w/h, NOT frame 0) */
+    float f_fw = 0.0f, f_fh = 0.0f;
+    pal_sprite_frame_size(sp, fi, &f_fw, &f_fh);
+    int fw = (int)f_fw;
+    int fh = (int)f_fh;
+    if (fw <= 0 || fh <= 0) return;
 
     /* Scale sprite around tile center (px + 16, py + 8) when obj_id != -1 and !(flags & 8) */
     int scale_fp = 1024;
@@ -10267,23 +10335,36 @@ static void pal_push_actor_render_item(
         scale_fp = pal_map_scale_fp(map, actor->py);
         if (scale_fp <= 0) scale_fp = 1024;
     }
-    int pv_x = actor->vm.offset_x + 16;
+    if (actor->vm.act_scale_fp > 0 && actor->vm.act_scale_fp != 1024) {
+        scale_fp = (scale_fp * actor->vm.act_scale_fp) >> 10;
+        if (scale_fp < 64) scale_fp = 64;
+    }
+    int hflip = actor->vm.flip_h ? 1 : 0;
+    /* Authentic Palgame.exe 0x424c6f..0x424cfa & 0x434712..0x434844:
+     * normal:  pv_x = offset_x + 16,           draw_x = (px + 16) - ((pv_x * scale) >> 10)
+     * hflip:   pv_x = fw - (offset_x + 16),    draw_x = (px - offset_x) + pv_x - ((pv_x * scale) >> 10) */
+    int pv_x = hflip ? (fw - (actor->vm.offset_x + 16)) : (actor->vm.offset_x + 16);
     int pv_y = actor->vm.offset_y + 8;
-    int draw_w = (sp->w * scale_fp) >> 10;
-    int draw_h = (sp->h * scale_fp) >> 10;
-    if (sp->w > 0 && draw_w < 1) draw_w = 1;
-    if (sp->h > 0 && draw_h < 1) draw_h = 1;
+    int draw_w = (fw * scale_fp) >> 10;
+    int draw_h = (fh * scale_fp) >> 10;
+    if (draw_w < 1) draw_w = 1;
+    if (draw_h < 1) draw_h = 1;
 
     PalRenderItem *it = &items[(*io_cnt)++];
     it->kind = PAL_RENDER_ACTOR;
-    it->sort_y = actor->py + 15;
-    it->draw_x = (actor->px + 16) - ((pv_x * scale_fp) >> 10);
+    /* Authentic Palgame.exe 0x41e594: actors sort by [actor+0x06] = actor->py (NOT py + 15),
+     * so an actor on tile row ty stands BEHIND FG props at sort_y = ty*16 + 15 and IN FRONT on row ty+1. */
+    it->sort_y = actor->py;
+    it->draw_x = hflip
+        ? ((actor->px - actor->vm.offset_x) + pv_x - ((pv_x * scale_fp) >> 10))
+        : ((actor->px + 16) - ((pv_x * scale_fp) >> 10));
     it->draw_y = (actor->py + 8) - ((pv_y * scale_fp) >> 10);
     it->draw_w = draw_w;
     it->draw_h = draw_h;
     it->foot_px = actor->px + 16;
     it->foot_py = actor->py + 10;
     it->scale_fp = scale_fp;
+    it->hflip = hflip;
     it->tex = sp->frames[fi];
     it->actor = actor;
     it->is_leader = is_leader;
@@ -10309,14 +10390,16 @@ static void pal_draw_actor_shadow(
     float sh_h = (float)it->draw_h * kScaleY[sdir];
     float shear = (float)it->draw_h * kShearX[sdir];
     float top_y = foot_y - sh_h;
+    float u0 = it->hflip ? 1.0f : 0.0f;
+    float u1 = it->hflip ? 0.0f : 1.0f;
 
     SDL_Vertex verts[4];
     memset(verts, 0, sizeof(verts));
     SDL_FColor sc = {0.0f, 0.0f, 0.0f, 0.40f};
-    verts[0].position.x = x0 + shear; verts[0].position.y = top_y;  verts[0].tex_coord.x = 0.0f; verts[0].tex_coord.y = 0.0f; verts[0].color = sc;
-    verts[1].position.x = x1 + shear; verts[1].position.y = top_y;  verts[1].tex_coord.x = 1.0f; verts[1].tex_coord.y = 0.0f; verts[1].color = sc;
-    verts[2].position.x = x1;         verts[2].position.y = foot_y; verts[2].tex_coord.x = 1.0f; verts[2].tex_coord.y = 1.0f; verts[2].color = sc;
-    verts[3].position.x = x0;         verts[3].position.y = foot_y; verts[3].tex_coord.x = 0.0f; verts[3].tex_coord.y = 1.0f; verts[3].color = sc;
+    verts[0].position.x = x0 + shear; verts[0].position.y = top_y;  verts[0].tex_coord.x = u0; verts[0].tex_coord.y = 0.0f; verts[0].color = sc;
+    verts[1].position.x = x1 + shear; verts[1].position.y = top_y;  verts[1].tex_coord.x = u1; verts[1].tex_coord.y = 0.0f; verts[1].color = sc;
+    verts[2].position.x = x1;         verts[2].position.y = foot_y; verts[2].tex_coord.x = u1; verts[2].tex_coord.y = 1.0f; verts[2].color = sc;
+    verts[3].position.x = x0;         verts[3].position.y = foot_y; verts[3].tex_coord.x = u0; verts[3].tex_coord.y = 1.0f; verts[3].color = sc;
     static const int kIdx[6] = {0, 1, 2, 0, 2, 3};
 
     SDL_SetTextureBlendMode(it->tex, SDL_BLENDMODE_BLEND);
@@ -10342,7 +10425,9 @@ static void pal_draw_render_items_pass2(
             (float)it->draw_h
         };
         if (it->kind == PAL_RENDER_ACTOR && it->actor) {
-            if ((it->actor->npc_flags & 0x0400u) == 0u) {
+            /* Authentic Palgame.exe 0x424bcd: cast shadow ONLY when bit 0x0100 is set (party init = 0xD100) */
+            if ((it->is_party && (it->actor->npc_flags == 0u || (it->actor->npc_flags & 0x0100u) != 0u)) ||
+                (!it->is_party && (it->actor->npc_flags & 0x0100u) != 0u)) {
                 pal_draw_actor_shadow(renderer, it, map, cam_x, cam_y);
             }
             Uint8 mr = 255u, mg = 255u, mb = 255u;
@@ -10363,17 +10448,24 @@ static void pal_draw_render_items_pass2(
                     if (tint_bits & 0x4u) { mr = pal_clamp_u8_int((int)mr - 40); mg = pal_clamp_u8_int((int)mg - 40); }
                 }
             }
+            SDL_FlipMode flip_mode = it->hflip ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
+            uint8_t act_alpha = it->actor->vm.alpha_scale;
+            if (it->actor->vm.blend_mode == 8) act_alpha = (uint8_t)(act_alpha / 2u);
+            SDL_BlendMode act_blend = (it->actor->vm.blend_mode == 4) ? SDL_BLENDMODE_ADD : SDL_BLENDMODE_BLEND;
+            SDL_SetTextureBlendMode(it->tex, act_blend);
+            SDL_SetTextureAlphaMod(it->tex, act_alpha);
             SDL_SetTextureColorMod(it->tex, mr, mg, mb);
-            SDL_RenderTexture(renderer, it->tex, NULL, &dst);
-            if (map && (map->amb_r > 0 || map->amb_g > 0 || map->amb_b > 0)) {
+            SDL_RenderTextureRotated(renderer, it->tex, NULL, &dst, 0.0, NULL, flip_mode);
+            if (act_blend == SDL_BLENDMODE_BLEND && map && (map->amb_r > 0 || map->amb_g > 0 || map->amb_b > 0)) {
                 SDL_SetTextureBlendMode(it->tex, SDL_BLENDMODE_ADD);
                 SDL_SetTextureColorMod(it->tex,
                     pal_clamp_u8_int(map->amb_r * 16),
                     pal_clamp_u8_int(map->amb_g * 16),
                     pal_clamp_u8_int(map->amb_b * 16));
-                SDL_RenderTexture(renderer, it->tex, NULL, &dst);
-                SDL_SetTextureBlendMode(it->tex, SDL_BLENDMODE_BLEND);
+                SDL_RenderTextureRotated(renderer, it->tex, NULL, &dst, 0.0, NULL, flip_mode);
             }
+            SDL_SetTextureBlendMode(it->tex, SDL_BLENDMODE_BLEND);
+            SDL_SetTextureAlphaMod(it->tex, 255);
             SDL_SetTextureColorMod(it->tex, 255, 255, 255);
 
             if (it->actor->fx_vm_ok && it->actor->fx_vm.visible && it->actor->fx_vm.fr_tsw_id > 0 && tsw_cache) {
@@ -16215,7 +16307,7 @@ static void pal_draw_sprite_vm(
     float anchor_x, float anchor_y, uint8_t base_alpha, uint8_t mod_r, uint8_t mod_g, uint8_t mod_b,
     int scale_800_to_640
 ) {
-    if (!renderer || !sp || !vm || sp->nframes <= 0) return;
+    if (!renderer || !sp || !vm || !vm->visible || sp->nframes <= 0) return;
     int fi = vm->frame_index;
     if (fi < 0) fi = 0;
     fi %= sp->nframes;
@@ -16249,7 +16341,8 @@ static void pal_draw_sprite_vm(
     SDL_SetTextureBlendMode(tex, bmode);
     SDL_SetTextureColorMod(tex, mod_r, mod_g, mod_b);
     SDL_SetTextureAlphaMod(tex, a);
-    SDL_RenderTexture(renderer, tex, NULL, &dst);
+    SDL_RenderTextureRotated(renderer, tex, NULL, &dst, 0.0, NULL,
+                             vm->flip_h ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
     SDL_SetTextureAlphaMod(tex, 255);
     SDL_SetTextureColorMod(tex, 255, 255, 255);
     SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
@@ -20901,13 +20994,158 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
         }
     }
 
-    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok || !early_sidequests_ok || !mid_sidequests_ok || !late_sidequests_ok) {
-        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d early_sidequests_ok=%d mid_sidequests_ok=%d late_sidequests_ok=%d\n",
-                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok, early_sidequests_ok, mid_sidequests_ok, late_sidequests_ok);
+    int npc_all_scenes_audit_ok = 0;
+    {
+        /* Audit ALL 460 NPC maps / 4,115 map NPCs against Palgame.exe invariants */
+        uint8_t seen_maps[1024] = {0};
+        int unique_npc_maps = 0;
+        int total_npcs = 0;
+        int bucket1_cnt = 0, bucket2_cnt = 0, shadow_cnt = 0, hidden_cnt = 0;
+        int iv_visible_cnt = 0, invisible_vm_cnt = 0;
+        int oxoy_ok_cnt = 0, cs_512_ok = 0;
+        int map8_iv_ok = 0;
+        int flags_u16_ok = 1;
+
+        memset(ws, 0, sizeof(*ws));
+        ws->db = db;
+        for (int32_t g = 0; g < db->global_npc_count; g++) {
+            uint16_t mid = db->global_npcs[g].orig_map_id;
+            const PalMapNpcDef *nd = &db->global_npcs[g].def;
+            total_npcs++;
+            if (mid < 1024u && !seen_maps[mid]) {
+                seen_maps[mid] = 1u;
+                unique_npc_maps++;
+            }
+            if (nd->flags > 0xFFFFu) flags_u16_ok = 0;
+            if ((nd->flags & 3u) == 1u) bucket1_cnt++;
+            else if ((nd->flags & 3u) == 2u) bucket2_cnt++;
+            if ((nd->flags & 0x0100u) != 0u) shadow_cnt++;
+            if ((nd->flags & 0x0400u) != 0u) hidden_cnt++;
+
+            PalFieldActor na;
+            pal_init_npc_actor_from_def(&na, nd, ws, game_dir, mid);
+            if (na.vm_ok) {
+                if (!na.vm.visible) invisible_vm_cnt++;
+                if (na.vm.visible && na.vm.flip_h) iv_visible_cnt++;
+                if (mid == 8u && (nd->obj_id == 2011u || nd->obj_id == 9018u || nd->obj_id == 2036u) &&
+                    na.vm.visible == 1 && na.vm.flip_h == 1) {
+                    map8_iv_ok++;
+                }
+                if ((mid == 192u || mid == 193u) && nd->act_id == 630u && nd->sub_state == 8u && nd->dir == 5u &&
+                    na.vm.offset_x == 56 && na.vm.offset_y == 148) {
+                    oxoy_ok_cnt++;
+                }
+            }
+            if (mid == 205u && nd->obj_id == 3545u) {
+                ws->npc_visibility_override[3545] = 1u;
+                PalFieldActor na_cs;
+                pal_init_npc_actor_from_def(&na_cs, nd, ws, game_dir, mid);
+                ws->npc_visibility_override[3545] = 0u;
+                if (na_cs.vm_ok && na_cs.vm.act_scale_fp == 512) {
+                    cs_512_ok = 1;
+                }
+            }
+        }
+
+        /* Map 507 out-of-bounds NPC obj=4199 clamped to (79, 89) inside 80x90 map */
+        int clamp507_ok = 0;
+        {
+            PalLoadedMap m507 = {0};
+            m507.map_id = 507u;
+            m507.w_tiles = 80;
+            m507.h_tiles = 90;
+            vfs_lookup_map_metadata(game_dir, 507u, NULL, &m507);
+            PalFieldActor npcs507[128];
+            int c507 = pal_field_populate_map_npcs(&m507, ws, game_dir, npcs507, 128);
+            for (int i = 0; i < c507; i++) {
+                if (npcs507[i].obj_id == 4199u &&
+                    (npcs507[i].px >> 4) == 79 && (npcs507[i].py >> 4) == 89) {
+                    clamp507_ok = 1;
+                }
+            }
+            free_loaded_map(&m507);
+        }
+
+        /* Depth-sort & tie-break + out-of-range scale_row fallback */
+        int sort_ok = 0;
+        {
+            PalFieldActor a_row20 = {0}, a_row21 = {0};
+            a_row20.obj_id = 100u; a_row20.py = 20 << 4;
+            a_row21.obj_id = 100u; a_row21.py = 21 << 4;
+            PalRenderItem it_fg = {0}, it_r20 = {0}, it_r21 = {0}, it_tie_lo = {0}, it_tie_hi = {0};
+            it_fg.kind = PAL_RENDER_FG_INST; it_fg.sort_y = (20 << 4) + 15;
+            it_r20.kind = PAL_RENDER_ACTOR;  it_r20.sort_y = a_row20.py; it_r20.actor = &a_row20;
+            it_r21.kind = PAL_RENDER_ACTOR;  it_r21.sort_y = a_row21.py; it_r21.actor = &a_row21;
+            PalFieldActor a_lo = {0}, a_hi = {0};
+            a_lo.obj_id = 10u; a_hi.obj_id = 50u;
+            it_tie_lo.kind = PAL_RENDER_ACTOR; it_tie_lo.sort_y = 320; it_tie_lo.actor = &a_lo;
+            it_tie_hi.kind = PAL_RENDER_ACTOR; it_tie_hi.sort_y = 320; it_tie_hi.actor = &a_hi;
+            uint32_t srows[3] = {800u, 900u, 1000u};
+            PalLoadedMap sm = {0};
+            sm.scale_mode = 2; sm.scale_count = 3; sm.scale_rows = srows;
+            sort_ok = (cmp_render_item(&it_r20, &it_fg) < 0 &&
+                       cmp_render_item(&it_r21, &it_fg) > 0 &&
+                       cmp_render_item(&it_tie_hi, &it_tie_lo) < 0 &&
+                       pal_map_scale_row(&sm, -1) == 1024 &&
+                       pal_map_scale_row(&sm, 3) == 1024 &&
+                       pal_map_scale_row(&sm, 1) == 900) ? 1 : 0;
+        }
+
+        /* AI wall collision & A* detour check: wall at tx=4, ty=2..7; NPC walks (2,5) -> (6,5) without crossing blocked tiles */
+        int ai_wall_ok = 0;
+        {
+            uint32_t wg[12 * 12] = {0};
+            for (int y = 2; y <= 7; y++) wg[y * 12 + 4] = 0x20000000u;
+            PalLoadedMap wm = {0};
+            wm.w_tiles = 12; wm.h_tiles = 12; wm.tile_sz = 16;
+            wm.w_px = 192; wm.h_px = 192; wm.walk_grid = wg;
+            PalFieldActor wa = {0};
+            wa.active = 1; wa.px = 2 << 4; wa.py = 5 << 4;
+            wa.home_tx = 2; wa.home_ty = 5;
+            int hit_wall = 0, reached = 0;
+            for (int t = 0; t < 200; t++) {
+                int st = pal_npc_step_toward(&wa, &wm, NULL, 6 << 4, 5 << 4, 2);
+                int cur_tx = wa.px >> 4, cur_ty = wa.py >> 4;
+                if (cur_tx >= 0 && cur_tx < 12 && cur_ty >= 0 && cur_ty < 12 &&
+                    (wg[cur_ty * 12 + cur_tx] & 0x60000000u) != 0u) {
+                    hit_wall = 1;
+                }
+                if (st == 1) { reached = 1; break; }
+            }
+            ai_wall_ok = (!hit_wall && reached) ? 1 : 0;
+        }
+
+        npc_all_scenes_audit_ok = (
+            unique_npc_maps == 460 &&
+            total_npcs >= 4115 &&
+            flags_u16_ok == 1 &&
+            bucket1_cnt == 195 &&
+            bucket2_cnt == 118 &&
+            shadow_cnt == 1801 &&
+            hidden_cnt == 0 &&
+            invisible_vm_cnt == 0 &&
+            iv_visible_cnt >= 266 &&
+            map8_iv_ok == 3 &&
+            oxoy_ok_cnt == 6 &&
+            cs_512_ok == 1 &&
+            clamp507_ok == 1 &&
+            sort_ok == 1 &&
+            ai_wall_ok == 1
+        ) ? 1 : 0;
+        if (!npc_all_scenes_audit_ok) {
+            fprintf(stderr, "[SelfTest] npc_all_scenes_audit failed: maps=%d total=%d u16=%d b1=%d b2=%d sh=%d hid=%d inv=%d iv=%d m8iv=%d oxoy=%d cs=%d c507=%d sort=%d wall=%d\n",
+                    unique_npc_maps, total_npcs, flags_u16_ok, bucket1_cnt, bucket2_cnt, shadow_cnt, hidden_cnt,
+                    invisible_vm_cnt, iv_visible_cnt, map8_iv_ok, oxoy_ok_cnt, cs_512_ok, clamp507_ok, sort_ok, ai_wall_ok);
+        }
+    }
+
+    if (!magic_plan_ok || !combat_dmg_ok || !turn_sync_ok || !hd_upscale_ok || !formula_rules_ok || !battle_bg_ok || !p0_authentic_ok || !p1_authentic_ok || !p2_authentic_ok || !p3_authentic_ok || !early_sidequests_ok || !mid_sidequests_ok || !late_sidequests_ok || !npc_all_scenes_audit_ok) {
+        fprintf(stderr, "[SelfTest] M5 checks: magic_plan_ok=%d combat_dmg_ok=%d turn_sync_ok=%d hd_upscale_ok=%d formula_rules_ok=%d battle_bg_ok=%d p0_authentic_ok=%d p1_authentic_ok=%d p2_authentic_ok=%d p3_authentic_ok=%d early_sidequests_ok=%d mid_sidequests_ok=%d late_sidequests_ok=%d npc_all_scenes_audit_ok=%d\n",
+                magic_plan_ok, combat_dmg_ok, turn_sync_ok, hd_upscale_ok, formula_rules_ok, battle_bg_ok, p0_authentic_ok, p1_authentic_ok, p2_authentic_ok, p3_authentic_ok, early_sidequests_ok, mid_sidequests_ok, late_sidequests_ok, npc_all_scenes_audit_ok);
     }
 
     out_info->ok = (out_info->monster_count == 160 &&
-                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok && early_sidequests_ok && mid_sidequests_ok && late_sidequests_ok &&
+                    magic_plan_ok && combat_dmg_ok && turn_sync_ok && hd_upscale_ok && formula_rules_ok && battle_bg_ok && p0_authentic_ok && p1_authentic_ok && p2_authentic_ok && p3_authentic_ok && early_sidequests_ok && mid_sidequests_ok && late_sidequests_ok && npc_all_scenes_audit_ok &&
                     out_info->zone_count == 265 &&
                     out_info->fight_script_count == 1056 &&
                     out_info->battle2801_bg_id == 1609 &&
@@ -21010,10 +21248,11 @@ static int pal_npc_step_toward(
     int moved = 0;
     if (!map || pal_map_can_stand_px(map, nx, ny, 1, 0)) {
         a->px = nx; a->py = ny; moved = 1;
-    } else if (map && (abs(dx) > 24 || abs(dy) > 24)) {
-        int path_tx[16], path_ty[16];
+    } else if (map) {
+        /* Authentic Palgame.exe 0x40f0f8: navigate around obstacles via A* on walk_grid */
+        int path_tx[64], path_ty[64];
         int plen = pal_map_find_path_astar(map, a->px >> 4, a->py >> 4, target_px >> 4, target_py >> 4,
-                                           1, path_tx, path_ty, 16);
+                                           1, path_tx, path_ty, 64);
         if (plen > 0) {
             int wdx = (path_tx[0] << 4) - a->px;
             int wdy = (path_ty[0] << 4) - a->py;
@@ -21027,8 +21266,10 @@ static int pal_npc_step_toward(
     }
     if (!moved && map) {
         if (mdx != 0 && pal_map_can_stand_px(map, a->px + mdx, a->py, 1, 0)) {
+            ndir = dir_from_delta(mdx, 0, a->dir);
             a->px += mdx; moved = 1;
         } else if (mdy != 0 && pal_map_can_stand_px(map, a->px, a->py + mdy, 1, 0)) {
+            ndir = dir_from_delta(0, mdy, a->dir);
             a->py += mdy; moved = 1;
         }
     }
@@ -21154,8 +21395,9 @@ static void pal_npc_ai_step(
                     a->ai_script_id = 0u;
                     return;
                 }
-                int st = pal_npc_step_toward(a, NULL, game_dir, (int)a->ai_target_tx << 4, (int)a->ai_target_ty << 4, 2);
-                if (st == 1 || a->ai_stall_ticks >= 12 || (AI_HAS_W(1) && AI_U16(1) == 0u)) {
+                /* Authentic Palgame.exe 0x40f2ef: walk along collision-checked route to ai_target_tx/ty */
+                int st = pal_npc_step_toward(a, map, game_dir, (int)a->ai_target_tx << 4, (int)a->ai_target_ty << 4, 2);
+                if (st == 1 || a->ai_stall_ticks >= 24) {
                     a->ai_stall_ticks = 0;
                     a->ai_pc += 1;
                 }
@@ -21310,8 +21552,10 @@ static void pal_npc_ai_step(
                 break;
             }
             case 30: {
-                static const int kDx[8] = {0, 0, -2, 2, -2, 2, -2, 2};
-                static const int kDy[8] = {-2, 2, 0, 0, -2, 2, 2, -2};
+                /* Authentic Palgame.exe 0x40f680: wander picks 1 walkable neighbor tile (r < 8) or pauses (r >= 8),
+                 * setting ai_target_tx/ty so a following op 8 walks smoothly instead of snapping back to home_tx/ty. */
+                static const int kDtx[8] = {0, 0, -1, 1, -1, 1, -1, 1};
+                static const int kDty[8] = {-1, 1, 0, 0, -1, 1, 1, -1};
                 if ((a->npc_flags & 0x2000u) != 0u && a->sight > 0 && party && ws->combat_cooldown_ticks == 0 && !repel && !(a->aggro & 0x80u)) {
                     int pdx = party[0].px - a->px;
                     int pdy = party[0].py - a->py;
@@ -21319,33 +21563,39 @@ static void pal_npc_ai_step(
                     if (attract) lim *= 2;
                     if (pdx * pdx + pdy * pdy <= lim * lim) {
                         pal_npc_step_toward(a, map, game_dir, party[0].px, party[0].py, 3);
+                        a->ai_target_tx = (int16_t)(a->px >> 4);
+                        a->ai_target_ty = (int16_t)(a->py >> 4);
                         a->ai_pc += 1;
                         return;
                     }
                 }
-                if (a->ai_wander_rem == 0u) {
-                    s_ai_rng = s_ai_rng * 1664525u + 1013904223u;
-                    a->ai_wander_dir = (uint8_t)((s_ai_rng >> 16) & 7u);
-                    a->ai_wander_rem = (uint8_t)(4u + ((s_ai_rng >> 8) % 7u));
-                }
-                int d = (int)(a->ai_wander_dir & 7u);
-                int nx = a->px + kDx[d];
-                int ny = a->py + kDy[d];
-                int home_px = (int)a->home_tx << 4;
-                int home_py = (int)a->home_ty << 4;
-                if (abs(nx - home_px) <= 80 && abs(ny - home_py) <= 80 &&
-                    (!map || pal_map_can_stand_px(map, nx, ny, 1, 0))) {
-                    a->px = nx;
-                    a->py = ny;
-                    a->dir = d;
-                    if (game_dir && a->act_id > 0u) {
-                        field_actor_set_sub(a, game_dir, a->act_id, (int)a->orig_sub_state + (a->dir & 7), 1);
+                s_ai_rng = s_ai_rng * 1664525u + 1013904223u;
+                int roll = (int)((s_ai_rng >> 16) % 60u);
+                int cur_tx = a->px >> 4;
+                int cur_ty = a->py >> 4;
+                if (roll < 8) {
+                    int ntx = cur_tx + kDtx[roll];
+                    int nty = cur_ty + kDty[roll];
+                    if (abs(ntx - (int)a->home_tx) <= 5 && abs(nty - (int)a->home_ty) <= 5 &&
+                        (!map || pal_map_can_stand_tile(map, ntx, nty, 1))) {
+                        a->ai_target_tx = (int16_t)ntx;
+                        a->ai_target_ty = (int16_t)nty;
+                        a->dir = roll;
+                        a->ai_stall_ticks = 0;
+                        if (game_dir && a->act_id > 0u) {
+                            field_actor_set_sub(a, game_dir, a->act_id, (int)a->orig_sub_state + (a->dir & 7), 1);
+                        }
+                    } else {
+                        a->ai_target_tx = (int16_t)cur_tx;
+                        a->ai_target_ty = (int16_t)cur_ty;
+                        a->ai_wait_ticks = 8;
                     }
-                    a->ai_wander_rem--;
                 } else {
-                    a->ai_wander_rem = 0u;
+                    a->ai_target_tx = (int16_t)cur_tx;
+                    a->ai_target_ty = (int16_t)cur_ty;
+                    a->ai_wait_ticks = 12;
                 }
-                if (a->ai_wander_rem == 0u) a->ai_pc += 1;
+                a->ai_pc += 1;
                 return;
             }
             case 31: {
@@ -24809,6 +25059,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             party[p].px = stx << 4;
             party[p].py = sty << 4;
             party[p].dir = 1;
+            party[p].npc_flags = 0xD100u; /* Palgame.exe 0x41a397 */
             field_actor_set_sub(&party[p], cfg->game_dir, kPartyHeroActIds[(leader_hero_idx + (uint32_t)p) % 4u], 1, 0);
         }
         for (int t = 0; t < 64; t++) {
@@ -26432,6 +26683,7 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     party[p].py = sty << 4;
                     party[p].dir = sdir;
                     party[p].active = 1;
+                    party[p].npc_flags = 0xD100u; /* Palgame.exe 0x41a397 */
                     party[p].script_moving = 0;
                     uint32_t pact = (leader_hero_idx == 0u && world_state && p < world_state->party_member_count)
                                         ? ((p == 0) ? pal_resolve_control_field_act_id(world_state)
@@ -26660,42 +26912,56 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             /* Pass 0: Map Background Layer (with water/heat strip shimmer when story_flags[7]) */
             pal_field_env_draw_bg(renderer, &field_env, world_state, &map, cam_x, cam_y);
 
-            /* Pass 1: Bucket 2 (below actors: ground shadows / decals) */
-            for (int k = 0; k < map.fg_inst_count; k++) {
-                const PalMapFgInst *inst = &map.fg_insts[k];
-                if (inst->layer_bucket != 2) continue;
-                for (int d = 0; d < map.fg_def_count; d++) {
-                    if (map.fg_defs[d].sid == inst->sid && map.fg_defs[d].tex) {
-                        SDL_FRect fd = {(float)inst->px - cam_x, (float)inst->py_top - cam_y,
-                                        (float)map.fg_defs[d].w, (float)map.fg_defs[d].h};
-                        SDL_RenderTexture(renderer, map.fg_defs[d].tex, NULL, &fd);
-                        break;
-                    }
-                }
-            }
-
-            /* Pass 2: Bucket 0 (Y-sorted Map Props + NPCs + Party + Leader) */
+            /* Authentic Palgame.exe 0x424883..0x42498b 3-bucket render passes:
+             * Pass 1 (bucket 2): below actors (ground decals / floor effects / flags&3 == 2)
+             * Pass 2 (bucket 0): Y-sorted map props + party + normal NPCs (flags&3 == 0 or 3)
+             * Pass 3 (bucket 1): above actors (roofs / canopies / flying birds / flags&3 == 1) */
             PalRenderItem items[1024];
             int item_cnt = 0;
             for (int k = 0; k < map.fg_inst_count && item_cnt < 1024; k++) {
                 const PalMapFgInst *inst = &map.fg_insts[k];
-                if (inst->layer_bucket != 0) continue;
+                if (inst->layer_bucket != 2) continue;
                 for (int d = 0; d < map.fg_def_count; d++) {
                     if (map.fg_defs[d].sid == inst->sid && map.fg_defs[d].tex) {
                         PalRenderItem *it = &items[item_cnt++];
+                        memset(it, 0, sizeof(*it));
                         it->kind = PAL_RENDER_FG_INST;
                         it->sort_y = inst->sort_y;
                         it->draw_x = inst->px;
                         it->draw_y = inst->py_top;
                         it->draw_w = map.fg_defs[d].w;
                         it->draw_h = map.fg_defs[d].h;
-                        it->foot_px = 0;
-                        it->foot_py = 0;
                         it->scale_fp = 1024;
                         it->tex = map.fg_defs[d].tex;
-                        it->actor = NULL;
-                        it->is_leader = 0;
-                        it->is_party = 0;
+                        break;
+                    }
+                }
+            }
+            for (int n = 0; n < map_npc_actor_cnt && item_cnt < 1024; n++) {
+                if ((map_npcs[n].npc_flags & 3u) != 2u) continue;
+                pal_push_actor_render_item(items, &item_cnt, 1024, &map, &map_npcs[n],
+                                           cfg->game_dir, renderer, scale_mode, &tsw_cache, 0, 0);
+            }
+            if (item_cnt > 1) qsort(items, (size_t)item_cnt, sizeof(PalRenderItem), cmp_render_item);
+            pal_draw_render_items_pass2(renderer, items, item_cnt, &map, cfg->game_dir, scale_mode, &tsw_cache, cam_x, cam_y);
+
+            /* Pass 2: Bucket 0 (Y-sorted Map Props + Party + Normal NPCs) */
+            item_cnt = 0;
+            for (int k = 0; k < map.fg_inst_count && item_cnt < 1024; k++) {
+                const PalMapFgInst *inst = &map.fg_insts[k];
+                if (inst->layer_bucket != 0) continue;
+                for (int d = 0; d < map.fg_def_count; d++) {
+                    if (map.fg_defs[d].sid == inst->sid && map.fg_defs[d].tex) {
+                        PalRenderItem *it = &items[item_cnt++];
+                        memset(it, 0, sizeof(*it));
+                        it->kind = PAL_RENDER_FG_INST;
+                        it->sort_y = inst->sort_y;
+                        it->draw_x = inst->px;
+                        it->draw_y = inst->py_top;
+                        it->draw_w = map.fg_defs[d].w;
+                        it->draw_h = map.fg_defs[d].h;
+                        it->scale_fp = 1024;
+                        it->tex = map.fg_defs[d].tex;
                         break;
                     }
                 }
@@ -26713,6 +26979,8 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             }
 
             for (int n = 0; n < map_npc_actor_cnt && item_cnt < 1024; n++) {
+                uint32_t lb = map_npcs[n].npc_flags & 3u;
+                if (lb == 1u || lb == 2u) continue;
                 pal_push_actor_render_item(items, &item_cnt, 1024, &map, &map_npcs[n],
                                            cfg->game_dir, renderer, scale_mode, &tsw_cache, 0, 0);
             }
@@ -26720,19 +26988,34 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
             if (item_cnt > 1) qsort(items, (size_t)item_cnt, sizeof(PalRenderItem), cmp_render_item);
             pal_draw_render_items_pass2(renderer, items, item_cnt, &map, cfg->game_dir, scale_mode, &tsw_cache, cam_x, cam_y);
 
-            /* Pass 3: Bucket 1 (above actors: overhead roofs / tree canopies) */
-            for (int k = 0; k < map.fg_inst_count; k++) {
+            /* Pass 3: Bucket 1 (above actors: overhead roofs / tree canopies / flying NPCs flags&3 == 1) */
+            item_cnt = 0;
+            for (int k = 0; k < map.fg_inst_count && item_cnt < 1024; k++) {
                 const PalMapFgInst *inst = &map.fg_insts[k];
                 if (inst->layer_bucket != 1) continue;
                 for (int d = 0; d < map.fg_def_count; d++) {
                     if (map.fg_defs[d].sid == inst->sid && map.fg_defs[d].tex) {
-                        SDL_FRect fd = {(float)inst->px - cam_x, (float)inst->py_top - cam_y,
-                                        (float)map.fg_defs[d].w, (float)map.fg_defs[d].h};
-                        SDL_RenderTexture(renderer, map.fg_defs[d].tex, NULL, &fd);
+                        PalRenderItem *it = &items[item_cnt++];
+                        memset(it, 0, sizeof(*it));
+                        it->kind = PAL_RENDER_FG_INST;
+                        it->sort_y = inst->sort_y;
+                        it->draw_x = inst->px;
+                        it->draw_y = inst->py_top;
+                        it->draw_w = map.fg_defs[d].w;
+                        it->draw_h = map.fg_defs[d].h;
+                        it->scale_fp = 1024;
+                        it->tex = map.fg_defs[d].tex;
                         break;
                     }
                 }
             }
+            for (int n = 0; n < map_npc_actor_cnt && item_cnt < 1024; n++) {
+                if ((map_npcs[n].npc_flags & 3u) != 1u) continue;
+                pal_push_actor_render_item(items, &item_cnt, 1024, &map, &map_npcs[n],
+                                           cfg->game_dir, renderer, scale_mode, &tsw_cache, 0, 0);
+            }
+            if (item_cnt > 1) qsort(items, (size_t)item_cnt, sizeof(PalRenderItem), cmp_render_item);
+            pal_draw_render_items_pass2(renderer, items, item_cnt, &map, cfg->game_dir, scale_mode, &tsw_cache, cam_x, cam_y);
 
             /* Optional Collision + Trigger + A* Path Debug Overlay (G key) */
             if (show_collision_grid && map.walk_grid) {
@@ -26780,12 +27063,15 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                     int fi = ov->vm.frame_index;
                     if (fi < 0) fi = 0;
                     fi %= osp->nframes;
+                    float ofw = 0.0f, ofh = 0.0f;
+                    pal_sprite_frame_size(osp, fi, &ofw, &ofh);
                     SDL_FRect od = {
                         (float)(ov->screen_x - ov->vm.offset_x),
                         (float)(ov->screen_y - ov->vm.offset_y),
-                        (float)osp->w, (float)osp->h
+                        ofw, ofh
                     };
-                    SDL_RenderTexture(renderer, osp->frames[fi], NULL, &od);
+                    SDL_RenderTextureRotated(renderer, osp->frames[fi], NULL, &od, 0.0, NULL,
+                                             ov->vm.flip_h ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
                 }
             }
 
@@ -26903,13 +27189,16 @@ static int run_session_internal(const PalLaunchConfig *cfg, int is_self_test, ch
                         int fi = pt->vm.frame_index;
                         if (fi < 0) fi = 0;
                         fi %= psp->nframes;
+                        float pfw = 0.0f, pfh = 0.0f;
+                        pal_sprite_frame_size(psp, fi, &pfw, &pfh);
                         SDL_FRect pd = {
                             (float)(pt->anchor_x - pt->vm.offset_x),
                             (float)(pt->anchor_y - pt->vm.offset_y),
-                            (float)psp->w,
-                            (float)psp->h
+                            pfw,
+                            pfh
                         };
-                        SDL_RenderTexture(renderer, psp->frames[fi], NULL, &pd);
+                        SDL_RenderTextureRotated(renderer, psp->frames[fi], NULL, &pd, 0.0, NULL,
+                                                 pt->vm.flip_h ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
                     }
                 }
                 if (dlg_text_tex) {
