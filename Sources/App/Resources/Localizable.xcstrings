@@ -86,13 +86,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No copyrighted sprites, audio, scripts, or maps are bundled. Select your own legal copy of PalGame to verify and play directly from archive containers."
+            "value": "No copyrighted sprites, audio, scripts, or maps are bundled. Click Import Game Data to select your original game folder; the launcher verifies all 23 archives and copies only the required game files into ~/Library/Application Support/NewPal/PalGame. Afterward, you may freely delete the original folder."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "本应用不含任何受版权保护的美术、音频、脚本或地图资源。请选择您合法拥有的原版《新仙剑奇侠传》游戏目录，通过内存 VFS 直接校验并挂载运行。"
+            "value": "本应用不含任何受版权保护的美术、音频、脚本或地图资源。点击「导入数据包…」选择原版游戏文件夹后，启动器将主动校验全部 23 项核心文件并自动将所需数据复制到 ~/Library/Application Support/NewPal/PalGame；导入完成后原游戏文件夹可自由删除。"
           }
         }
       }
@@ -102,29 +102,237 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No game directory selected yet."
+            "value": "No game data imported yet. Click Import Game Data… to begin."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "尚未选择原版游戏目录。"
+            "value": "尚未导入游戏数据包，请点击「导入数据包…」选择原版游戏目录。"
           }
         }
       }
     },
-    "byod.choose_folder": {
+    "byod.imported_ready_note": {
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Select PalGame Directory…"
+            "value": "Imported into standard Application Support directory. You may safely delete your original game folder."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "选择原版游戏目录…"
+            "value": "已导入至 macOS 标准目录，原游戏文件夹可自由删除。"
+          }
+        }
+      }
+    },
+    "byod.import_data": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import Game Data…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "导入数据包…"
+          }
+        }
+      }
+    },
+    "byod.reimport_data": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Re-Import Data…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新导入数据包…"
+          }
+        }
+      }
+    },
+    "byod.open_app_support": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Application Support"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开 Application Support"
+          }
+        }
+      }
+    },
+    "byod.delete_data": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Game Data"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "删除游戏数据"
+          }
+        }
+      }
+    },
+    "byod.delete_confirm_title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Imported Game Data?"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认删除已导入的游戏数据？"
+          }
+        }
+      }
+    },
+    "byod.delete_confirm_message": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This removes the imported game data in ~/Library/Application Support/NewPal/PalGame. Your save files in ~/Library/Application Support/NewPal/Save will be preserved."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此操作将清理 ~/Library/Application Support/NewPal/PalGame 中的游戏数据包，~/Library/Application Support/NewPal/Save 中的玩家存档将会保留。"
+          }
+        }
+      }
+    },
+    "byod.delete_confirm_action": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Delete Game Data"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "确认删除"
+          }
+        }
+      }
+    },
+    "byod.cancel": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancel"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消"
+          }
+        }
+      }
+    },
+    "byod.status_not_imported": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not Imported"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未导入"
+          }
+        }
+      }
+    },
+    "byod.importing_preparing": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preparing game data import…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在准备导入游戏数据包…"
+          }
+        }
+      }
+    },
+    "byod.importing_progress_fmt": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copying required game data: %@ / %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在复制必需游戏数据：%@ / %@"
+          }
+        }
+      }
+    },
+    "byod.import_validation_failed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Import aborted: only %lld of %lld required archive checks passed. Please select a complete original PalGame folder."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "校验未通过（仅通过 %lld / %lld 项），未执行导入。请选择包含完整原版数据的游戏文件夹。"
+          }
+        }
+      }
+    },
+    "byod.standard_path_hint": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Standard data folder name & path: ~/Library/Application Support/NewPal/PalGame"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "标准数据文件夹命名与路径：~/Library/Application Support/NewPal/PalGame"
           }
         }
       }
@@ -150,13 +358,29 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Select Original PalGame Directory"
+            "value": "Import"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "选择原版《新仙剑奇侠传》目录"
+            "value": "导入"
+          }
+        }
+      }
+    },
+    "byod.open_panel_message": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select your original PalGame folder to verify and import."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请选择原版《新仙剑奇侠传》游戏数据文件夹（如 PalGame）"
           }
         }
       }

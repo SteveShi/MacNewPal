@@ -45,9 +45,25 @@ final class PalLauncherStore {
     var isRunningEngine: Bool = false
     var isRunningHeadless: Bool = false
 
-    private var activeScopedURL: URL?
+    var hasImportedData: Bool = false
+    var importedDataSizeText: String = ""
+    var isImportingData: Bool = false
+    var importProgress: Double = 0.0
+    var importStatusText: String = ""
+    var importErrorMessage: String = ""
+
     private var headlessProcess: Process?
     private var terminateObserver: NSObjectProtocol?
+
+    var appSupportDirectoryURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support", isDirectory: true)
+        return base.appendingPathComponent("NewPal", isDirectory: true)
+    }
+
+    var standardGameDataDirectoryURL: URL {
+        appSupportDirectoryURL.appendingPathComponent("PalGame", isDirectory: true)
+    }
 
     init() {
         refreshRenderBackendStatus()
@@ -70,46 +86,348 @@ final class PalLauncherStore {
         availableRenderDrivers = String(decoding: buffer.prefix(endIdx).map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
-    func restoreBookmarkIfNeeded(storedPath: String, storedBookmarkData: Data) -> String {
-        if !storedBookmarkData.isEmpty {
-            var stale = false
-            if let url = try? URL(
-                resolvingBookmarkData: storedBookmarkData,
-                options: [.withSecurityScope],
-                relativeTo: nil,
-                bookmarkDataIsStale: &stale
-            ) {
-                activeScopedURL?.stopAccessingSecurityScopedResource()
-                if url.startAccessingSecurityScopedResource() {
-                    activeScopedURL = url
-                }
-                return url.path
-            }
-        }
-        return storedPath
+    @discardableResult
+    func ensureAppSupportDirectory() -> URL {
+        let dir = appSupportDirectoryURL
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
     }
 
-    func chooseGameDirectory(onSelected: (String, Data) -> Void) {
+    func openAppSupportDirectory() {
+        let dir = ensureAppSupportDirectory()
+        NSWorkspace.shared.open(dir)
+    }
+
+    func refreshStandardGameData() {
+        let fm = FileManager.default
+        let standardDir = standardGameDataDirectoryURL
+        var isDir: ObjCBool = false
+        let dirExists = fm.fileExists(atPath: standardDir.path, isDirectory: &isDir) && isDir.boolValue
+        let contents = dirExists ? (try? fm.contentsOfDirectory(atPath: standardDir.path)) : nil
+
+        if dirExists, let contents, !contents.isEmpty {
+            hasImportedData = true
+            let totalBytes = Self.directoryByteSize(at: standardDir)
+            importedDataSizeText = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+            UserDefaults.standard.set(standardDir.path, forKey: "gameDataPath")
+            UserDefaults.standard.removeObject(forKey: "gameDataBookmark")
+            validateDirectory(standardDir.path)
+        } else {
+            hasImportedData = false
+            importedDataSizeText = ""
+            validation = nil
+            UserDefaults.standard.removeObject(forKey: "gameDataPath")
+            UserDefaults.standard.removeObject(forKey: "gameDataBookmark")
+        }
+    }
+
+    func importGameDirectory() {
+        guard !isImportingData, !isRunningEngine else { return }
+
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = String(localized: "byod.open_panel_prompt")
-        panel.message = String(localized: "byod.legal_notice")
+        panel.message = String(localized: "byod.open_panel_message")
 
-        if panel.runModal() == .OK, let url = panel.url {
-            activeScopedURL?.stopAccessingSecurityScopedResource()
-            if url.startAccessingSecurityScopedResource() {
-                activeScopedURL = url
+        guard panel.runModal() == .OK, let pickedURL = panel.url else { return }
+
+        importErrorMessage = ""
+        lastErrorMessage = ""
+
+        let didScope = pickedURL.startAccessingSecurityScopedResource()
+        let effectiveSourceURL = resolveEffectiveSourceDirectory(from: pickedURL)
+        let destURL = standardGameDataDirectoryURL.standardizedFileURL
+
+        if effectiveSourceURL.standardizedFileURL == destURL {
+            if didScope {
+                pickedURL.stopAccessingSecurityScopedResource()
             }
-            let bookmark = (try? url.bookmarkData(
-                options: [.withSecurityScope],
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )) ?? Data()
-            onSelected(url.path, bookmark)
-            validateDirectory(url.path)
+            refreshStandardGameData()
+            return
         }
+
+        var report = PalValidationReport()
+        _ = effectiveSourceURL.path.withCString { cPath in
+            pal_vfs_validate_directory(cPath, &report)
+        }
+        if report.valid_archives_count < report.total_required_archives {
+            if didScope {
+                pickedURL.stopAccessingSecurityScopedResource()
+            }
+            validateDirectory(effectiveSourceURL.path)
+            importErrorMessage = String(
+                format: String(localized: "byod.import_validation_failed"),
+                Int64(report.valid_archives_count),
+                Int64(report.total_required_archives)
+            )
+            return
+        }
+
+        isImportingData = true
+        importProgress = 0.0
+        importStatusText = String(localized: "byod.importing_preparing")
+
+        let appSupportDir = ensureAppSupportDirectory()
+        let stagingURL = appSupportDir.appendingPathComponent(".PalGame.importing", isDirectory: true)
+        let backupURL = appSupportDir.appendingPathComponent(".PalGame.backup", isDirectory: true)
+        let progressTemplate = String(localized: "byod.importing_progress_fmt")
+
+        Task { @MainActor in
+            defer {
+                if didScope {
+                    pickedURL.stopAccessingSecurityScopedResource()
+                }
+                self.isImportingData = false
+            }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try Self.importSelectiveGameData(
+                        from: effectiveSourceURL,
+                        stagingURL: stagingURL,
+                        backupURL: backupURL,
+                        to: destURL
+                    ) { fraction, copiedBytes, totalBytes in
+                        let copiedText = ByteCountFormatter.string(fromByteCount: copiedBytes, countStyle: .file)
+                        let totalText = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+                        let status = String(format: progressTemplate, copiedText, totalText)
+                        Task { @MainActor in
+                            self.importProgress = fraction
+                            self.importStatusText = status
+                        }
+                    }
+                }.value
+                self.importProgress = 1.0
+                self.importStatusText = ""
+                self.importErrorMessage = ""
+                self.refreshStandardGameData()
+            } catch {
+                self.importProgress = 0.0
+                self.importStatusText = ""
+                self.importErrorMessage = error.localizedDescription
+                self.refreshStandardGameData()
+            }
+        }
+    }
+
+    func deleteImportedGameData() {
+        guard !isImportingData, !isRunningEngine else { return }
+        let fm = FileManager.default
+        let targets = [
+            standardGameDataDirectoryURL,
+            appSupportDirectoryURL.appendingPathComponent(".PalGame.importing", isDirectory: true),
+            appSupportDirectoryURL.appendingPathComponent(".PalGame.backup", isDirectory: true)
+        ]
+        for url in targets where fm.fileExists(atPath: url.path) {
+            do {
+                try fm.removeItem(at: url)
+            } catch {
+                importErrorMessage = error.localizedDescription
+            }
+        }
+        importProgress = 0.0
+        importStatusText = ""
+        importErrorMessage = ""
+        lastErrorMessage = ""
+        refreshStandardGameData()
+    }
+
+    private func resolveEffectiveSourceDirectory(from pickedURL: URL) -> URL {
+        var directReport = PalValidationReport()
+        _ = pickedURL.path.withCString { cPath in
+            pal_vfs_validate_directory(cPath, &directReport)
+        }
+        if directReport.valid_archives_count == directReport.total_required_archives {
+            return pickedURL
+        }
+
+        let fm = FileManager.default
+        guard let subURLs = try? fm.contentsOfDirectory(
+            at: pickedURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return pickedURL
+        }
+
+        var bestURL = pickedURL
+        var bestScore = directReport.valid_archives_count
+
+        let sortedSubs = subURLs.sorted { lhs, rhs in
+            let lMatch = lhs.lastPathComponent.caseInsensitiveCompare("PalGame") == .orderedSame
+            let rMatch = rhs.lastPathComponent.caseInsensitiveCompare("PalGame") == .orderedSame
+            if lMatch != rMatch { return lMatch }
+            return lhs.lastPathComponent < rhs.lastPathComponent
+        }
+
+        for sub in sortedSubs {
+            let isDir = (try? sub.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            var subReport = PalValidationReport()
+            _ = sub.path.withCString { cPath in
+                pal_vfs_validate_directory(cPath, &subReport)
+            }
+            if subReport.valid_archives_count == subReport.total_required_archives {
+                return sub
+            }
+            if subReport.valid_archives_count > bestScore {
+                bestScore = subReport.valid_archives_count
+                bestURL = sub
+            }
+        }
+        return bestURL
+    }
+
+    private nonisolated static let requiredAndOptionalRootFiles: [String] = [
+        "all_char.tsw", "all_item.tsw", "all_magic.tsw", "all_map1.tsw", "all_map2.tsw", "all_sys.tsw",
+        "all_char.act", "all_item.act", "all_magic.act", "all_map1.act", "all_map2.act", "all_sys.act",
+        "all.snd",
+        "huge.lmf", "huge2.lmf",
+        "ghero.dat", "gmon.dat", "gitem.dat", "gmagic.dat", "glevel.dat", "gmap.dat",
+        "GFight1.dat", "GFight2.dat", "GFight3.dat", "GFight4.dat",
+        "namex.dat", "maps.dat",
+        "talk1.dat", "talk2.dat", "talk3.dat", "talk4.dat",
+        "talk5.dat", "talk6.dat", "talk7.dat", "talk8.dat",
+        "path1.dat", "path2.dat", "path3.dat", "path4.dat", "path5.dat",
+        "path6.dat", "path7.dat", "path8.dat", "path9.dat", "path10.dat"
+    ]
+
+    private nonisolated static let mediaSubdirectoryNames: [String] = ["Music", "Video"]
+
+    private nonisolated static func importSelectiveGameData(
+        from sourceURL: URL,
+        stagingURL: URL,
+        backupURL: URL,
+        to destURL: URL,
+        onProgress: @Sendable (Double, Int64, Int64) -> Void
+    ) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: stagingURL.path) {
+            try fm.removeItem(at: stagingURL)
+        }
+        try fm.createDirectory(at: stagingURL, withIntermediateDirectories: true)
+
+        struct CopyItem {
+            let src: URL
+            let dst: URL
+            let size: Int64
+        }
+
+        var copyPlan: [CopyItem] = []
+        let canonicalByLower: [String: String] = Dictionary(
+            uniqueKeysWithValues: requiredAndOptionalRootFiles.map { ($0.lowercased(), $0) }
+        )
+        let mediaDirByLower: [String: String] = Dictionary(
+            uniqueKeysWithValues: mediaSubdirectoryNames.map { ($0.lowercased(), $0) }
+        )
+
+        let topEntries = try fm.contentsOfDirectory(
+            at: sourceURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        )
+
+        for entry in topEntries {
+            let rv = try entry.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey])
+            let lowerName = entry.lastPathComponent.lowercased()
+
+            if rv.isRegularFile == true, let canonicalName = canonicalByLower[lowerName] {
+                let sz = Int64(rv.fileSize ?? 0)
+                copyPlan.append(CopyItem(src: entry, dst: stagingURL.appendingPathComponent(canonicalName), size: sz))
+            } else if rv.isDirectory == true, let canonicalDir = mediaDirByLower[lowerName] {
+                let dstDir = stagingURL.appendingPathComponent(canonicalDir, isDirectory: true)
+                try fm.createDirectory(at: dstDir, withIntermediateDirectories: true)
+
+                if let enumerator = fm.enumerator(
+                    at: entry,
+                    includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey],
+                    options: [.skipsHiddenFiles]
+                ) {
+                    let basePrefix = entry.standardizedFileURL.path
+                    while let item = enumerator.nextObject() as? URL {
+                        let itemRV = try item.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey])
+                        let itemPath = item.standardizedFileURL.path
+                        guard itemPath.hasPrefix(basePrefix) else { continue }
+                        let rel = String(itemPath.dropFirst(basePrefix.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                        guard !rel.isEmpty else { continue }
+                        let target = dstDir.appendingPathComponent(rel)
+                        if itemRV.isDirectory == true {
+                            try fm.createDirectory(at: target, withIntermediateDirectories: true)
+                        } else if itemRV.isRegularFile == true {
+                            let sz = Int64(itemRV.fileSize ?? 0)
+                            copyPlan.append(CopyItem(src: item, dst: target, size: sz))
+                        }
+                    }
+                }
+            }
+        }
+
+        let totalBytes = max(1, copyPlan.reduce(Int64(0)) { $0 + $1.size })
+        var copiedBytes: Int64 = 0
+        var lastNotify = CFAbsoluteTimeGetCurrent()
+
+        onProgress(0.0, 0, totalBytes)
+
+        do {
+            for item in copyPlan {
+                let parent = item.dst.deletingLastPathComponent()
+                if !fm.fileExists(atPath: parent.path) {
+                    try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+                }
+                try fm.copyItem(at: item.src, to: item.dst)
+                copiedBytes += item.size
+
+                let now = CFAbsoluteTimeGetCurrent()
+                if now - lastNotify >= 0.08 || copiedBytes >= totalBytes {
+                    lastNotify = now
+                    let fraction = min(1.0, Double(copiedBytes) / Double(totalBytes))
+                    onProgress(fraction, copiedBytes, totalBytes)
+                }
+            }
+
+            if fm.fileExists(atPath: backupURL.path) {
+                try fm.removeItem(at: backupURL)
+            }
+            var movedExistingToBackup = false
+            if fm.fileExists(atPath: destURL.path) {
+                try fm.moveItem(at: destURL, to: backupURL)
+                movedExistingToBackup = true
+            }
+            do {
+                try fm.moveItem(at: stagingURL, to: destURL)
+            } catch {
+                if movedExistingToBackup && !fm.fileExists(atPath: destURL.path) {
+                    try? fm.moveItem(at: backupURL, to: destURL)
+                }
+                throw error
+            }
+            if movedExistingToBackup && fm.fileExists(atPath: backupURL.path) {
+                try? fm.removeItem(at: backupURL)
+            }
+        } catch {
+            try? fm.removeItem(at: stagingURL)
+            throw error
+        }
+    }
+
+    private nonisolated static func directoryByteSize(at url: URL) -> Int64 {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            if let rv = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]),
+               rv.isRegularFile == true {
+                total += Int64(rv.fileSize ?? 0)
+            }
+        }
+        return total
     }
 
     func validateDirectory(_ path: String) {
@@ -169,7 +487,6 @@ final class PalLauncherStore {
     }
 
     func launchEngine(
-        gameDir: String,
         windowScale: Int,
         vsyncEnabled: Bool,
         nearestFilter: Bool,
@@ -183,7 +500,8 @@ final class PalLauncherStore {
         mcpHeadlessLaunch: Bool = false,
         mcpSocketPath: String = "/tmp/newpal-mcp.sock"
     ) {
-        guard validation?.isValid == true, !isRunningEngine else { return }
+        let gameDir = standardGameDataDirectoryURL.path
+        guard hasImportedData, validation?.isValid == true, !isRunningEngine, !isImportingData else { return }
         lastErrorMessage = ""
 
         if mcpEnabled && mcpHeadlessLaunch {

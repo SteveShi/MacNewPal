@@ -2,8 +2,6 @@ import AppKit
 import SwiftUI
 
 struct ContentView: View {
-    @AppStorage("gameDataPath") private var gameDataPath: String = ""
-    @AppStorage("gameDataBookmark") private var gameDataBookmark: Data = Data()
     @AppStorage("windowScale") private var windowScale: Int = 2
     @AppStorage("vsyncEnabled") private var vsyncEnabled: Bool = true
     @AppStorage("nearestFilter") private var nearestFilter: Bool = true
@@ -15,6 +13,7 @@ struct ContentView: View {
     @AppStorage("mcpEnabled") private var mcpEnabled: Bool = true
     @AppStorage("mcpHeadlessLaunch") private var mcpHeadlessLaunch: Bool = false
     @AppStorage("mcpAllowQaTools") private var mcpAllowQaTools: Bool = true
+    @State private var showingDeleteDataConfirm: Bool = false
 
     let store: PalLauncherStore
 
@@ -35,11 +34,15 @@ struct ContentView: View {
         }
         .frame(minWidth: 880, minHeight: 620)
         .onAppear {
-            let resolved = store.restoreBookmarkIfNeeded(storedPath: gameDataPath, storedBookmarkData: gameDataBookmark)
-            if !resolved.isEmpty {
-                gameDataPath = resolved
-                store.validateDirectory(resolved)
+            store.refreshStandardGameData()
+        }
+        .alert("byod.delete_confirm_title", isPresented: $showingDeleteDataConfirm) {
+            Button("byod.delete_confirm_action", role: .destructive) {
+                store.deleteImportedGameData()
             }
+            Button("byod.cancel", role: .cancel) {}
+        } message: {
+            Text("byod.delete_confirm_message")
         }
     }
 
@@ -79,6 +82,10 @@ struct ContentView: View {
                         )
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(val.isValid ? .green : .orange)
+                    } else {
+                        Label("byod.status_not_imported", systemImage: "tray.and.arrow.down")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -86,28 +93,86 @@ struct ContentView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
-                HStack {
-                    Text(gameDataPath.isEmpty ? String(localized: "byod.no_folder_selected") : gameDataPath)
-                        .font(.callout.monospaced())
-                        .foregroundStyle(gameDataPath.isEmpty ? .tertiary : .primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
+                Text("byod.standard_path_hint")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        if store.hasImportedData {
+                            HStack(spacing: 6) {
+                                Text(store.standardGameDataDirectoryURL.path)
+                                    .font(.callout.monospaced())
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .textSelection(.enabled)
+                                if !store.importedDataSizeText.isEmpty {
+                                    Text("(\(store.importedDataSizeText))")
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            if store.validation?.isValid == true {
+                                Text("byod.imported_ready_note")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            }
+                        } else {
+                            Text("byod.no_folder_selected")
+                                .font(.callout.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
 
                     Spacer()
 
-                    Button("byod.choose_folder") {
-                        store.chooseGameDirectory { path, bookmark in
-                            gameDataPath = path
-                            gameDataBookmark = bookmark
-                        }
+                    Button {
+                        store.importGameDirectory()
+                    } label: {
+                        Label(
+                            store.hasImportedData ? "byod.reimport_data" : "byod.import_data",
+                            systemImage: "square.and.arrow.down"
+                        )
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(store.isImportingData || store.isRunningEngine)
+
+                    Button {
+                        store.openAppSupportDirectory()
+                    } label: {
+                        Label("byod.open_app_support", systemImage: "folder")
+                    }
+
+                    Button(role: .destructive) {
+                        showingDeleteDataConfirm = true
+                    } label: {
+                        Label("byod.delete_data", systemImage: "trash")
+                    }
+                    .disabled(!store.hasImportedData || store.isImportingData || store.isRunningEngine)
 
                     Button("byod.revalidate") {
-                        store.validateDirectory(gameDataPath)
+                        store.refreshStandardGameData()
                     }
-                    .disabled(gameDataPath.isEmpty)
+                    .disabled(store.isImportingData)
+                }
+
+                if store.isImportingData {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: store.importProgress)
+                        Text(store.importStatusText)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !store.importErrorMessage.isEmpty {
+                    Text(store.importErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
 
                 if let val = store.validation, !val.summaryMessage.isEmpty {
@@ -213,7 +278,6 @@ struct ContentView: View {
                     } else {
                         Button {
                             store.launchEngine(
-                                gameDir: gameDataPath,
                                 windowScale: windowScale,
                                 vsyncEnabled: vsyncEnabled,
                                 nearestFilter: nearestFilter,
@@ -234,7 +298,7 @@ struct ContentView: View {
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
                         .fixedSize()
-                        .disabled(store.validation?.isValid != true || store.isRunningEngine)
+                        .disabled(!store.hasImportedData || store.validation?.isValid != true || store.isRunningEngine || store.isImportingData)
                     }
                 }
 

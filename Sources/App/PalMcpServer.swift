@@ -386,18 +386,25 @@ private final class McpSession {
         }
 
         let ud = launcherDefaults()
+        let appSupportPalGame = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("NewPal/PalGame", isDirectory: true)
+            .path
         let fallbackDir = "/Users/steve/Downloads/PalGame"
         let resolvedDir: String
         if let argDir = args["game_dir"] as? String, !argDir.isEmpty {
             resolvedDir = argDir
         } else if let cliDir = cliDefaultGameDir, !cliDir.isEmpty {
             resolvedDir = cliDir
+        } else if let appSupportPalGame, FileManager.default.fileExists(atPath: appSupportPalGame) {
+            resolvedDir = appSupportPalGame
         } else if let udDir = ud.string(forKey: "gameDataPath"), !udDir.isEmpty {
             resolvedDir = udDir
         } else if FileManager.default.fileExists(atPath: fallbackDir) {
             resolvedDir = fallbackDir
         } else {
-            return toolText("Missing game_dir: specify game_dir or configure it in NewPal Launcher first.", isError: true)
+            return toolText("Missing game_dir: specify game_dir or import PalGame data in NewPal Launcher first.", isError: true)
         }
 
         let headless: Bool = {

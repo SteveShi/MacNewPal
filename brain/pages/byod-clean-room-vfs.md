@@ -5,7 +5,7 @@ category: decision
 status: active
 tags: [architecture, byod, vfs, legal, save]
 created: "2026-11-23T12:56:39"
-updated: "2026-11-23T12:57:42"
+updated: "2026-11-27T14:19:43"
 ---
 
 <!-- compiled_truth -->
@@ -37,4 +37,16 @@ MacNewPal 严格采用 **Clean-Room + BYOD (Bring Your Own Data)** 架构：仓�
   kind: decision
   summary: "沉淀 BYOD 版权合规边界、23 文件二进制签名校验及只读目录存档回退策略"
   source: README.md / .gitignore / commit 966bc9f
+  affects: [byod-clean-room-vfs]
+
+- time: 2026-11-27T14:01:15
+  kind: decision
+  summary: "变更 BYOD 数据包导入方式：支持导入复制至 macOS 标准目录 ~/Library/Application Support/NewPal/PalGame，并在启动器与设置页添加快捷打开 Application Support 文件夹按钮"
+  source: Sources/App/PalLauncherStore.swift / Sources/App/ContentView.swift / Sources/App/SettingsView.swift
+  affects: [byod-clean-room-vfs]
+
+- time: 2026-11-27T14:19:43
+  kind: decision
+  summary: "重构托管式 BYOD 导入与清理流程：严格预检 23 项签名后仅选择性复制所需数据至 ~/Library/Application Support/NewPal/PalGame，统一且唯一从该标准目录读取，新增主动清理游戏数据功能，并将 pal_save_game_slot 调整为优先写入 ~/Library/Application Support/NewPal/Save 以确保存档隔离"
+  source: Sources/App/PalLauncherStore.swift / Sources/App/ContentView.swift / Sources/App/SettingsView.swift / Sources/Engine/PalEngineCore.c
   affects: [byod-clean-room-vfs]

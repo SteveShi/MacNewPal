@@ -11781,10 +11781,6 @@ static int pal_save_game_slot(
     uint32_t map_id, const char *map_title_utf8, int px, int py, int dir
 ) {
     if (!game_dir || !ws || slot < 0 || slot > 99) return -1;
-    char save_dir[1200], file_path[1200];
-    join_path(save_dir, sizeof(save_dir), game_dir, "Save");
-    SDL_CreateDirectory(save_dir);
-    snprintf(file_path, sizeof(file_path), "%s/%d.sav", save_dir, slot);
 
     size_t total_sz = (size_t)PAL_LEGACY_SAVE_SIZE + sizeof(PalNpalSaveFooterV8);
     uint8_t *buf = (uint8_t *)calloc(1, total_sz);
@@ -11889,12 +11885,17 @@ static int pal_save_game_slot(
     memcpy(buf + PAL_LEGACY_SAVE_SIZE, ft8, sizeof(*ft8));
     free(ft8);
 
-    FILE *f = fopen(file_path, "wb");
+    FILE *f = NULL;
+    char pref_path[1200];
+    if (pal_save_pref_path(slot, pref_path, sizeof(pref_path)) == 0) {
+        f = fopen(pref_path, "wb");
+    }
     if (!f) {
-        char pref_path[1200];
-        if (pal_save_pref_path(slot, pref_path, sizeof(pref_path)) == 0) {
-            f = fopen(pref_path, "wb");
-        }
+        char save_dir[1200], file_path[1200];
+        join_path(save_dir, sizeof(save_dir), game_dir, "Save");
+        SDL_CreateDirectory(save_dir);
+        snprintf(file_path, sizeof(file_path), "%s/%d.sav", save_dir, slot);
+        f = fopen(file_path, "wb");
     }
     if (!f) {
         free(buf);
@@ -21106,6 +21107,9 @@ int32_t pal_combat_shop_save_probe_m5(const char *game_dir, PalCombatM5ProbeInfo
                 char tmp_p[1200];
                 snprintf(tmp_p, sizeof(tmp_p), "%s/Save/98.sav", game_dir);
                 remove(tmp_p);
+                if (pal_save_pref_path(98, tmp_p, sizeof(tmp_p)) == 0) {
+                    remove(tmp_p);
+                }
             }
 
             p2_authentic_ok = (ok_stack && ok_buy_cap && ok_sell75 && ok_nosell0 && ok_money_cap &&

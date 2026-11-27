@@ -2,8 +2,6 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
-    @AppStorage("gameDataPath") private var gameDataPath: String = ""
-    @AppStorage("gameDataBookmark") private var gameDataBookmark: Data = Data()
     @AppStorage("windowScale") private var windowScale: Int = 2
     @AppStorage("vsyncEnabled") private var vsyncEnabled: Bool = true
     @AppStorage("nearestFilter") private var nearestFilter: Bool = true
@@ -16,6 +14,7 @@ struct SettingsView: View {
     @AppStorage("mcpHeadlessLaunch") private var mcpHeadlessLaunch: Bool = false
     @AppStorage("mcpAllowQaTools") private var mcpAllowQaTools: Bool = true
     @State private var copiedMcpConfig: Bool = false
+    @State private var showingDeleteDataConfirm: Bool = false
 
     let store: PalLauncherStore
 
@@ -77,24 +76,72 @@ struct SettingsView: View {
             }
 
             Section("settings.game_data_folder") {
-                Text(gameDataPath.isEmpty ? String(localized: "byod.no_folder_selected") : gameDataPath)
-                    .font(.caption)
+                if store.hasImportedData {
+                    HStack(spacing: 6) {
+                        Text(store.standardGameDataDirectoryURL.path)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.primary)
+                            .textSelection(.enabled)
+                        if !store.importedDataSizeText.isEmpty {
+                            Text("(\(store.importedDataSizeText))")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    if store.validation?.isValid == true {
+                        Text("byod.imported_ready_note")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+                } else {
+                    Text("byod.no_folder_selected")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("byod.standard_path_hint")
+                    .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
 
                 HStack {
-                    Button("byod.choose_folder") {
-                        store.chooseGameDirectory { path, bookmark in
-                            gameDataPath = path
-                            gameDataBookmark = bookmark
-                        }
+                    Button {
+                        store.importGameDirectory()
+                    } label: {
+                        Label(
+                            store.hasImportedData ? "byod.reimport_data" : "byod.import_data",
+                            systemImage: "square.and.arrow.down"
+                        )
                     }
-                    Button("settings.clear_folder", role: .destructive) {
-                        gameDataPath = ""
-                        gameDataBookmark = Data()
-                        store.validateDirectory("")
+                    .disabled(store.isImportingData || store.isRunningEngine)
+
+                    Button {
+                        store.openAppSupportDirectory()
+                    } label: {
+                        Label("byod.open_app_support", systemImage: "folder")
                     }
-                    .disabled(gameDataPath.isEmpty)
+
+                    Button(role: .destructive) {
+                        showingDeleteDataConfirm = true
+                    } label: {
+                        Label("byod.delete_data", systemImage: "trash")
+                    }
+                    .disabled(!store.hasImportedData || store.isImportingData || store.isRunningEngine)
+                }
+
+                if store.isImportingData {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: store.importProgress)
+                        Text(store.importStatusText)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if !store.importErrorMessage.isEmpty {
+                    Text(store.importErrorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
             }
 #if PAL_ENABLE_TEST_MODE
@@ -137,6 +184,17 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(minWidth: 620, minHeight: 580)
+        .onAppear {
+            store.refreshStandardGameData()
+        }
+        .alert("byod.delete_confirm_title", isPresented: $showingDeleteDataConfirm) {
+            Button("byod.delete_confirm_action", role: .destructive) {
+                store.deleteImportedGameData()
+            }
+            Button("byod.cancel", role: .cancel) {}
+        } message: {
+            Text("byod.delete_confirm_message")
+        }
     }
 
     private func vfsMetricsSection(_ val: ValidationSummaryModel) -> some View {
