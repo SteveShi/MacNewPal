@@ -49,7 +49,7 @@
      - **CoreText 中文富文本渲染器**（`pal_font_probe_rich_text`、`PalRichTextMetrics`）：解析 SWD2k 排版控制符（`%N` 换行、`%C0`..`%C9` 10 色调色盘、`%S`、`%D`、`%G`、`%K`）并栅格化为带投影的 UTF-8 文字纹理。
      - **Talk 剧情脚本虚拟机、半身立绘与触发器引擎**（`pal_talk_vm_probe_m3`、`PalTalkVM`、`PalTalkWorldState`）：全 8 卷 `talk1..8.dat` 多库加载器（`talk1`/`talk4` 各 `701` 槽、其余 `1000` 槽 —— 全库 **7,394 / 7,394** 条脚本 100% 无错解码），完整支持剧情旗标（`8192`）、脚本变量（`256`、`obj_rv`）、地图/道具/距离/仅已装备（`0xA7`/`0xA8`）条件跳转、`0xD8`/`0xD9` 动态半身立绘（`all_map1.act` -> `all_map1.tsw`）、`%B` 多选项对话菜单、`0x310(9012)` 对话框关闭、ACT `700` 多格 `HW` 事件热区、`path1..10.dat` NPC AI 虚拟机（支持在队成员距离检测）、`0x14`/`0x26`/`0x27`/`0x28`/`0x3E`/`0x64`/`0xA9` NPC 位置与特殊姿态持久化、`0x30A` 满血检定与 `0x30B` 金钱变量同步、`0x309` 奖励脚本、`gitem.dat` `77777` 32 组迷宫出口（引路蜂/土灵珠）及 `0x1B` 切图传送。
      - **`0x7F` 游戏数据库运行时、炼蛊系统、角色成长与营地菜单**（`pal_db_menu_probe_m4`、`PalGameDatabase`、`PalPartyMemberState`）：完整解析 `ghero.dat`（`9` 位主角）、`gitem.dat`（`252` 件物品与效果/装备脚本）、`gmagic.dat`（`66` 种仙术与 `601` 条脚本含 `5001..5319` 奖励及 `58000+` 商店清单）、`glevel.dat`（`410` 条升级模板，最高 99 级封顶）、`gmon.dat`（`160` 种怪物）、`gmap.dat`（`265` 遇敌区域）与 `GFight1..4.dat`（`1,056` 条战斗编队脚本）。严格对齐 `Palgame.exe` 装备槽位与主角掩码兼容性、装备属性被动加成（`0x7F30200B`）、`0x7F102001` 无条件跳转语义、非战斗道具/仙术恢复（`0x7EFF1001`/`0x7EFF1015`）、紫金葫蘆（`3905`）与煉蠱皿（`3906`）炼丹/炼蛊体系，并与 `Talk` 指令（`0x80`..`0x86`、`0xA7`/`0xA8`、`0x309`）实时联动；按 `I` / `U` / `F1` 打开「狀態 / 仙術 / 物品 / 系統」四分页营地菜单（联动 `all_sys.tsw`、`all_item.act`/`all_item.tsw` 与 CoreText）。
-     - **回合制战斗、商店买卖与 10 槽位存档/读档**（`pal_combat_shop_save_probe_m5`、`PalCombatState`、`PalShopMenuState`、`PalLoadOverlayState`）：完整接入 `GFight1..4.dat` 与 `gmon.dat` 回合制战斗，按 `gmap.dat` + `all_map2.act` 精准还原各地图专属战斗背景，完整还原 `all_char.act` `1000..1003` 主角与 `2000+` 怪物动作/死亡演出，并经 P0–P3 逆向核查全面对齐 `Palgame.exe` 物攻/仙术/投掷/偷窃/逃跑/出手顺序/双槽掉落公式（含酒神 9 次上限、乾坤一掷、160 位异常状态掩码与 `3063` 五毒珠免疫/`3074` 七彩玉靈芝转化、四人合体技、同伴倒下激怒、非剧情战败返回标题画面及可选 2x 高清渲染）；支持 `58000+` 脚本商店买卖界面（`all_sys.tsw` `9017`）及 10 槽位读写（兼容原版 `0x6A54` `Save/0..9.sav`、`"NPAL"` V6 扩展尾标持久化剧情变量/AI/灵葫值及只读目录自动回退 macOS `Application Support`，可在主菜单「舊的回憶」或营地「系統」分页中存取）。
+     - **回合制战斗、商店买卖与 10 槽位存档/读档**（`pal_combat_shop_save_probe_m5`、`PalCombatState`、`PalShopMenuState`、`PalLoadOverlayState`）：完整接入 `GFight1..4.dat` 与 `gmon.dat` 回合制战斗，按 `gmap.dat` + `all_map2.act` 精准还原各地图专属战斗背景，完整还原 `all_char.act` `1000..1003` 主角与 `2000+` 怪物动作/死亡演出，并经 P0–P3 逆向核查全面对齐 `Palgame.exe` 物攻/仙术/投掷/偷窃/逃跑/出手顺序/双槽掉落公式（含酒神 9 次上限、乾坤一掷、160 位异常状态掩码与 `3063` 五毒珠免疫/`3074` 七彩玉靈芝转化、四人合体技、同伴倒下激怒、非剧情战败返回标题画面及可选 2x 高清渲染）；支持 `58000+` 脚本商店买卖界面（`all_sys.tsw` `9017`）及 10 槽位读写（兼容原版 `0x6A54` `Save/0..9.sav`、`"NPAL"` V8 扩展尾标持久化剧情变量/AI/灵葫值及只读目录自动回退 macOS `Application Support`，可在主菜单「舊的回憶」或营地「系統」分页中存取）。
      - **主菜单 → 原版开场剧情脚本 → 场景游历循环**：启动直入主菜单竹简界面（`all_sys.act` `10000`、`Music/M001.mp3`），支持「舊的回憶」10 槽读档；点击「新的故事」执行 `talk1.dat` `talk_id=100` 原版开场剧情（`532` -> `533` -> `Video/begin.bik` -> `501` `羅剎峰` -> `502` `羅剎洞外`，夢境李逍遙 `2009` 单人开局），支持自由行走、宝箱开盖状态切换（`OP 0x0A`）与跳出土怪、脚本内遇敌战斗（`2801` / `5001+`）、触发器切图、商店与营地系统。
      - **`all.snd` 音效与 `MZ + 0x200` 数据库**：`RIFF` 直通及 44 字节 PCM WAV 头重构，以及内存 TLV 解析（`ghero.dat`、`gmon.dat`、`gitem.dat`、`gmagic.dat`、`GFight1.dat`、`namex.dat`、`maps.dat`、`talk1.dat`）。
 
@@ -151,7 +151,7 @@ NewPal 原生内置标准 JSON-RPC 2.0 stdio MCP 服务端，供各类 AI 编码
 ```bash
 ./Tools/package_dmg.py
 ```
-生成文件位于：`build/NewPal-1.1.0.dmg`。
+生成文件位于：`build/NewPal-1.2.0.dmg`。
 
 ---
 

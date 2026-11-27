@@ -582,13 +582,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Version 1.1.0 — Full 8-Chapter Parity & Side-Quest Audit"
+            "value": "Version 1.2.0 — Cutscene, Magic, NPC & Monster Parity Audit"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "1.1.0 版 — 全八章原版逻辑对齐与 31 条支线全面核验"
+            "value": "1.2.0 版 — 过场动画、全仙术、全图 NPC 与怪物深度对齐"
           }
         }
       }
@@ -598,13 +598,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Exact Palgame.exe Combat, Alchemy & World Parity"
+            "value": "Global Cutscene & .act Animation Parity"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "全面对齐 Palgame.exe 战斗、炼蛊与大世界机制"
+            "value": "全局过场演出与 .act 动画引擎全面对齐"
           }
         }
       }
@@ -614,13 +614,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Replaced all approximated formulas with reverse-engineered Palgame.exe logic: gmap.dat + all_map2.act battlegrounds, P0–P3 damage/status/steal/drop/turn-order rules, 99-level cap, alchemy pot, and dungeon exits."
+            "value": "Aligned the .act VM (LP/SM/VO/2O hold-last-frame, frame delay overrides) and Talk cutscene opcodes (0x3A/0x99/0x30C overlays, 0x3F/0x40 screen shake, 0x4F/0xD0 flying sprites, 0xA9 arrival poses, 0x3C/0x3D black screen, and post-cutscene camera release) with Palgame.exe."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "按原版 Palgame.exe 逆向逻辑重写战斗公式、专属战斗场景（gmap.dat + all_map2.act）、异常状态/双槽掉落/出手顺序、99 级上限、炼蛊皿与 32 组迷宫出口。"
+            "value": "按原版 Palgame.exe 对齐 .act 虚拟机（LP/SM/VO/2O 末帧定格与帧延迟覆写）及 Talk 演出指令（0x3A/0x99/0x30C 叠层、0x3F/0x40 震屏、0x4F/0xD0 飞行精灵、0xA9 到达姿态、0x3C/0x3D 黑屏与过场结束相机释放）。"
           }
         }
       }
@@ -630,13 +630,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "31 Side Quests, Hidden Endings & Full 8-Chapter Verified"
+            "value": "All 66 Combat Magics VFX, Formulas & Stat Training"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "全八章通关实测、双隐藏结局与 31 条支线验证通过"
+            "value": "全部 66 项战斗仙术特效、公式与属性修炼"
           }
         }
       }
@@ -646,13 +646,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Audited and regression-tested all 8 chapters, both hidden endings (Zhao Ling'er 1195 & Lin Yueru 1199), and 31 early/mid/late side quests including Peach Village, Gu-Eating Bird AI & Map 460, and Five-God Statues."
+            "value": "Audited all 66 combat magics for authentic VFX, target scope, opcodes, and Palgame.exe damage formulas; restored combat stat training with V8 extended save persistence."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "完成全八章主线通关实测、赵灵儿（1195）与林月如（1199）双隐藏结局以及桃源村、捕捉食蛊鸟、女娲遗迹五神像等 31 条早中后期支线修复与回归校验。"
+            "value": "全量审计 66 项战斗仙术的特效、作用范围、脚本指令与原版伤害公式；恢复战斗属性修炼并升级至 V8 扩展存档持久化。"
           }
         }
       }
@@ -662,13 +662,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Metal Shaders, SDL3 Gamepad & Built-in MCP Server"
+            "value": "460-Map NPC & 1,839-Monster Engine Audit"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "Metal 滤镜、SDL3 手柄与内置 MCP 自动化接口"
+            "value": "全 460 张地图 NPC 与 1,839 名地图怪物全量审计"
           }
         }
       }
@@ -678,13 +678,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Hardware Metal xBRZ / CRT-Royale shaders with Retina-crisp CoreText UI, smooth BGM crossfades, hotplug SDL3 Gamepad controls, V6 extended saves, and built-in stdio MCP server."
+            "value": "Fixed NPC layering (OP 0x36–0x39), visibility/pose/talk/AI persistence (OP 0x26/0x2D/0x44/0x45/0x4C/0x64/0x78), solid NPC collision, and all 1,839 map monsters' triggers, chase speed, AI yield, and blocked-spawn escape."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "硬件 Metal xBRZ / CRT-Royale 滤镜配视网膜级字体、平滑 BGM 淡入淡出、SDL3 手柄热插拔、V6 扩展存档与内置 stdio MCP 服务端。"
+            "value": "修复 NPC 分层渲染（OP 0x36–0x39）、显隐/姿态/对话/AI 持久化、实体碰撞与旧存档兼容，以及全部 1,839 名地图怪物的触发、追击速度、AI 让步与卡墙脱困逻辑。"
           }
         }
       }
