@@ -5,17 +5,17 @@ category: project
 status: active
 tags: [release, dmg, packaging, gatekeeper, v1.0.0]
 created: "2026-11-23T12:56:39"
-updated: "2026-11-23T12:57:42"
+updated: "2026-11-27T10:35:25"
 ---
 
 <!-- compiled_truth -->
-## 当前发布状态（基线：`v1.0.0`）
+## 当前发布状态（基线：`v1.2.0`）
 
 - **仓库**：`https://github.com/SteveShi/MacNewPal`（默认分支 `main`，私仓）
-- **Release Tag**：`v1.0.0`（commit `46fbdd0`，工作区干净，M0–M9 里程碑全部完成）
-- **Release 链接**：`https://github.com/SteveShi/MacNewPal/releases/tag/v1.0.0`
-- **分发产物**：`NewPal-1.0.0.dmg`（18,835,268 bytes / ~17.96 MB）
-  - SHA-256：`5241bf94b0fb161ef6b2f6dafa9b401dc08cfaece03d9ef9589f73206ac85a4c`
+- **Release Tag**：`v1.2.0`（commit `b5f8ee9`，工作区干净，包含 `v1.1.0` 后 8 项 `Palgame.exe` 深度对齐提交：`191ab76`..`eb42337`）
+- **Release 链接**：`https://github.com/SteveShi/MacNewPal/releases/tag/v1.2.0`
+- **分发产物**：`NewPal-1.2.0.dmg`（19,095,320 bytes / 18.21 MB）
+  - SHA-256：`77ad25675574b03eea7331d2ba23f565ae337086e7a363d54f0d84d136ae726c`
 
 ## 独立构建与打包流水线
 
@@ -30,8 +30,8 @@ updated: "2026-11-23T12:57:42"
    ```
    验收标准：输出 `Validation: 23/23 (is_valid=1)`、`7394/7394` Talk scripts、`[SelfTest] ALL CHECKS PASSED.` 且退出码为 `0`。
 3. **独立 DMG 打包（`Tools/package_dmg.py`）**：
-   - 自动 `xcodebuild Release` → 递归分析 `otool -L` 拷贝全部 Homebrew `SDL3` + `FFmpeg` 动态库闭包到 `Contents/Frameworks/` → `install_name_tool` 重写为 `@rpath` 并移除本地 Homebrew rpath → 全量 ad-hoc 签名（`codesign -s -`）→ `create-dmg` 生成带自定义图标的 `build/NewPal-1.0.0.dmg`。
-   - **注意**：升级版本时需同步更新 `project.yml`（`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`）、`Tools/package_dmg.py`（`DMG_OUTPUT` 文件名）与 `WhatsNewSheetView.swift`。
+   - 自动读取 `project.yml` 的 `MARKETING_VERSION`（当前 `1.2.0`，`CURRENT_PROJECT_VERSION = 4`）→ `xcodebuild Release` → 递归分析 `otool -L` 拷贝全部 Homebrew `SDL3` + `FFmpeg` 动态库闭包到 `Contents/Frameworks/` → `install_name_tool` 重写为 `@rpath` 并移除本地 Homebrew rpath → 全量 ad-hoc 签名（`codesign -s -`）→ `create-dmg` 生成带自定义图标的 `build/NewPal-1.2.0.dmg`。
+   - **注意**：升级版本时需同步更新 `project.yml`（`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`）、`Tools/package_dmg.py`（兜底版本号）、`README.md` / `README.zh-CN.md` 与 `Sources/App/Resources/Localizable.xcstrings` 中的 `whatsnew.*`。
 
 ## 无 Apple Developer ID 签名与 Gatekeeper 约束
 
@@ -60,4 +60,10 @@ updated: "2026-11-23T12:57:42"
   kind: decision
   summary: "记录 v1.0.0 发布产物、独立 DMG 打包流水线、无签名 Gatekeeper 引导与快速恢复指令"
   source: Tools/package_dmg.py / README.md / GitHub Release v1.0.0
+  affects: [standalone-dmg-and-unsigned-release]
+
+- time: 2026-11-27T10:35:25
+  kind: decision
+  summary: "更新发布基线至 v1.2.0（commit b5f8ee9 / NewPal-1.2.0.dmg）"
+  source: Tools/package_dmg.py / GitHub Release v1.2.0 / commit b5f8ee9
   affects: [standalone-dmg-and-unsigned-release]
