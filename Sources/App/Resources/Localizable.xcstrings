@@ -902,13 +902,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Version 1.2.1 — Managed BYOD Data Import & Cleanup"
+            "value": "Version 1.2.2 — Launcher Layout Polish & Save Folder Shortcut"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "1.2.1 版 — 托管式数据包导入与标准目录管理"
+            "value": "1.2.2 版 — 启动器界面重排与存档目录快捷入口"
           }
         }
       }
@@ -918,13 +918,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Managed BYOD Import into Application Support"
+            "value": "Refined Launcher Layout & Save Folder Shortcut"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "托管式数据包导入至 macOS 标准目录"
+            "value": "启动器界面分层重排与存档目录快捷入口"
           }
         }
       }
@@ -934,13 +934,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Validates all 23 core archives and selectively copies only required game files into ~/Library/Application Support/NewPal/PalGame with live progress. Once imported, the original folder can be freely deleted."
+            "value": "Redesigned the BYOD card into distinct info and toolbar rows, showing live data size, save slot count, and dedicated Open Data Folder and Open Save Folder (~/Library/Application Support/com.steveshi/NewPal/Save) buttons."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "自动校验全部 23 项核心档案并仅选择性复制所需游戏文件至 ~/Library/Application Support/NewPal/PalGame，实时显示进度；导入完成后原游戏文件夹可自由删除。"
+            "value": "将启动器数据管理区重排为独立的信息面板与左右分组工具栏，直观展示数据包体积、存档数量，并新增「打开存档目录」（~/Library/Application Support/com.steveshi/NewPal/Save）快捷按钮。"
           }
         }
       }
@@ -950,13 +950,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Standard Folder Shortcut & Safe Data Cleanup"
+            "value": "Managed BYOD Import & Safe Data Cleanup"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "快捷打开标准目录与安全清理游戏数据"
+            "value": "托管式数据包导入与安全清理游戏数据"
           }
         }
       }
@@ -966,13 +966,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Added an Open Application Support shortcut and a confirmation-guarded Delete Game Data action, while isolating saves exclusively in ~/Library/Application Support/NewPal/Save."
+            "value": "Verifies all 23 core archives and selectively copies required game files into ~/Library/Application Support/NewPal/PalGame, with a confirmation-guarded Delete Game Data action that preserves saves in ~/Library/Application Support/com.steveshi/NewPal/Save."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "新增「打开 Application Support」快捷按钮与带二次确认的「删除游戏数据」功能，并将玩家存档独立写入 ~/Library/Application Support/NewPal/Save，清理数据不会影响存档。"
+            "value": "主动校验全部 23 项核心档案并仅选择性复制所需游戏文件至 ~/Library/Application Support/NewPal/PalGame；支持带二次确认的「删除游戏数据」功能，完整保留 ~/Library/Application Support/com.steveshi/NewPal/Save 玩家存档。"
           }
         }
       }
