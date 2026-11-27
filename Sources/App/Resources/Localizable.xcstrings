@@ -177,6 +177,102 @@
         }
       }
     },
+    "byod.data_dir_label": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Game Data"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "游戏数据"
+          }
+        }
+      }
+    },
+    "byod.save_dir_label": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Save Files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "游戏存档"
+          }
+        }
+      }
+    },
+    "byod.open_data_folder": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Data Folder"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开数据目录"
+          }
+        }
+      }
+    },
+    "byod.open_save_folder": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Save Folder"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开存档目录"
+          }
+        }
+      }
+    },
+    "byod.save_count_fmt": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld save(s)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已有 %lld 个存档"
+          }
+        }
+      }
+    },
+    "byod.save_count_empty": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No saves yet"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无存档"
+          }
+        }
+      }
+    },
     "byod.delete_data": {
       "localizations": {
         "en": {
@@ -214,13 +310,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "This removes the imported game data in ~/Library/Application Support/NewPal/PalGame. Your save files in ~/Library/Application Support/NewPal/Save will be preserved."
+            "value": "This removes the imported game data in ~/Library/Application Support/NewPal/PalGame. Your save files in ~/Library/Application Support/com.steveshi/NewPal/Save will be preserved."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此操作将清理 ~/Library/Application Support/NewPal/PalGame 中的游戏数据包，~/Library/Application Support/NewPal/Save 中的玩家存档将会保留。"
+            "value": "此操作将清理 ~/Library/Application Support/NewPal/PalGame 中的游戏数据包，~/Library/Application Support/com.steveshi/NewPal/Save 中的玩家存档将会完整保留。"
           }
         }
       }

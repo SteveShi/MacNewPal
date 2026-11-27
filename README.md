@@ -31,7 +31,7 @@ Zero copyrighted artwork, audio, scripts, video, or maps are stored in this repo
 1. **Native macOS Launcher (`Sources/App/`)**:
    - Built with **Swift 6.0** (`SWIFT_STRICT_CONCURRENCY: complete`) and **SwiftUI** for macOS 14.0+ (`arm64`).
    - Full `en` / `zh-Hans` localization catalog in `Sources/App/Resources/Localizable.xcstrings`.
-   - **Managed BYOD Import & Cleanup (`PalLauncherStore.swift`)**: Lets you select your original game directory via `NSOpenPanel`, proactively validates all **23** core archive and database signatures, and selectively copies only required game archives, databases, `Music/`, and `Video/` into `~/Library/Application Support/NewPal/PalGame` (all runtime data is read exclusively from this standard directory, so the source folder can be removed afterward). Also includes an **Open Application Support** shortcut and a **Delete Game Data** action (with confirmation) that clears `PalGame/` while preserving `~/Library/Application Support/NewPal/Save/`.
+   - **Managed BYOD Import & Cleanup (`PalLauncherStore.swift`)**: Lets you select your original game directory via `NSOpenPanel`, proactively validates all **23** core archive and database signatures, and selectively copies only required game archives, databases, `Music/`, and `Video/` into `~/Library/Application Support/NewPal/PalGame` (all runtime data is read exclusively from this standard directory, so the source folder can be removed afterward). Also includes **Open Data Folder** and **Open Save Folder** (`~/Library/Application Support/com.steveshi/NewPal/Save/`) shortcuts plus a **Delete Game Data** action (with confirmation) that clears `PalGame/` while preserving player saves.
    - Real settings wired directly to the SDL3 engine (`SettingsView.swift` & `ContentView.swift`): window scale (`640×480`, `1280×960`, fullscreen letterbox), **Metal GPU Shader** (`Classic`, `Metal xBRZ`, `CRT-Royale`), Resolution Mode (`Original` / `HD Remastered 2×`), Metal VSync toggle, texture scale mode, master volume, audio mute, and saved directory management.
    - Release highlights modal in Help menu (`WhatsNewSheetView.swift`).
 
@@ -128,7 +128,7 @@ brew install sdl3 ffmpeg xcodegen
 - Standard folder name: **`PalGame`**
 - Standard macOS path: **`~/Library/Application Support/NewPal/PalGame`**
 - Click **Import Game Data…** in the launcher and pick your original game folder: NewPal validates all 23 required archives, selectively copies only the engine-needed files (`*.tsw`, `*.act`, `all.snd`, `huge*.lmf`, `*.dat`, `Music/`, `Video/`) into `~/Library/Application Support/NewPal/PalGame`, and lets you safely delete the original folder afterward.
-- Click **Open Application Support** to inspect `~/Library/Application Support/NewPal/` in Finder, or **Delete Game Data** (in the launcher or Settings) to clean up imported game files without touching your saves in `~/Library/Application Support/NewPal/Save/`.
+- Click **Open Data Folder** to inspect `~/Library/Application Support/NewPal/` in Finder, **Open Save Folder** to access `~/Library/Application Support/com.steveshi/NewPal/Save/`, or **Delete Game Data** (in the launcher or Settings) to clean up imported game files without touching your saves.
 
 ### Generate Project, Build & Run Self-Test
 ```bash

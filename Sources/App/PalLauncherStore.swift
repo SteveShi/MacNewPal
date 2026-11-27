@@ -47,6 +47,7 @@ final class PalLauncherStore {
 
     var hasImportedData: Bool = false
     var importedDataSizeText: String = ""
+    var saveSlotCount: Int = 0
     var isImportingData: Bool = false
     var importProgress: Double = 0.0
     var importStatusText: String = ""
@@ -55,14 +56,32 @@ final class PalLauncherStore {
     private var headlessProcess: Process?
     private var terminateObserver: NSObjectProtocol?
 
-    var appSupportDirectoryURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+    private var applicationSupportBaseURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support", isDirectory: true)
-        return base.appendingPathComponent("NewPal", isDirectory: true)
+    }
+
+    var appSupportDirectoryURL: URL {
+        applicationSupportBaseURL.appendingPathComponent("NewPal", isDirectory: true)
     }
 
     var standardGameDataDirectoryURL: URL {
         appSupportDirectoryURL.appendingPathComponent("PalGame", isDirectory: true)
+    }
+
+    var saveDirectoryURL: URL {
+        applicationSupportBaseURL
+            .appendingPathComponent("com.steveshi", isDirectory: true)
+            .appendingPathComponent("NewPal", isDirectory: true)
+            .appendingPathComponent("Save", isDirectory: true)
+    }
+
+    var displayDataPath: String {
+        (standardGameDataDirectoryURL.path as NSString).abbreviatingWithTildeInPath
+    }
+
+    var displaySavePath: String {
+        (saveDirectoryURL.path as NSString).abbreviatingWithTildeInPath
     }
 
     init() {
@@ -98,6 +117,18 @@ final class PalLauncherStore {
         NSWorkspace.shared.open(dir)
     }
 
+    @discardableResult
+    func ensureSaveDirectory() -> URL {
+        let dir = saveDirectoryURL
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    func openSaveDirectory() {
+        let dir = ensureSaveDirectory()
+        NSWorkspace.shared.open(dir)
+    }
+
     func refreshStandardGameData() {
         let fm = FileManager.default
         let standardDir = standardGameDataDirectoryURL
@@ -119,6 +150,16 @@ final class PalLauncherStore {
             UserDefaults.standard.removeObject(forKey: "gameDataPath")
             UserDefaults.standard.removeObject(forKey: "gameDataBookmark")
         }
+
+        let saveDir = saveDirectoryURL
+        var count = 0
+        for slot in 0..<10 {
+            let slotURL = saveDir.appendingPathComponent("\(slot).sav")
+            if fm.fileExists(atPath: slotURL.path) {
+                count += 1
+            }
+        }
+        saveSlotCount = count
     }
 
     func importGameDirectory() {

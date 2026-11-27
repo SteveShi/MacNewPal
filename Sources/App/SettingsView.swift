@@ -76,35 +76,50 @@ struct SettingsView: View {
             }
 
             Section("settings.game_data_folder") {
-                if store.hasImportedData {
-                    HStack(spacing: 6) {
-                        Text(store.standardGameDataDirectoryURL.path)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.primary)
-                            .textSelection(.enabled)
-                        if !store.importedDataSizeText.isEmpty {
-                            Text("(\(store.importedDataSizeText))")
-                                .font(.caption.monospacedDigit())
+                LabeledContent("byod.data_dir_label") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(store.displayDataPath)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(store.hasImportedData ? .primary : .secondary)
+                                .textSelection(.enabled)
+                            if store.hasImportedData && !store.importedDataSizeText.isEmpty {
+                                Text("(\(store.importedDataSizeText))")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        if store.hasImportedData && store.validation?.isValid == true {
+                            Text("byod.imported_ready_note")
+                                .font(.caption2)
+                                .foregroundStyle(.green)
+                        } else if !store.hasImportedData {
+                            Text("byod.no_folder_selected")
+                                .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    if store.validation?.isValid == true {
-                        Text("byod.imported_ready_note")
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                    }
-                } else {
-                    Text("byod.no_folder_selected")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
-                Text("byod.standard_path_hint")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                LabeledContent("byod.save_dir_label") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(store.displaySavePath)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                        Group {
+                            if store.saveSlotCount > 0 {
+                                Text(String(format: String(localized: "byod.save_count_fmt"), Int64(store.saveSlotCount)))
+                            } else {
+                                Text("byod.save_count_empty")
+                            }
+                        }
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                }
 
-                HStack {
+                HStack(spacing: 10) {
                     Button {
                         store.importGameDirectory()
                     } label: {
@@ -115,18 +130,26 @@ struct SettingsView: View {
                     }
                     .disabled(store.isImportingData || store.isRunningEngine)
 
-                    Button {
-                        store.openAppSupportDirectory()
-                    } label: {
-                        Label("byod.open_app_support", systemImage: "folder")
-                    }
-
                     Button(role: .destructive) {
                         showingDeleteDataConfirm = true
                     } label: {
                         Label("byod.delete_data", systemImage: "trash")
                     }
                     .disabled(!store.hasImportedData || store.isImportingData || store.isRunningEngine)
+
+                    Spacer()
+
+                    Button {
+                        store.openAppSupportDirectory()
+                    } label: {
+                        Label("byod.open_data_folder", systemImage: "folder")
+                    }
+
+                    Button {
+                        store.openSaveDirectory()
+                    } label: {
+                        Label("byod.open_save_folder", systemImage: "archivebox")
+                    }
                 }
 
                 if store.isImportingData {

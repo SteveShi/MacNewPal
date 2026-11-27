@@ -31,7 +31,7 @@
 1. **原生 macOS 启动器（`Sources/App/`）**：
    - 基于 **Swift 6.0**（开启 `SWIFT_STRICT_CONCURRENCY: complete`）与 **SwiftUI** 构建，面向 macOS 14.0+（`arm64`）。
    - 完整提供英文与简体中文双语本地化资源目录（`Sources/App/Resources/Localizable.xcstrings`）。
-   - **托管式 BYOD 数据导入与清理（`PalLauncherStore.swift`）**：点击导入后通过 `NSOpenPanel` 选择原版游戏目录，主动完成全部 **23 项**核心档案签名预检，并仅将引擎所需的封包、数据库与 `Music/`、`Video/` 选择性复制至 `~/Library/Application Support/NewPal/PalGame`（运行时统一且唯一从该标准目录读取，源文件夹可随时删除）。同时提供「打开 Application Support」快捷按钮与带二次确认的「删除游戏数据」功能，可主动清理已导入数据包并严格保留 `~/Library/Application Support/NewPal/Save/` 玩家存档。
+   - **托管式 BYOD 数据导入与清理（`PalLauncherStore.swift`）**：点击导入后通过 `NSOpenPanel` 选择原版游戏目录，主动完成全部 **23 项**核心档案签名预检，并仅将引擎所需的封包、数据库与 `Music/`、`Video/` 选择性复制至 `~/Library/Application Support/NewPal/PalGame`（运行时统一且唯一从该标准目录读取，源文件夹可随时删除）。同时提供「打开数据目录」「打开存档目录」（`~/Library/Application Support/com.steveshi/NewPal/Save/`）快捷按钮与带二次确认的「删除游戏数据」功能，可主动清理已导入数据包并严格保留玩家存档。
    - 全功能设置与启动控件（`SettingsView.swift`、`ContentView.swift`）：窗口倍率（`640×480`、`1280×960`、全屏等比）、**Metal GPU 滤镜**（`原版直出`、`Metal xBRZ 锐化`、`CRT-Royale 显像管`）、画面清晰度（原版 / 2× 高清重制）、Metal VSync 开关、纹理缩放模式、SDL3 主音量调节、静音开关及目录管理，均直接传参控制运行时。
    - Help 菜单内置“新功能介绍”弹窗（`WhatsNewSheetView.swift`）。
 
@@ -128,7 +128,7 @@ brew install sdl3 ffmpeg xcodegen
 - 标准数据文件夹名称：**`PalGame`**
 - 标准 macOS 存放路径：**`~/Library/Application Support/NewPal/PalGame`**
 - 在启动器中点击 **「导入数据包…」** 选择原版游戏文件夹后，启动器会自动完成 23 项签名校验并仅复制所需游戏文件（`*.tsw`、`*.act`、`all.snd`、`huge*.lmf`、`*.dat`、`Music/`、`Video/`）到 `~/Library/Application Support/NewPal/PalGame`，导入成功后可自由删除原游戏文件夹。
-- 可随时点击 **「打开 Application Support」** 在 Finder 中查看 `~/Library/Application Support/NewPal/`，或使用 **「删除游戏数据」** 主动清理已导入数据包（`Save/` 中的玩家存档会被完整保留）。
+- 可随时点击 **「打开数据目录」** 在 Finder 中查看 `~/Library/Application Support/NewPal/`，点击 **「打开存档目录」** 直接打开 `~/Library/Application Support/com.steveshi/NewPal/Save/`，或使用 **「删除游戏数据」** 主动清理已导入数据包（玩家存档会被完整保留）。
 
 ### 生成工程、编译与运行无头自检
 ```bash

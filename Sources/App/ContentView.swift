@@ -19,7 +19,7 @@ struct ContentView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
                 headerSection
                 byodSection
                 launchSection
@@ -63,6 +63,12 @@ struct ContentView: View {
             )
             .font(.caption.weight(.semibold))
             .foregroundStyle(store.metalAvailable ? .green : .red)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                (store.metalAvailable ? Color.green : Color.red).opacity(0.12),
+                in: Capsule()
+            )
         }
         .padding(14)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
@@ -70,66 +76,92 @@ struct ContentView: View {
 
     private var byodSection: some View {
         GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center) {
                     Text("byod.card_title")
                         .font(.headline)
                     Spacer()
-                    if let val = store.validation {
-                        Label(
-                            val.isValid ? "byod.status_verified" : "byod.status_incomplete",
-                            systemImage: val.isValid ? "checkmark.circle.fill" : "xmark.circle.fill"
-                        )
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(val.isValid ? .green : .orange)
-                    } else {
-                        Label("byod.status_not_imported", systemImage: "tray.and.arrow.down")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
+                    statusBadge
                 }
 
                 Text("byod.legal_notice")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                Text("byod.standard_path_hint")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 8) {
+                    GridRow {
+                        Text("byod.data_dir_label")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: true, vertical: false)
 
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        if store.hasImportedData {
-                            HStack(spacing: 6) {
-                                Text(store.standardGameDataDirectoryURL.path)
-                                    .font(.callout.monospaced())
-                                    .foregroundStyle(.primary)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 8) {
+                                Text(store.displayDataPath)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(store.hasImportedData ? .primary : .secondary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                     .textSelection(.enabled)
-                                if !store.importedDataSizeText.isEmpty {
-                                    Text("(\(store.importedDataSizeText))")
-                                        .font(.caption.monospacedDigit())
+
+                                if store.hasImportedData && !store.importedDataSizeText.isEmpty {
+                                    Text(store.importedDataSizeText)
+                                        .font(.caption2.monospacedDigit().weight(.medium))
                                         .foregroundStyle(.secondary)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(.quaternary, in: Capsule())
                                 }
                             }
-                            if store.validation?.isValid == true {
+
+                            if store.hasImportedData && store.validation?.isValid == true {
                                 Text("byod.imported_ready_note")
-                                    .font(.caption)
+                                    .font(.caption2)
                                     .foregroundStyle(.green)
+                            } else if !store.hasImportedData {
+                                Text("byod.no_folder_selected")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
-                        } else {
-                            Text("byod.no_folder_selected")
-                                .font(.callout.monospaced())
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
 
-                    Spacer()
+                    GridRow {
+                        Text("byod.save_dir_label")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: true, vertical: false)
 
+                        HStack(spacing: 8) {
+                            Text(store.displaySavePath)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+
+                            Group {
+                                if store.saveSlotCount > 0 {
+                                    Text(String(format: String(localized: "byod.save_count_fmt"), Int64(store.saveSlotCount)))
+                                } else {
+                                    Text("byod.save_count_empty")
+                                }
+                            }
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.quaternary, in: Capsule())
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(10)
+                .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+
+                HStack(spacing: 8) {
                     Button {
                         store.importGameDirectory()
                     } label: {
@@ -142,10 +174,11 @@ struct ContentView: View {
                     .disabled(store.isImportingData || store.isRunningEngine)
 
                     Button {
-                        store.openAppSupportDirectory()
+                        store.refreshStandardGameData()
                     } label: {
-                        Label("byod.open_app_support", systemImage: "folder")
+                        Label("byod.revalidate", systemImage: "arrow.clockwise")
                     }
+                    .disabled(store.isImportingData)
 
                     Button(role: .destructive) {
                         showingDeleteDataConfirm = true
@@ -154,10 +187,19 @@ struct ContentView: View {
                     }
                     .disabled(!store.hasImportedData || store.isImportingData || store.isRunningEngine)
 
-                    Button("byod.revalidate") {
-                        store.refreshStandardGameData()
+                    Spacer(minLength: 12)
+
+                    Button {
+                        store.openAppSupportDirectory()
+                    } label: {
+                        Label("byod.open_data_folder", systemImage: "folder")
                     }
-                    .disabled(store.isImportingData)
+
+                    Button {
+                        store.openSaveDirectory()
+                    } label: {
+                        Label("byod.open_save_folder", systemImage: "archivebox")
+                    }
                 }
 
                 if store.isImportingData {
@@ -181,7 +223,30 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(6)
+            .padding(8)
+        }
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        if let val = store.validation {
+            let color: Color = val.isValid ? .green : .orange
+            Label(
+                val.isValid ? "byod.status_verified" : "byod.status_incomplete",
+                systemImage: val.isValid ? "checkmark.circle.fill" : "xmark.circle.fill"
+            )
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.12), in: Capsule())
+        } else {
+            Label("byod.status_not_imported", systemImage: "tray.and.arrow.down")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(.quaternary.opacity(0.6), in: Capsule())
         }
     }
 
