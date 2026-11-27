@@ -29,7 +29,7 @@ def read_marketing_version():
             m = re.search(r'MARKETING_VERSION:\s*"([^"]+)"', f.read())
             if m:
                 return m.group(1)
-    return "1.2.0"
+    return "1.2.1"
 
 
 APP_VERSION = read_marketing_version()

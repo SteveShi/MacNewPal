@@ -806,13 +806,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Version 1.2.0 — Cutscene, Magic, NPC & Monster Parity Audit"
+            "value": "Version 1.2.1 — Managed BYOD Data Import & Cleanup"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "1.2.0 版 — 过场动画、全仙术、全图 NPC 与怪物深度对齐"
+            "value": "1.2.1 版 — 托管式数据包导入与标准目录管理"
           }
         }
       }
@@ -822,13 +822,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Global Cutscene & .act Animation Parity"
+            "value": "Managed BYOD Import into Application Support"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "全局过场演出与 .act 动画引擎全面对齐"
+            "value": "托管式数据包导入至 macOS 标准目录"
           }
         }
       }
@@ -838,13 +838,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Aligned the .act VM (LP/SM/VO/2O hold-last-frame, frame delay overrides) and Talk cutscene opcodes (0x3A/0x99/0x30C overlays, 0x3F/0x40 screen shake, 0x4F/0xD0 flying sprites, 0xA9 arrival poses, 0x3C/0x3D black screen, and post-cutscene camera release) with Palgame.exe."
+            "value": "Validates all 23 core archives and selectively copies only required game files into ~/Library/Application Support/NewPal/PalGame with live progress. Once imported, the original folder can be freely deleted."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "按原版 Palgame.exe 对齐 .act 虚拟机（LP/SM/VO/2O 末帧定格与帧延迟覆写）及 Talk 演出指令（0x3A/0x99/0x30C 叠层、0x3F/0x40 震屏、0x4F/0xD0 飞行精灵、0xA9 到达姿态、0x3C/0x3D 黑屏与过场结束相机释放）。"
+            "value": "自动校验全部 23 项核心档案并仅选择性复制所需游戏文件至 ~/Library/Application Support/NewPal/PalGame，实时显示进度；导入完成后原游戏文件夹可自由删除。"
           }
         }
       }
@@ -854,13 +854,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "All 66 Combat Magics VFX, Formulas & Stat Training"
+            "value": "Standard Folder Shortcut & Safe Data Cleanup"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "全部 66 项战斗仙术特效、公式与属性修炼"
+            "value": "快捷打开标准目录与安全清理游戏数据"
           }
         }
       }
@@ -870,13 +870,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Audited all 66 combat magics for authentic VFX, target scope, opcodes, and Palgame.exe damage formulas; restored combat stat training with V8 extended save persistence."
+            "value": "Added an Open Application Support shortcut and a confirmation-guarded Delete Game Data action, while isolating saves exclusively in ~/Library/Application Support/NewPal/Save."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "全量审计 66 项战斗仙术的特效、作用范围、脚本指令与原版伤害公式；恢复战斗属性修炼并升级至 V8 扩展存档持久化。"
+            "value": "新增「打开 Application Support」快捷按钮与带二次确认的「删除游戏数据」功能，并将玩家存档独立写入 ~/Library/Application Support/NewPal/Save，清理数据不会影响存档。"
           }
         }
       }
@@ -886,13 +886,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "460-Map NPC & 1,839-Monster Engine Audit"
+            "value": "Full Engine Parity Audit (v1.2.0 Baseline)"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "全 460 张地图 NPC 与 1,839 名地图怪物全量审计"
+            "value": "核心引擎全量对齐原版（v1.2.0 基线）"
           }
         }
       }
@@ -902,13 +902,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Fixed NPC layering (OP 0x36–0x39), visibility/pose/talk/AI persistence (OP 0x26/0x2D/0x44/0x45/0x4C/0x64/0x78), solid NPC collision, and all 1,839 map monsters' triggers, chase speed, AI yield, and blocked-spawn escape."
+            "value": "Includes full Palgame.exe parity across global cutscenes, all 66 combat magics, 460-map NPC layering and persistence, and 1,839 map monsters."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "修复 NPC 分层渲染（OP 0x36–0x39）、显隐/姿态/对话/AI 持久化、实体碰撞与旧存档兼容，以及全部 1,839 名地图怪物的触发、追击速度、AI 让步与卡墙脱困逻辑。"
+            "value": "完整保留全局过场演出、全部 66 项战斗仙术公式与特效、全 460 张地图 NPC 及 1,839 名地图怪物与原版 Palgame.exe 的深度对齐。"
           }
         }
       }
